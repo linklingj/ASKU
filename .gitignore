@@ -1,3 +1,8 @@
+
+# USER WRITTEN
+CLAUDE.md
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -216,3 +221,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node / frontend
+node_modules/
+.next/
+out/
+.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.tsbuildinfo
+
+# Local data / models / storage
+/data/
+*.duckdb
+neo4j-data/
+qdrant-data/
+.ollama/
