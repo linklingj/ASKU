@@ -33,7 +33,7 @@
 |---|---|
 | entity_id | 고유 ID (PK) |
 | school_id | 소속 학교 |
-| type | 화이트리스트: 학과·부서 / 공지 / 학사일정 / 장학금 / 담당자 / 연락처 / 규정 / 시설 / 절차 |
+| type | 엔티티 타입 (전체 화이트리스트 → [`04_extractor.md`](04_extractor.md) §2.2) |
 | name | 표시 이름 |
 | norm_key | 정규화 키 — `(school_id, norm_key)` 유니크(중복 병합 기준) |
 | attributes | 자유 속성(JSON) |
@@ -45,15 +45,17 @@
 | edge_id | 고유 ID (PK) |
 | school_id | 소속 학교 |
 | source_entity_id / target_entity_id | 양 끝 노드 |
-| relation | 화이트리스트: 소속 / 마감일 / 연락처 / 담당 / 선행조건 |
+| relation | 관계 타입 (전체 화이트리스트 → [`04_extractor.md`](04_extractor.md) §2.3) |
 | source_doc_ids | 근거 문서 목록 |
 
 ## 2. 관계 예시
 
-- `공지` —소속→ `학과`
-- `장학금` —마감일→ `날짜`
+- `공지` —안내→ `장학금`
+- `장학금` —담당→ `부서`
 - `담당자` —연락처→ `전화/이메일`
 - `절차` —선행조건→ `절차`
+
+> `마감일`·`금액` 등은 관계가 아니라 엔티티 `attributes`에 담는다([`04_extractor.md`](04_extractor.md) §2.1).
 
 ## 3. 불변식
 

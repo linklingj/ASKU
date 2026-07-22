@@ -3,7 +3,7 @@
 크롤링·추출·검색이 공유하는 영속 계층. **Postgres 하나**로 관계형 메타데이터,
 벡터 검색(pgvector), 경량 그래프(엣지 테이블)를 모두 담는다.
 
-> **결정 (PLAN 대비 변경)**
+> **결정**
 > - Vector DB: Qdrant/Chroma 후보 → **pgvector**. 별도 프로세스 없이 Postgres 통합.
 > - Graph DB: Neo4j → **Postgres `edges` 테이블**. 경량 그래프는 1-hop 조인이면 충분.
 > - Neo4j는 그래프 순회가 실제 병목으로 측정될 때만 재검토한다(YAGNI).
@@ -53,7 +53,7 @@ CREATE TABLE documents (
 CREATE TABLE entities (
   entity_id       BIGSERIAL PRIMARY KEY,
   school_id       BIGINT NOT NULL REFERENCES schools(school_id),
-  type            TEXT NOT NULL,        -- 화이트리스트: 학과/공지/일정/장학금/담당자/연락처/규정/시설/절차
+  type            TEXT NOT NULL,        -- 엔티티 타입 화이트리스트 → 04_extractor.md §2.2
   name            TEXT NOT NULL,
   norm_key        TEXT NOT NULL,        -- 정규화 키(중복 병합용). (school_id, norm_key) 유니크
   attributes      JSONB DEFAULT '{}',
@@ -66,7 +66,7 @@ CREATE TABLE edges (
   school_id         BIGINT NOT NULL REFERENCES schools(school_id),
   source_entity_id  BIGINT NOT NULL REFERENCES entities(entity_id),
   target_entity_id  BIGINT NOT NULL REFERENCES entities(entity_id),
-  relation          TEXT NOT NULL,      -- 화이트리스트: 소속/마감일/연락처/담당/선행조건
+  relation          TEXT NOT NULL,      -- 관계 타입 화이트리스트 → 04_extractor.md §2.3
   source_doc_ids    BIGINT[] DEFAULT '{}'
 );
 
