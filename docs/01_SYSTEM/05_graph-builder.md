@@ -39,10 +39,58 @@ extracted(청크, 엔티티, 관계)
 ## 4. 공개 인터페이스
 
 ```
-build(school_id, doc_id, chunk_text, extracted) -> { entity_ids, edge_ids }
+build(school_id, extracted_chunk) -> { doc_id, entity_ids, edge_ids }
 ```
 
-- `extracted`는 추출기의 `extract()` 반환값([`04_extractor.md`](04_extractor.md)).
-- 근거 추적: 이 문서에서 나온 모든 엔티티·엣지의 `source_doc_ids`에 `doc_id`를 넣는다.
+- `extracted_chunk`는 Extractor가 만든 청크 본문·메타데이터와 `extract()` 반환값을 함께 담는다([`04_extractor.md`](04_extractor.md)).
+- Builder는 `upsert_document`가 반환한 `doc_id`를 사용해 엔티티·엣지를 저장한다. 따라서 `doc_id`는 입력이 아니라 결과에 포함된다.
+- 근거 추적: 이 문서에서 나온 모든 엔티티·엣지의 `source_doc_ids`에 생성된 `doc_id`를 넣는다.
 
 관련: [`04_extractor.md`](04_extractor.md), [`06_storage.md`](06_storage.md), [`10_data-model.md`](10_data-model.md).
+
+## 5. 책임 범위와 입출력
+
+Graph Builder는 Extractor의 이름 기반 엔티티·관계를 Storage의 `documents`, `entities`, `edges` 레코드로 바꾼다. 문서 해시의 최초 계산·삭제 감지·재크롤링 일정·질의 답변은 담당하지 않는다.
+
+### 입력: `ExtractedChunk`
+
+Extractor §4의 `school_id`, `source_url`, `title`, `content`, `chunk_index`, `content_hash`, `crawled_at`, `entities`, `relations`, `extraction_status`를 받는다. `complete`와 `partial`은 처리하되, 경고가 있는 항목의 저장 기준은 현재 화이트리스트 검증 결과에 따른다.
+
+### 출력: `BuildResult`
+
+```json
+{
+  "school_id": 1,
+  "source_url": "https://...",
+  "content_hash": "sha256",
+  "doc_id": 101,
+  "entity_ids": [12, 13],
+  "edge_ids": [33],
+  "status": "complete | partial | failed",
+  "warnings": []
+}
+```
+
+성공 시 `school_id`, `source_url`, `content_hash`, `doc_id`, `status`가 필수다. 임베딩·엔티티·엣지 일부만 실패하면 성공한 ID와 `warnings`를 남긴 `partial` 결과를 반환한다. 입력 스키마 오류 또는 저장 불가 오류는 `error_code`, `retryable`, `warnings`가 포함된 실패 결과로 기록한다.
+
+## 6. 연동과 오류 처리
+
+| 대상 | 방향 | 계약 |
+|---|---|---|
+| Extractor | 이전 | `ExtractedChunk`를 받는다. |
+| LLM Provider | 의존 | 로컬 bge-m3의 `embed(text) -> vector(1024)`를 호출한다. |
+| Storage | 다음 | `upsert_document`, `upsert_entity`, `upsert_edge`만 호출한다. |
+| Scheduler | 간접 | 만료가 확정된 문서를 재처리·만료 대상으로 받는다. |
+
+- `school_id + source_url + content_hash + chunk_index`이 같은 청크는 Storage의 해시 조회를 통해 재처리하지 않는다.
+- 관계의 양 끝을 `norm_key`로 해소하지 못하면 해당 엣지만 건너뛰고 로그·경고를 남긴다.
+- 임베딩 오류는 제한 재시도 대상이며, 모델·저장소의 부분 실패에서는 성공한 문서·엔티티와 실패한 벡터/엣지를 구분해 기록한다. 재시도 횟수와 보상 작업은 **미정**이다.
+- 새 버전은 upsert로 반영한다. 삭제·만료의 최종 판정은 Scheduler가 하며, Builder는 확정된 만료 요청에 대해서만 기존 기여분을 비활성화 또는 삭제한다. 실제 보존 방식은 Storage의 미정 사항이다.
+- `graph_builder_version`을 포함한 생성 이력·병합 판단을 남기는 방식을 권장하지만, 버전 저장 스키마는 아직 확정하지 않았다.
+
+## 7. 확장 가능성과 미정 사항
+
+- `school_id`와 `(school_id, norm_key)`를 모든 병합·조회 경계에 적용해 멀티학교 오염을 막는다.
+- 새 엔티티·관계는 Extractor의 화이트리스트를 먼저 확장한 뒤 Builder가 그대로 수용한다.
+- 정규화 사전과 임베딩 제공자는 교체 가능하다. 임베딩 기반 클러스터링·multi-hop/community 그래프는 현재 확정 범위가 아니다.
+- 구현 전 팀은 동의어 사전의 소유·검토 방식, `partial` 결과의 최소 저장 기준, 문서·그래프 만료의 물리 삭제 여부, 재처리 큐와 생성 이력 보존 기간을 정해야 한다.
