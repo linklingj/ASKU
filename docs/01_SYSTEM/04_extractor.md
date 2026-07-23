@@ -150,3 +150,68 @@ extract(chunk_text) -> { entities: [...], relations: [...] }
 - 근거 추적: 호출자가 각 청크의 `doc_id`를 알고 있어, 산출물을 해당 문서에 귀속시킨다.
 
 관련: [`05_graph-builder.md`](05_graph-builder.md), [`03_crawler.md`](03_crawler.md).
+
+## 4. 시스템 경계와 입출력 계약
+
+### 입력: `CrawledPage`
+
+Crawler가 전달하는 `school_id`, `source_url`, `canonical_url`, `raw_html`, `content_hash`, `fetched_at`, `crawl_status`와 목록 메타데이터 힌트를 받는다. `crawl_status`가 `new` 또는 `changed`인 페이지가 대상이다. 첨부파일 URL은 입력으로 받되, PDF/HWP/이미지 본문 추출 지원 범위는 아직 미정이다.
+
+### 출력: `ExtractedChunk`
+
+```json
+{
+  "school_id": 1,
+  "source_url": "https://...",
+  "title": "2026학년도 2학기 성적우수 장학금 안내",
+  "content": "정제된 청크 본문",
+  "chunk_index": 0,
+  "content_hash": "sha256",
+  "crawled_at": "ISO-8601",
+  "entities": [{"type":"공지","name":"...","attributes":{}}],
+  "relations": [{"source":"...","relation":"안내","target":"..."}],
+  "extraction_status": "complete | partial"
+}
+```
+
+`school_id`, `source_url`, `content`, `chunk_index`, `content_hash`, `entities`, `relations`, `extraction_status`는 필수다. Graph Builder가 문서 upsert 후 `doc_id`를 부여하므로 Extractor 출력에는 영속 ID가 없다. 원문과 정제 데이터는 `school_id + source_url + content_hash + chunk_index`로 연결한다.
+
+본문을 만들 수 없는 경우에는 `ExtractionFailure`를 반환한다.
+
+```json
+{"school_id":1,"source_url":"https://...","content_hash":"sha256","error_code":"...","retryable":false,"warnings":[...]}
+```
+
+### 책임 경계
+
+- Crawler가 HTML 수집·URL 중복·변경 감지를 맡고, Extractor는 HTML 정제·청킹·구조화 추출을 맡는다.
+- 사이트별 선택자·게시판 파서는 Extractor 어댑터에 두며, 청킹·화이트리스트 검증·LLM JSON 해석은 공통 로직으로 둔다.
+- Graph Builder가 정규화 키 생성, 엔티티 병합, 임베딩, Storage 호출을 맡는다.
+
+## 5. 처리·오류 흐름
+
+1. 입력의 필수 필드와 해시를 검증한다.
+2. 학교별 파서가 있으면 적용하고, 없으면 공통 HTML 정제기로 제목·본문·첨부 링크를 추출한다.
+3. 공지 1건을 기본 청크로 만들고, 긴 문서만 §1 규칙으로 분할한다.
+4. 각 청크에 LLM Provider의 `extract(text)`를 호출한다.
+5. JSON을 §2의 타입·관계 화이트리스트로 검증한다. 목록 밖 타입·관계는 버리고 경고를 남긴다.
+6. 유효 청크는 `complete`, 일부 필드 또는 청크가 실패한 경우는 `partial`로 Graph Builder에 전달한다.
+
+- HTML 선택자 실패는 공통 정제기로 폴백하고 URL·선택자 정보를 경고로 남긴다.
+- 게시일·부서·분류 등 선택 필드가 없으면 `null` 또는 빈 속성으로 표현하며 추정하지 않는다.
+- LLM의 일시 오류는 제한 재시도 대상이다. 횟수와 모델 폴백은 **미정**이다.
+- 같은 `school_id + source_url + content_hash + chunk_index`은 재처리하지 않는다. Extractor 버전이 바뀌어 재추출해야 할 때의 버전 키 관리 방식은 **미정**이다.
+- 한 청크 실패가 다른 청크 결과를 폐기하지 않으며, 부분 결과와 경고를 실행 이력에 기록한다.
+
+## 6. 연동·확장·미정 사항
+
+| 대상 | 방향 | 계약 |
+|---|---|---|
+| Crawler | 이전 | 신규·변경 `CrawledPage`를 받는다. |
+| LLM Provider | 의존 | `extract(text) -> {entities, relations}`를 호출한다. |
+| Graph Builder | 다음 | `complete`·`partial` `ExtractedChunk`를 전달한다. |
+| Storage | 간접 | 직접 SQL을 쓰지 않으며 Graph Builder를 통해 정제 청크를 저장한다. |
+
+- 새 문서 유형은 화이트리스트의 타입·속성 규칙을 팀 합의로 확장한다. 임의의 오픈 타입은 허용하지 않는다.
+- 사이트별 파서, 규칙 기반 추출, LLM 제공자는 교체 가능하지만 같은 출력 계약을 유지한다.
+- 구현 전에는 첨부파일 지원 형식, 유형별 필수 속성, 신뢰도 기준, 사이트별 파서 등록·검증 절차를 결정해야 한다.

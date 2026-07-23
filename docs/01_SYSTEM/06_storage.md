@@ -94,7 +94,7 @@ upsert_edge(school_id, source_entity_id, target_entity_id, relation, source_doc_
 
 vector_search(school_id, query_embedding, k) -> [doc_id, source_url, title, content, score]
 neighbors(school_id, entity_ids, hops=1) -> [entity, edge, source_doc_ids]
-get_documents(doc_ids) -> [document]
+get_documents(school_id, doc_ids) -> [document]
 
 doc_hash_exists(school_id, source_url, content_hash) -> bool   # 증분 갱신용
 ```
@@ -102,3 +102,36 @@ doc_hash_exists(school_id, source_url, content_hash) -> bool   # 증분 갱신�
 `upsert_*`는 유니크 키 충돌 시 갱신(증분 업데이트 지원).
 관련: [`05_graph-builder.md`](05_graph-builder.md), [`07_graph-rag-engine.md`](07_graph-rag-engine.md),
 [`10_data-model.md`](10_data-model.md).
+
+## 5. 책임 범위와 데이터 수명
+
+Storage는 다음 데이터를 Postgres에 영속하고 공개 인터페이스로만 제공한다.
+
+| 데이터 | 생산자 | 저장 위치·역할 |
+|---|---|---|
+| School | Backend API | `schools`: 학교 격리와 수집 주기 기준 |
+| 정제 청크·임베딩 | Graph Builder | `documents`: 검색·인용의 최소 단위 |
+| 엔티티·속성 | Graph Builder | `entities`: 그래프 노드와 근거 문서 목록 |
+| 관계 | Graph Builder | `edges`: 1-hop 그래프 확장 |
+| 실행·오류 이력 | 각 시스템 | 별도 실행 이력 저장소 또는 테이블 — 스키마는 미정 |
+
+Crawler의 원본 HTML은 Extractor로 전달되는 처리 입력이다. 현재 확정 스키마는 원문 URL과 정제 청크를 근거로 보관하며, 원본 HTML·첨부파일 바이너리의 영구 저장은 확정되지 않았다. 이를 필요로 하면 원문 저장소 또는 별도 테이블을 추가하되 `source_url`과 해시 연결을 유지해야 한다.
+
+Storage는 URL 수집·HTML 파싱·LLM 호출·엔티티 의미 판단·스케줄 결정을 하지 않는다. 모든 업무 시스템은 이 문서의 공개 인터페이스를 사용하며 SQL과 DB 클라이언트를 직접 노출하지 않는다.
+
+## 6. Upsert, 삭제, 오류 처리
+
+- `upsert_document`는 `school_id + source_url + content_hash + chunk_index` 기준으로 같은 청크를 중복 생성하지 않아야 한다. 실제 유니크 제약의 정확한 DDL은 구현 전 확정한다.
+- `upsert_entity`는 `(school_id, norm_key)` 충돌 시 `attributes`, `source_doc_ids`를 병합한다.
+- `upsert_edge`의 중복 키(학교·양 끝 엔티티·관계·근거 문서 집합)는 **미정**이다. 구현 전에 명시적 제약을 정해야 한다.
+- 쓰기 요청은 요청 ID 또는 입력 멱등 키를 실행 이력에 남겨 네트워크 재시도 중 중복 반영을 막는다.
+- pgvector 임베딩과 관계 테이블 반영이 일부만 성공하면 `partial` 상태, 반영 대상, 재시도 가능 여부를 기록한다. 분산 트랜잭션을 전제하지 않으며 보상·재처리 방식은 **미정**이다.
+- Crawler의 단일 미관측만으로 삭제하지 않는다. Scheduler가 삭제·만료를 확정한 뒤에만 문서·관련 근거를 만료 또는 물리 삭제한다. 만료 상태 컬럼과 보존 기간은 **미정**이다.
+
+## 7. 조회·백업·확장
+
+- RAG 조회는 모든 `vector_search`, `neighbors`, `get_documents` 호출에 `school_id` 필터를 강제한다.
+- 인덱스는 기존 HNSW 벡터 인덱스, `documents(school_id)`, `entities(school_id, norm_key)`, `edges(school_id, source_entity_id)`를 기본으로 한다. 해시·URL 조합 인덱스 추가 여부는 실제 데이터 규모를 측정해 결정한다.
+- 백업 범위는 `schools`, `documents`, `entities`, `edges`, 실행 이력, 그리고 추후 도입될 원문 저장소다. 백업 주기, RPO/RTO, 복구 리허설, 접근 제어·개인정보 마스킹은 **미정**이다.
+- 단일 Postgres + pgvector + edges 테이블은 현재 확정 구조다. 그래프 순회가 측정상 병목일 때만 Neo4j 등 별도 Graph DB를 재검토한다.
+- 새 데이터 유형은 공통 `school_id`, 출처, 해시·버전 연결을 유지한 뒤 Extractor 화이트리스트와 Storage 스키마를 함께 변경한다.
