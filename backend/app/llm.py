@@ -26,8 +26,7 @@ class Generator(abc.ABC):
     def generate(self, prompt: str, context: str) -> str:
         """prompt(질문·지시)와 context(근거 청크·관계 문장)로 답변을 생성한다.
 
-        '컨텍스트에만 근거해 답하라'는 제약과 근거 부족 시 보류는 호출자
-        (07_graph-rag-engine)의 책임이고, 여기서는 str in/out 계약만 정의한다.
+        '컨텍스트에만 근거해 답하라'는 제약과 근거 부족 시 보류는 호출자의 책임이고, 여기서는 str in/out 계약만 정의한다.
         """
 
 
@@ -38,14 +37,13 @@ class Embedder(abc.ABC):
     def embed(self, text: str) -> list[float]:
         """text 를 dense 벡터로 변환한다.
 
-        차원은 저장소 documents.embedding(vector(1024)) 및 models.EMBEDDING_DIM 과
-        반드시 일치한다(06_storage.md). 모델을 바꾸면 차원·재임베딩이 함께 따라온다.
+        차원은 저장소 documents.embedding(vector(1024)) 및 models.EMBEDDING_DIM 과 반드시 일치한다(06_storage.md).
         bge-m3 의 sparse·ColBERT 표현은 현재 스키마가 저장하지 않는다(dense 전용).
         """
 
 
 class Extraction(BaseModel):
-    """extract() 결과 = 04 화이트리스트를 따르는 이름 기반 엔티티·관계.
+    """extract() 결과 = 화이트리스트를 따르는 이름 기반 엔티티·관계.
 
     영속 ID 는 없다(그래프 빌더가 부여). 그래프 빌더 입력(ExtractedChunk)의
     entities·relations 부분과 같은 형태다(schemas.py).
