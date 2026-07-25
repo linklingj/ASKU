@@ -13,6 +13,7 @@ GeminiProvider 는 generate·extract 만). 호출자는 필요한 능력에만 �
 from __future__ import annotations
 
 import abc
+import os
 
 from pydantic import BaseModel, Field
 
@@ -62,4 +63,50 @@ class Extractor(abc.ABC):
         따르고, 제공자는 각 API 의 JSON 강제 출력 기능으로 스키마를 강제한다.
         목록 밖 타입·관계 폐기(검증)는 추출기(04)가 맡는다.
         """
+
+
+class GeminiProvider(Generator, Extractor):
+    """Gemini API 로 답변 생성·구조화 추출을 담당한다(임베딩은 LocalEmbedder 몫).
+
+    api_key·model 은 환경변수/인자로 주입한다(하드코딩 금지): `GEMINI_API_KEY`,
+    `GEMINI_MODEL`. SDK(google-genai)는 생성 시에만 지연 import 한다 — 인터페이스만
+    쓰는 모듈에 무거운 의존을 강제하지 않기 위해서다.
+    """
+
+    # 형식(JSON 모양)만 지시한다. 타입·관계 화이트리스트는 04(추출기)가 소유·검증하므로
+    # 여기 프롬프트에 옮겨 담지 않는다(단일 기준 중복 방지).
+    _EXTRACT_INSTRUCTION = (
+        "다음 대학 공지 본문에서 엔티티(노드)와 관계를 추출해 JSON 으로만 응답하라.\n"
+        '형식: {"entities":[{"type":"타입","name":"이름","attributes":{}}],'
+        '"relations":[{"source":"엔티티이름","relation":"관계","target":"엔티티이름"}]}\n'
+        "source/target 은 엔티티 name 문자열이다. 날짜·금액·인원 등은 관계가 아니라 "
+        "해당 엔티티의 attributes 에 담는다. 타입·관계 화이트리스트 검증은 추출기가 "
+        "하므로 형식만 지키면 된다."
+    )
+
+    def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
+        from google import genai
+
+        key = api_key or os.getenv("GEMINI_API_KEY")
+        self._model = model or os.getenv("GEMINI_MODEL")
+        if not key or not self._model:
+            raise ValueError("GEMINI_API_KEY·GEMINI_MODEL 를 환경변수/인자로 주입해야 한다")
+        self._client = genai.Client(api_key=key)
+
+    def generate(self, prompt: str, context: str) -> str:
+        resp = self._client.models.generate_content(
+            model=self._model,
+            contents=f"[컨텍스트]\n{context}\n\n[요청]\n{prompt}",
+        )
+        return resp.text
+
+    def extract(self, text: str) -> Extraction:
+        from google.genai import types
+
+        resp = self._client.models.generate_content(
+            model=self._model,
+            contents=f"{self._EXTRACT_INSTRUCTION}\n\n본문:\n{text}",
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        return Extraction.model_validate_json(resp.text)
 

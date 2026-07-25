@@ -1,1 +1,4 @@
 pydantic>=2
+
+# LLM Provider 구현체별 의존 (지연 import — 해당 제공자를 쓸 때만 필요)
+google-genai        # GeminiProvider: 답변 생성·구조화 추출
