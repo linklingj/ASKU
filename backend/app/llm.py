@@ -17,6 +17,7 @@ import os
 
 from pydantic import BaseModel, Field
 
+from app.models import EMBEDDING_DIM
 from app.schemas import ExtractedEntity, ExtractedRelation
 
 
@@ -109,4 +110,26 @@ class GeminiProvider(Generator, Extractor):
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
         return Extraction.model_validate_json(resp.text)
+
+
+class LocalEmbedder(Embedder):
+    """로컬 bge-m3 임베딩 — dense 전용. sparse·ColBERT 표현은 뽑지 않는다(저장소가
+    dense `vector(1024)` 만 쓰기 때문, 06_storage.md). 모델명은 `BGE_M3_MODEL` 로
+    덮어쓸 수 있다. FlagEmbedding(torch 등)은 생성 시에만 지연 import 한다.
+    """
+
+    def __init__(self, *, model: str | None = None, use_fp16: bool = True) -> None:
+        from FlagEmbedding import BGEM3FlagModel
+
+        name = model or os.getenv("BGE_M3_MODEL", "BAAI/bge-m3")
+        self._model = BGEM3FlagModel(name, use_fp16=use_fp16)
+
+    def embed(self, text: str) -> list[float]:
+        out = self._model.encode(
+            [text], return_dense=True, return_sparse=False, return_colbert_vecs=False
+        )
+        vec = out["dense_vecs"][0]
+        if len(vec) != EMBEDDING_DIM:  # 저장소 vector(1024) 와 어긋나면 조기 실패
+            raise ValueError(f"임베딩 차원 {len(vec)} != EMBEDDING_DIM {EMBEDDING_DIM}")
+        return [float(x) for x in vec]
 
