@@ -51,11 +51,3 @@ result = BuildResult.model_validate(json_payload)   # 검증 실패 시 Validati
 | ④ | 임베딩 차원 = 1024 | **코드**: `Document.embedding` 길이 검증, 상수 `EMBEDDING_DIM` |
 
 추가로 `BuildResult`는 `status`↔필드 계약을 강제한다: `failed`면 `error_code` 필수, 그 외엔 `doc_id` 필수.
-
-## 자체 점검
-
-`backend/tests/test_models.py` — 엔터티 불변식을 검증한다.
-
-```bash
-cd backend && python -m pytest tests/ -q
-```
