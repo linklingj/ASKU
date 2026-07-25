@@ -133,3 +133,24 @@ class LocalEmbedder(Embedder):
             raise ValueError(f"임베딩 차원 {len(vec)} != EMBEDDING_DIM {EMBEDDING_DIM}")
         return [float(x) for x in vec]
 
+
+class OllamaProvider(Generator):
+    """로컬 Ollama 로 답변을 생성한다(답변 로컬화 옵션, 08 §3). model 은
+    `OLLAMA_MODEL`, 엔드포인트는 `OLLAMA_HOST` 로 주입한다. ollama SDK 는 지연 import.
+    """
+
+    def __init__(self, *, model: str | None = None, host: str | None = None) -> None:
+        import ollama
+
+        self._model = model or os.getenv("OLLAMA_MODEL")
+        if not self._model:
+            raise ValueError("OLLAMA_MODEL 를 환경변수/인자로 주입해야 한다")
+        self._client = ollama.Client(host=host or os.getenv("OLLAMA_HOST"))
+
+    def generate(self, prompt: str, context: str) -> str:
+        resp = self._client.generate(
+            model=self._model,
+            prompt=f"[컨텍스트]\n{context}\n\n[요청]\n{prompt}",
+        )
+        return resp["response"]
+
