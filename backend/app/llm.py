@@ -14,6 +14,10 @@ from __future__ import annotations
 
 import abc
 
+from pydantic import BaseModel, Field
+
+from app.schemas import ExtractedEntity, ExtractedRelation
+
 
 class Generator(abc.ABC):
     """답변 생성 능력. 근거 컨텍스트에 기반한 답변 문자열을 낸다."""
@@ -38,3 +42,26 @@ class Embedder(abc.ABC):
         반드시 일치한다(06_storage.md). 모델을 바꾸면 차원·재임베딩이 함께 따라온다.
         bge-m3 의 sparse·ColBERT 표현은 현재 스키마가 저장하지 않는다(dense 전용).
         """
+
+
+class Extraction(BaseModel):
+    """extract() 결과 = 04 화이트리스트를 따르는 이름 기반 엔티티·관계.
+
+    영속 ID 는 없다(그래프 빌더가 부여). 그래프 빌더 입력(ExtractedChunk)의
+    entities·relations 부분과 같은 형태다(schemas.py).
+    """
+
+    entities: list[ExtractedEntity] = Field(default_factory=list)
+    relations: list[ExtractedRelation] = Field(default_factory=list)
+
+
+class Extractor(abc.ABC):
+    """구조화 추출 능력. 텍스트에서 엔티티·관계를 뽑는다."""
+
+    @abc.abstractmethod
+    def extract(self, text: str) -> Extraction:
+        """text 에서 엔티티·관계를 추출한다. 출력은 04_extractor.md 화이트리스트를
+        따르고, 제공자는 각 API 의 JSON 강제 출력 기능으로 스키마를 강제한다.
+        목록 밖 타입·관계 폐기(검증)는 추출기(04)가 맡는다.
+        """
+
