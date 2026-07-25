@@ -13,7 +13,8 @@ backend/                FastAPI 백엔드
     rag.py              검색 + 답변 생성 (벡터 → Graph RAG로 확장)
     llm.py              LLM 추상화 (로컬/API 라우팅)
     storage.py          Vector/Graph DB · 원문 저장 접근
-    models.py           데이터 모델 (School, Document, 노드/엣지)
+    models.py           영속 엔터티 (School, Document, 노드/엣지)
+    schemas.py          파이프라인 계약 DTO (CrawlRequest/CrawledPage/ExtractedChunk/BuildResult)
   tests/
 frontend/               React/Next.js 프론트엔드
 docs/                   설계·협업 문서 (00_BASICS / 01_SYSTEM / 02_FEATURES)
