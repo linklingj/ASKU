@@ -54,7 +54,7 @@ result = BuildResult.model_validate(json_payload)   # 검증 실패 시 Validati
 
 ## 자체 점검
 
-`backend/tests/test_models.py` · `test_schemas.py` — 불변식과 계약을 검증한다.
+`backend/tests/test_models.py` — 엔터티 불변식을 검증한다.
 
 ```bash
 cd backend && python -m pytest tests/ -q
