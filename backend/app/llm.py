@@ -25,3 +25,16 @@ class Generator(abc.ABC):
         '컨텍스트에만 근거해 답하라'는 제약과 근거 부족 시 보류는 호출자
         (07_graph-rag-engine)의 책임이고, 여기서는 str in/out 계약만 정의한다.
         """
+
+
+class Embedder(abc.ABC):
+    """임베딩 능력. 텍스트를 dense 벡터로 만든다."""
+
+    @abc.abstractmethod
+    def embed(self, text: str) -> list[float]:
+        """text 를 dense 벡터로 변환한다.
+
+        차원은 저장소 documents.embedding(vector(1024)) 및 models.EMBEDDING_DIM 과
+        반드시 일치한다(06_storage.md). 모델을 바꾸면 차원·재임베딩이 함께 따라온다.
+        bge-m3 의 sparse·ColBERT 표현은 현재 스키마가 저장하지 않는다(dense 전용).
+        """
