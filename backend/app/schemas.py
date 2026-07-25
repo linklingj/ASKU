@@ -8,13 +8,9 @@
 여기 DTO는 영속 엔터티(models.py)와 다르다: DB PK(doc_id·entity_id…)가 없고,
 Extractor 산출 엔티티/관계는 아직 ID 없는 '이름 기반'이다(빌더가 ID 부여).
 
-공통 ID 규칙(이슈 #8):
-  - DB PK = BIGSERIAL → models.py 에서 int | None.
-  - 실행 추적 = crawl_id(UUID) → 아래 crawl 계열 DTO 에서 UUID 타입으로 강제.
-
 공통 필드 강제:
-  - school_id: 모든 경계 넘는 DTO 에 필수(학교 격리, 불변식 ②).
-  - source_url / content_hash: 근거 추적·증분 갱신 키(불변식 ①).
+  - school_id: 모든 경계 넘는 DTO 에 필수.
+  - source_url / content_hash: 근거 추적·증분 갱신 키.
 """
 
 from __future__ import annotations
@@ -45,7 +41,7 @@ class Attachment(BaseModel):
 
 
 class ExtractedEntity(BaseModel):
-    """추출된 이름 기반 엔티티(ID·school_id 없음, 빌더가 부여). type→04 §2.2."""
+    """추출된 이름 기반 엔티티(ID·school_id 없음, 빌더가 부여)"""
 
     type: str
     name: str
@@ -53,14 +49,14 @@ class ExtractedEntity(BaseModel):
 
 
 class ExtractedRelation(BaseModel):
-    """추출된 이름 기반 관계. source/target 은 엔티티 이름 문자열. relation→04 §2.3."""
+    """추출된 이름 기반 관계. source/target 은 엔티티 이름 문자열"""
 
     source: str
     relation: str
     target: str
 
 
-# ── Crawler DTO (03_crawler.md §3) ─────────────────────────────────
+# ── Crawler DTO ─────────────────────────────────
 
 
 class CrawlRequest(BaseModel):
