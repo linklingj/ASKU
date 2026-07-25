@@ -10,16 +10,28 @@
 
 ## 1. 인터페이스
 
+능력별 3개(`app/llm.py`). `LLMProvider`는 이 셋을 아우르는 **개념 이름**일 뿐,
+실제 코드는 **능력별 ABC로 분리**한다 — 한 제공자가 셋을 다 구현할 필요가 없기 때문이다
+(예: `LocalEmbedder`는 `embed`만, `GeminiProvider`는 `generate`·`extract`만). 호출자는
+필요한 능력에만 의존한다.
+
 ```
-LLMProvider
- ├─ generate(prompt, context) -> answer:str
- ├─ embed(text) -> vector(1024)
- └─ extract(text) -> { entities: [...], relations: [...] }   # JSON 강제 출력
+Generator.generate(prompt: str, context: str) -> str
+Embedder.embed(text: str) -> list[float]        # 길이 = EMBEDDING_DIM(1024)
+Extractor.extract(text: str) -> Extraction       # JSON 강제 출력
+```
+
+`extract`의 반환 `Extraction`은 이름 기반 엔티티·관계를 담는 pydantic 모델이다(영속 ID 없음,
+`schemas.ExtractedEntity`/`ExtractedRelation` 재사용):
+
+```
+Extraction { entities: [ExtractedEntity], relations: [ExtractedRelation] }
 ```
 
 - `embed`의 차원(1024)은 [`06_storage.md`](06_storage.md) `documents.embedding`과 반드시 일치.
   모델을 바꾸면 스키마 차원과 재임베딩이 함께 따라온다.
 - `extract`의 출력 스키마는 [`04_extractor.md`](04_extractor.md)의 화이트리스트를 따른다.
+  제공자는 **JSON 형식만 강제**하고, 목록 밖 타입·관계 폐기(화이트리스트 검증)는 추출기(04)가 맡는다.
 
 ## 2. 단계별 제공자 지정
 
@@ -35,13 +47,16 @@ LLMProvider
 
 ## 3. 구현체
 
+`app/llm.py`에 구현된 것(실제로 쓰는 것만):
+
 ```
-GeminiProvider / OpenAIProvider              # generate, extract (API)
-LocalEmbedder (bge-m3)               # embed (로컬)
-OllamaProvider                       # 선택: 답변 로컬화 시
+GeminiProvider(Generator, Extractor)   # 답변·추출(API).  키·모델: GEMINI_API_KEY · GEMINI_MODEL
+LocalEmbedder(Embedder)                # 임베딩(로컬 bge-m3).  모델: BGE_M3_MODEL(기본 BAAI/bge-m3)
+OllamaProvider(Generator)              # 선택: 답변 로컬화.  모델·엔드포인트: OLLAMA_MODEL · OLLAMA_HOST
 ```
 
-- API 키·모델명·엔드포인트는 환경변수/설정으로 주입. 코드에 하드코딩 금지.
-- 구조화 출력은 각 API의 JSON/스키마 강제 기능을 사용.
+- API 키·모델명·엔드포인트는 환경변수/설정으로 주입. 코드에 하드코딩 금지. SDK는 **지연 import**(인터페이스만 쓰는 모듈에 무거운 의존을 강제하지 않는다).
+- 구조화 출력: Gemini는 JSON MIME 응답을 받아 `Extraction`으로 파싱한다(자유형 `attributes` 때문에 스키마 강제 대신 pydantic 검증).
+- `OpenAIProvider` 등 대체 제공자는 전환이 필요할 때 같은 인터페이스로 추가한다.
 
 관련: [`04_extractor.md`](04_extractor.md), [`05_graph-builder.md`](05_graph-builder.md), [`07_graph-rag-engine.md`](07_graph-rag-engine.md).
