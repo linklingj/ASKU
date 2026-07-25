@@ -27,14 +27,16 @@ LLMProvider
 
 | 단계 | 제공자 | 이유 |
 |---|---|---|
-| 추출 | API (Claude/GPT) | 구조화 추출 품질이 그래프 전체 품질 결정 |
-| 임베딩 | 로컬 bge-m3 | 다국어·한국어 강함, 무료, hybrid 지원 |
+| 추출 | API (Gemini) | 구조화 추출 품질이 그래프 전체 품질 결정 |
+| 임베딩 | 로컬 bge-m3 | 다국어·한국어 강함, 무료, hybrid 지원[^hybrid] |
 | 답변 | API 또는 중형 로컬 | 근거 기반 요약이라 중형이면 충분 |
+
+[^hybrid]: **"hybrid 지원"의 의미** — bge-m3는 한 번의 인코딩으로 dense(밀집)·sparse(어휘)·multi-vector(ColBERT) 세 표현을 낼 수 있다는 뜻이다. 다만 현재 [`06_storage.md`](06_storage.md) 스키마는 dense(`vector(1024)`)만 저장하므로 sparse/ColBERT는 **아직 쓰지 않는 잠재 역량**이다(쓰려면 sparse 컬럼·인덱스 추가 필요). 이 "hybrid"(임베딩 **표현** 수준)는 [`07_graph-rag-engine.md`](07_graph-rag-engine.md)의 "hybrid"(벡터 top-k + 그래프 1-hop, 검색 **전략** 수준)와 다른 층위의 용어다.
 
 ## 3. 구현체
 
 ```
-AnthropicProvider / OpenAIProvider   # generate, extract (API)
+GeminiProvider / OpenAIProvider              # generate, extract (API)
 LocalEmbedder (bge-m3)               # embed (로컬)
 OllamaProvider                       # 선택: 답변 로컬화 시
 ```
