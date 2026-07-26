@@ -57,7 +57,7 @@ CREATE TABLE entities (
   name            TEXT NOT NULL,
   norm_key        TEXT NOT NULL,        -- 정규화 키(중복 병합용). (school_id, norm_key) 유니크
   attributes      JSONB DEFAULT '{}',
-  source_doc_ids  BIGINT[] DEFAULT '{}' -- 근거 문서
+  source_doc_ids  BIGINT[] NOT NULL     -- 근거 문서(최소 1개)
 );
 
 -- 엣지(관계)
@@ -67,7 +67,7 @@ CREATE TABLE edges (
   source_entity_id  BIGINT NOT NULL REFERENCES entities(entity_id),
   target_entity_id  BIGINT NOT NULL REFERENCES entities(entity_id),
   relation          TEXT NOT NULL,      -- 관계 타입 화이트리스트 → 04_extractor.md §2.3
-  source_doc_ids    BIGINT[] DEFAULT '{}'
+  source_doc_ids    BIGINT[] NOT NULL   -- 근거 문서(최소 1개)
 );
 
 CREATE INDEX ON documents USING hnsw (embedding vector_cosine_ops);
@@ -122,10 +122,10 @@ Storage는 URL 수집·HTML 파싱·LLM 호출·엔티티 의미 판단·스케�
 ## 6. Upsert, 삭제, 오류 처리
 
 - `upsert_document`는 `school_id + source_url + content_hash + chunk_index` 기준으로 같은 청크를 중복 생성하지 않아야 한다. 실제 유니크 제약의 정확한 DDL은 구현 전 확정한다.
-- `upsert_entity`는 `(school_id, norm_key)` 충돌 시 `attributes`, `source_doc_ids`를 병합한다.
-- `upsert_edge`의 중복 키(학교·양 끝 엔티티·관계·근거 문서 집합)는 **미정**이다. 구현 전에 명시적 제약을 정해야 한다.
-- 쓰기 요청은 요청 ID 또는 입력 멱등 키를 실행 이력에 남겨 네트워크 재시도 중 중복 반영을 막는다.
-- pgvector 임베딩과 관계 테이블 반영이 일부만 성공하면 `partial` 상태, 반영 대상, 재시도 가능 여부를 기록한다. 분산 트랜잭션을 전제하지 않으며 보상·재처리 방식은 **미정**이다.
+- `upsert_entity`는 `(school_id, norm_key)` 충돌 시 `source_doc_ids`를 중복 없이 누적하고, 같은 속성 키는 새 문서의 값으로 갱신한다. 속성 이력 관리는 MVP 범위 밖이다.
+- `upsert_edge`는 두 엔티티가 요청 `school_id`에 모두 속할 때만 생성한다. `school_id + source_entity_id + target_entity_id + relation`을 중복 키로 사용하며, 같은 관계는 하나의 엣지로 병합하고 `source_doc_ids`에 근거 문서를 누적한다.
+- MVP는 문서·엔티티·엣지의 유니크 키를 멱등 키로 사용해 중복 반영을 막는다. 실행 이력 테이블과 요청 ID 추적은 Crawler·Scheduler 도입 시 별도로 추가한다.
+- pgvector 임베딩과 관계 테이블 반영이 일부만 성공하면 MVP에서는 오류를 호출자에게 전파한다. 자동 실행 이력, 보상·재처리 큐는 후속 작업으로 유보한다.
 - Crawler의 단일 미관측만으로 삭제하지 않는다. Scheduler가 삭제·만료를 확정한 뒤에만 문서·관련 근거를 만료 또는 물리 삭제한다. 만료 상태 컬럼과 보존 기간은 **미정**이다.
 
 ## 7. 조회·백업·확장
