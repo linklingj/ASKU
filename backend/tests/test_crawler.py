@@ -2,7 +2,18 @@ from datetime import datetime, timezone
 from uuid import uuid4
 import unittest
 
-from app.crawler import CommonNoticeAdapter, Crawler, CrawlSettings, SkkuNoticeAdapter, YonseiNoticeAdapter, html_hash, normalize_detail_url, normalize_url
+from app.crawler import (
+    CommonNoticeAdapter,
+    Crawler,
+    CrawlSettings,
+    HongikNoticeAdapter,
+    SejongNoticeAdapter,
+    SkkuNoticeAdapter,
+    YonseiNoticeAdapter,
+    html_hash,
+    normalize_detail_url,
+    normalize_url,
+)
 from app.schemas import CrawlRequest, CrawlScope
 
 
@@ -25,9 +36,11 @@ class FakeSession:
     def __init__(self, pages: dict[str, FakeResponse]) -> None:
         self.pages = pages
         self.calls: list[str] = []
+        self.request_headers: list[dict[str, str] | None] = []
 
-    def get(self, url: str, timeout: float) -> FakeResponse:
+    def get(self, url: str, timeout: float, headers: dict[str, str] | None = None) -> FakeResponse:
         self.calls.append(url)
+        self.request_headers.append(headers)
         return self.pages[url]
 
 
@@ -81,6 +94,7 @@ class CrawlerTests(unittest.TestCase):
         self.assertEqual(len(crawler.pages_for_extractor(run)), 2)
         self.assertEqual(run.pages[0].attachments[0].name_hint, "신청서")
         self.assertEqual(run.pages[0].published_at_hint, datetime(2026, 7, 1, tzinfo=timezone.utc))
+        self.assertEqual(session.request_headers[1], {"Referer": "https://example.edu/notice/list.do"})
 
     def test_retryable_failure_is_recorded_after_retry_limit(self) -> None:
         session = FakeSession({"https://example.edu/notice/list.do": FakeResponse(503)})
@@ -135,6 +149,66 @@ class CrawlerTests(unittest.TestCase):
 
         self.assertEqual(next_url, "https://example.edu/notice/list.do?mode=list&article.offset=10")
 
+    def test_sejong_override_reads_metadata_and_next_page(self) -> None:
+        """세종대 실제 목록의 메타데이터와 K2Web 페이지네이션을 검증한다."""
+        html = """
+        <table><tbody><tr class='b-top-box'>
+          <td class='b-num-box'><span class='b-noti'>공지</span></td>
+          <td class='b-td-title b-td-left'><div class='b-title-box'>
+            <a href='?mode=view&amp;articleNo=890806&amp;article.offset=0&amp;articleLimit=10'>
+              <span class='b-title'>학생생활상담소 계약직원 모집</span>
+            </a>
+          </div><div class='b-m-con'><span class='b-writer'>총무과</span><span class='b-date'>2026.07.24</span></div></td>
+          <td>총무과</td><td>2026.07.24</td><td class='b-hit-box'>216</td>
+        </tr></tbody></table>
+        <div class='b-paging'><div class='b-paging-wrap'>
+          <li class='next pager'><a href='?mode=list&amp;articleLimit=10&amp;article.offset=10'
+            title='다음 페이지로 이동하기'><span class='hide'>다음 페이지로 이동하기</span></a></li>
+        </div></div>
+        """
+        listing_url = "https://www.sejong.ac.kr/kor/intro/notice1.do"
+        adapter = SejongNoticeAdapter()
+        item = next(iter(adapter.parse_listing(html, listing_url)))
+
+        self.assertEqual(item.title_hint, "학생생활상담소 계약직원 모집")
+        self.assertEqual(item.author_hint, "총무과")
+        self.assertEqual(item.published_at_hint, datetime(2026, 7, 24, tzinfo=timezone.utc))
+        self.assertEqual(
+            adapter.next_listing_url(html, listing_url),
+            f"{listing_url}?mode=list&articleLimit=10&article.offset=10",
+        )
+
+    def test_hongik_override_reads_metadata_and_next_page(self) -> None:
+        """홍익대 실제 목록의 메타데이터와 K2Web 페이지네이션을 검증한다."""
+        html = """
+        <table><tbody><tr class='b-top-box'>
+          <td class='b-num-box'>1819</td>
+          <td class='b-td-left'><div class='b-title-box'>
+            <div class='b-cate-box'><span class='b-mini-cate'>일반</span></div>
+            <a href='?mode=view&amp;articleNo=154546&amp;article.offset=0&amp;articleLimit=10&amp;noCat=29'>
+              <span class='b-title'>바이오메디컬아티스트 서머캠프 모집</span>
+            </a>
+            <div class='b-m-con'><span class='b-date'>2026.07.24</span></div>
+          </div></td><td>370</td><td>2026.07.24</td>
+        </tr></tbody></table>
+        <div class='b-paging'><div class='b-paging-wrap'>
+          <li class='next pager'><a href='?mode=list&amp;articleLimit=10&amp;article.offset=10'
+            title='다음 페이지로 이동하기'><span class='hide'>다음 페이지로 이동하기</span></a></li>
+        </div></div>
+        """
+        listing_url = "https://www.hongik.ac.kr/kr/newscenter/notice.do"
+        adapter = HongikNoticeAdapter()
+        item = next(iter(adapter.parse_listing(html, listing_url)))
+
+        self.assertEqual(item.title_hint, "바이오메디컬아티스트 서머캠프 모집")
+        self.assertEqual(item.category_hint, "일반")
+        self.assertIsNone(item.author_hint)
+        self.assertEqual(item.published_at_hint, datetime(2026, 7, 24, tzinfo=timezone.utc))
+        self.assertEqual(
+            adapter.next_listing_url(html, listing_url),
+            f"{listing_url}?mode=list&articleLimit=10&article.offset=10",
+        )
+
     def test_policy_rejection_stops_before_fetch(self) -> None:
         session = FakeSession({})
         crawler = Crawler(
@@ -177,13 +251,19 @@ class CrawlerTests(unittest.TestCase):
         html = """
         <dl class='board-list-content-wrap'><dt class='board-list-content-title'><a href='?mode=view&articleNo=1'>학점교류 안내</a></dt>
         <dd class='board-list-content-info'><ul><li>공지</li><li>교무팀</li><li>2026-07-24</li><li>조회수 10</li></ul></dd></dl>
+        <li><a href='?mode=list&amp;articleLimit=10&amp;article.offset=10' class='pg_next' title='다음 페이지로 이동하기'>다음</a></li>
         """
-        item = next(iter(SkkuNoticeAdapter().parse_listing(html, "https://www.skku.edu/skku/campus/skk_comm/notice02.do")))
+        adapter = SkkuNoticeAdapter()
+        item = next(iter(adapter.parse_listing(html, "https://www.skku.edu/skku/campus/skk_comm/notice02.do")))
 
         self.assertEqual(item.title_hint, "학점교류 안내")
         self.assertEqual(item.category_hint, "공지")
         self.assertEqual(item.author_hint, "교무팀")
         self.assertEqual(item.published_at_hint, datetime(2026, 7, 24, tzinfo=timezone.utc))
+        self.assertEqual(
+            adapter.next_listing_url(html, "https://www.skku.edu/skku/campus/skk_comm/notice02.do"),
+            "https://www.skku.edu/skku/campus/skk_comm/notice02.do?mode=list&articleLimit=10&article.offset=10",
+        )
 
 
 if __name__ == "__main__":

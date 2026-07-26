@@ -158,6 +158,40 @@ class YonseiNoticeAdapter(CommonNoticeAdapter):
         return f"{urljoin(page_url, str(page_form['action']))}?{urlencode(params)}"
 
 
+class SejongNoticeAdapter(CommonNoticeAdapter):
+    """세종대 K2Web 공지 목록용 학교별 오버라이드."""
+
+    def parse_listing(self, html: str, page_url: str) -> Iterable[ListingItem]:
+        soup = BeautifulSoup(html, "html.parser")
+        for row in soup.select("tr.b-top-box"):
+            link = row.select_one(".b-title-box a[href*='mode=view'][href*='articleNo']")
+            if link is None or not link.get("href"):
+                continue
+            yield ListingItem(
+                url=urljoin(page_url, str(link["href"])),
+                title_hint=_text_or_none(row.select_one(".b-title")) or _text_or_none(link),
+                author_hint=_text_or_none(row.select_one(".b-writer")),
+                published_at_hint=_parse_date(_text_or_none(row.select_one(".b-date")) or ""),
+            )
+
+
+class HongikNoticeAdapter(CommonNoticeAdapter):
+    """홍익대 K2Web 공지 목록용 학교별 오버라이드."""
+
+    def parse_listing(self, html: str, page_url: str) -> Iterable[ListingItem]:
+        soup = BeautifulSoup(html, "html.parser")
+        for row in soup.select("tr.b-top-box"):
+            link = row.select_one(".b-title-box a[href*='mode=view'][href*='articleNo']")
+            if link is None or not link.get("href"):
+                continue
+            yield ListingItem(
+                url=urljoin(page_url, str(link["href"])),
+                title_hint=_text_or_none(row.select_one(".b-title")) or _text_or_none(link),
+                category_hint=_text_or_none(row.select_one(".b-mini-cate")),
+                published_at_hint=_parse_date(_text_or_none(row.select_one(".b-date")) or ""),
+            )
+
+
 class SkkuNoticeAdapter(CommonNoticeAdapter):
     """성균관대 K2Web ``dl`` 공지 목록용 학교별 오버라이드."""
 
@@ -252,7 +286,9 @@ class Crawler:
                 if not self.robots_allowed(canonical_url):
                     self._policy_failure(request, canonical_url, run)
                     continue
-                html = self._fetch(request, canonical_url, run)
+                # 일부 학교는 목록에서 상세 공지로 이동한 요청만 허용한다.
+                # 브라우저 클릭과 동일하게 현재 목록 URL을 Referer로 전달한다.
+                html = self._fetch(request, canonical_url, run, referer=listing_url)
                 if html is None:
                     continue
                 content_hash = html_hash(html)
@@ -291,10 +327,11 @@ class Crawler:
         """신규·변경 페이지만 다음 단계로 전달한다."""
         return [page for page in run.pages if page.crawl_status in {"new", "changed"}]
 
-    def _fetch(self, request: CrawlRequest, url: str, run: CrawlRun) -> str | None:
+    def _fetch(self, request: CrawlRequest, url: str, run: CrawlRun, *, referer: str | None = None) -> str | None:
         for attempt in range(self.settings.max_retries + 1):
             try:
-                response = self.session.get(url, timeout=self.settings.timeout_seconds)
+                headers = {"Referer": referer} if referer else None
+                response = self.session.get(url, timeout=self.settings.timeout_seconds, headers=headers)
                 if response.status_code == 200:
                     self.sleeper(self.settings.request_delay_seconds)
                     return response.text
