@@ -239,3 +239,4 @@ yarn-error.log*
 neo4j-data/
 qdrant-data/
 .ollama/
+.obsidian/workspace.json
