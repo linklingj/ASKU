@@ -6,7 +6,7 @@
 > **결정**
 > - 청킹: **공지 1건 = 1청크** 기본. 긴 문서만 재분할.
 > - 스키마: **고정 타입 화이트리스트 + JSON 강제 출력**(오픈 스키마 금지 — 노드 타입 폭발 방지).
-> - LLM: **API(Claude/GPT)**. 품질이 그래프 전체 품질을 좌우하고, 등록 시 1회라 비용 집중 지점.
+> - LLM: **API LLM**(현재 구현체: `GeminiProvider`). 품질이 그래프 전체 품질을 좌우하고, 등록 시 1회라 비용 집중 지점.
 >
 > 이 문서가 엔티티·관계 타입의 **단일 기준(source of truth)**이다. 다른 문서(PLAN, 06, 10)는 여기를 참조한다.
 
@@ -155,7 +155,7 @@ extract(chunk_text) -> { entities: [...], relations: [...] }
 
 ### 입력: `CrawledPage`
 
-Crawler가 전달하는 `school_id`, `source_url`, `canonical_url`, `raw_html`, `content_hash`, `fetched_at`, `crawl_status`와 목록 메타데이터 힌트를 받는다. `crawl_status`가 `new` 또는 `changed`인 페이지가 대상이다. 첨부파일 URL은 입력으로 받되, PDF/HWP/이미지 본문 추출 지원 범위는 아직 미정이다.
+Crawler가 전달하는 `school_id`, `source_url`, `canonical_url`, `raw_html`, `content_hash`, `fetched_at`, `crawl_status`와 목록 메타데이터 힌트를 받는다. `crawl_status`가 `new` 또는 `changed`인 페이지가 대상이다. 첨부파일은 URL·파일명 힌트를 LLM 입력에 포함할 수 있으나, MVP에서는 PDF/HWP/이미지 바이너리를 내려받거나 본문을 추출하지 않는다.
 
 ### 출력: `ExtractedChunk`
 
@@ -199,8 +199,8 @@ Crawler가 전달하는 `school_id`, `source_url`, `canonical_url`, `raw_html`, 
 
 - HTML 선택자 실패는 공통 정제기로 폴백하고 URL·선택자 정보를 경고로 남긴다.
 - 게시일·부서·분류 등 선택 필드가 없으면 `null` 또는 빈 속성으로 표현하며 추정하지 않는다.
-- LLM의 일시 오류는 제한 재시도 대상이다. 횟수와 모델 폴백은 **미정**이다.
-- 같은 `school_id + source_url + content_hash + chunk_index`은 재처리하지 않는다. Extractor 버전이 바뀌어 재추출해야 할 때의 버전 키 관리 방식은 **미정**이다.
+- LLM의 일시 오류는 청크별로 **총 3회** 시도한다. 모델 폴백은 현재 지원하지 않는다.
+- Crawler가 `new`·`changed`만 전달해 불필요한 재추출을 막고, 최종 중복 저장 방어는 Graph Builder·Storage의 문서 해시 upsert가 맡는다. Extractor 버전이 바뀌어 재추출해야 할 때의 버전 키 관리 방식은 **미정**이다.
 - 한 청크 실패가 다른 청크 결과를 폐기하지 않으며, 부분 결과와 경고를 실행 이력에 기록한다.
 
 ## 6. 연동·확장·미정 사항
@@ -214,4 +214,4 @@ Crawler가 전달하는 `school_id`, `source_url`, `canonical_url`, `raw_html`, 
 
 - 새 문서 유형은 화이트리스트의 타입·속성 규칙을 팀 합의로 확장한다. 임의의 오픈 타입은 허용하지 않는다.
 - 사이트별 파서, 규칙 기반 추출, LLM 제공자는 교체 가능하지만 같은 출력 계약을 유지한다.
-- 구현 전에는 첨부파일 지원 형식, 유형별 필수 속성, 신뢰도 기준, 사이트별 파서 등록·검증 절차를 결정해야 한다.
+- 유형별 필수 속성, 신뢰도 기준, 사이트별 전용 파서의 등록·검증 기준은 추후 팀 논의가 필요하다. 기본 공통 정제기로 실제 실패가 확인된 학교에만 전용 파서를 추가한다.
