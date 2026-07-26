@@ -203,10 +203,11 @@ class SkkuNoticeAdapter(CommonNoticeAdapter):
             if link is None or not link.get("href"):
                 continue
             values = [item.get_text(" ", strip=True) for item in info]
+            category = values[0] if len(values) >= 1 and not re.fullmatch(r"No\.\s*\d+", values[0]) else None
             yield ListingItem(
                 url=urljoin(page_url, str(link["href"])),
                 title_hint=_text_or_none(link),
-                category_hint=values[0] if len(values) >= 1 else None,
+                category_hint=category,
                 author_hint=values[1] if len(values) >= 2 else None,
                 published_at_hint=_parse_date(values[2]) if len(values) >= 3 else None,
             )
@@ -454,6 +455,9 @@ def html_hash(html: str) -> str:
 
 
 def _parse_date(value: str) -> datetime | None:
+    match = re.search(r"\d{4}[./-]\d{1,2}[./-]\d{1,2}", value)
+    if match is not None:
+        value = match.group(0)
     for pattern in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d"):
         try:
             return datetime.strptime(value, pattern).replace(tzinfo=timezone.utc)

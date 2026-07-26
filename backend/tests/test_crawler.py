@@ -250,7 +250,7 @@ class CrawlerTests(unittest.TestCase):
         html = """
         <div class='boardWrap'><ul><li><a href='/bbs/sc/58/1/artclView.do'>
           <span class='notice-title'>일반공지</span><div class='title'>등록금 안내</div>
-          <div class='etc-area'>재무팀</div><div class='date-area'>2026.07.24</div>
+          <div class='etc-area'>재무팀</div><div class='date-area'><span>작성일</span>2026.07.24</div>
         </a></li></ul></div>
         <form name='pageForm' action='/bbs/sc/58/artclList.do'>
           <input name='layout' value='abc'><input name='page' value='1'>
@@ -283,6 +283,17 @@ class CrawlerTests(unittest.TestCase):
             adapter.next_listing_url(html, "https://www.skku.edu/skku/campus/skk_comm/notice02.do"),
             "https://www.skku.edu/skku/campus/skk_comm/notice02.do?mode=list&articleLimit=10&article.offset=10",
         )
+
+    def test_skku_override_does_not_treat_notice_number_as_category(self) -> None:
+        html = """
+        <dl class='board-list-content-wrap'><dt class='board-list-content-title'><a href='?mode=view&articleNo=2'>학점교류 안내</a></dt>
+        <dd class='board-list-content-info'><ul><li>No.2146</li><li>교무팀</li><li>2026-07-24</li></ul></dd></dl>
+        """
+
+        item = next(iter(SkkuNoticeAdapter().parse_listing(html, "https://www.skku.edu/skku/campus/skk_comm/notice02.do")))
+
+        self.assertIsNone(item.category_hint)
+        self.assertEqual(item.author_hint, "교무팀")
 
 
 if __name__ == "__main__":
