@@ -45,7 +45,9 @@ _WHITELIST_INSTRUCTION = (
     "관계의 source와 target은 entities에 포함한 정확한 name 문자열을 사용하라. "
     "관계 방향은 의미의 주체에서 대상으로 쓴다. 예: 공지→부서·기관/담당자=게시, "
     "공지→장학금·프로그램·채용·행사·학사일정·규정=안내, "
-    "공지→주제·카테고리=분류, 공지·프로그램·장학금→대상·자격=대상이다."
+    "공지→주제·카테고리=분류, 공지·프로그램·장학금→대상·자격=대상이다. "
+    "소속 관계는 본문이 조직의 상하 관계를 명시할 때만 만들고, 표에서 함께 보이거나 "
+    "대학명·부서명이 함께 등장한다는 이유만으로 추정하지 마라."
 )
 
 DEFAULT_CHUNK_CHARS = 2_000  # 약 500 tokens의 의존성 없는 근사치
@@ -87,6 +89,29 @@ class CommonContentParser:
         body = selected_body or soup.body or soup
         content = _body_text(body)
         return CleanedDocument(title=title, content=content, used_body_fallback=selected_body is None)
+
+
+class SejongContentParser:
+    """세종대 공지 상세 페이지의 실제 게시글 영역만 선택하는 파서.
+
+    세종대 ``main`` 영역에는 대학 소개·챗봇·메뉴도 함께 들어간다. 공통 파서가
+    그 전체를 본문으로 오인하지 않도록, 게시판의 ``.b-content-box``를 명시적으로
+    선택한다. 해당 선택자가 바뀌면 ``DocumentExtractor``가 공통 파서로 폴백한다.
+    """
+
+    _TITLE_SELECTORS = (".b-title", *CommonContentParser._TITLE_SELECTORS)
+    _CONTENT_SELECTORS = (".b-content-box .fr-view", ".b-content-box")
+
+    def parse(self, html: str) -> CleanedDocument:
+        soup = BeautifulSoup(html, "html.parser")
+        for node in soup.select(CommonContentParser._REMOVE_SELECTORS):
+            node.decompose()
+
+        title = _first_text(soup, self._TITLE_SELECTORS)
+        body = _first_node(soup, self._CONTENT_SELECTORS)
+        if body is None:
+            raise ValueError("sejong content selector not found")
+        return CleanedDocument(title=title, content=_body_text(body))
 
 
 def _first_node(soup: BeautifulSoup, selectors: tuple[str, ...]):
@@ -221,6 +246,7 @@ class DocumentExtractor:
             try:
                 extraction = self._call_llm(self._llm_input(page, title, text))
                 validated, warnings = self._validate_extraction(extraction)
+                validated = self._ensure_crawler_metadata(validated, page, title)
                 results.append(
                     ExtractedChunk(
                         school_id=page.school_id,
@@ -319,6 +345,36 @@ class DocumentExtractor:
             else:
                 relations.append(relation.model_copy(update={"source": source, "target": target}))
         return Extraction(entities=entities, relations=relations), warnings
+
+    @staticmethod
+    def _ensure_crawler_metadata(
+        extraction: Extraction,
+        page: CrawledPage,
+        title: str | None,
+    ) -> Extraction:
+        """Crawler가 확정한 게시판 분류는 LLM 누락 여부와 무관하게 보존한다."""
+        category = page.category_hint.strip() if page.category_hint else ""
+        if not category:
+            return extraction
+
+        entities = list(extraction.entities)
+        relations = list(extraction.relations)
+        entity_pairs = {(entity.type, entity.name) for entity in entities}
+        notice_names = [entity.name for entity in entities if entity.type == "공지"]
+        if not notice_names and title:
+            entities.append(ExtractedEntity(type="공지", name=title))
+            entity_pairs.add(("공지", title))
+            notice_names.append(title)
+        if ("주제·카테고리", category) not in entity_pairs:
+            entities.append(ExtractedEntity(type="주제·카테고리", name=category))
+
+        relation_keys = {(relation.source, relation.relation, relation.target) for relation in relations}
+        for notice_name in notice_names:
+            relation_key = (notice_name, "분류", category)
+            if relation_key not in relation_keys:
+                relations.append(ExtractedRelation(source=notice_name, relation="분류", target=category))
+                relation_keys.add(relation_key)
+        return Extraction(entities=entities, relations=relations)
 
     def _llm_input(self, page: CrawledPage, title: str | None, content: str) -> str:
         metadata = []

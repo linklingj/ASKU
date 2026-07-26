@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 import unittest
 
-from app.extractor import DocumentExtractor
+from app.extractor import DocumentExtractor, SejongContentParser
 from app.llm import Extraction, Extractor as LLMExtractor
 from app.schemas import Attachment, CrawledPage, ExtractedEntity, ExtractedRelation, ExtractionFailure
 
@@ -76,6 +76,48 @@ class ExtractorTests(unittest.TestCase):
         self.assertEqual(out[0].content, "목록 제목\n실제 공지 본문입니다.")
         self.assertNotIn("이전글", llm.calls[0])
 
+    def test_sejong_parser_selects_post_content_instead_of_site_navigation(self) -> None:
+        html = """
+            <main>
+              <section class="quick-menu"><p>세종소개</p><p>챗봇 준비중입니다.</p></section>
+              <div class="b-view-common-wrap">
+                <p class="b-title">학생생활상담소 계약직원 모집공고</p>
+                <div class="b-content-box"><div class="fr-view">
+                  <p>모집분야: 계약직원</p><p>지원 방법: 이메일 접수</p>
+                </div></div>
+              </div>
+            </main>
+        """
+        llm = FakeLLM([self.valid()])
+
+        out = DocumentExtractor(llm, parsers={1: SejongContentParser()}, sleeper=lambda _: None).process(page(html=html))
+
+        self.assertEqual(out[0].content, "모집분야: 계약직원\n지원 방법: 이메일 접수")
+        self.assertNotIn("세종소개", llm.calls[0])
+        self.assertNotIn("챗봇", llm.calls[0])
+
+    def test_sejong_parser_falls_back_to_common_parser_when_selector_changes(self) -> None:
+        llm = FakeLLM([self.valid()])
+        out = DocumentExtractor(llm, parsers={1: SejongContentParser()}, sleeper=lambda _: None).process(
+            page(html="<main><p>선택자 변경 뒤에도 읽을 수 있는 본문</p></main>")
+        )
+
+        self.assertEqual(out[0].content, "선택자 변경 뒤에도 읽을 수 있는 본문")
+
+    def test_crawler_category_is_preserved_when_llm_omits_it(self) -> None:
+        llm = FakeLLM([Extraction(
+            entities=[ExtractedEntity(type="공지", name="목록 제목")],
+            relations=[],
+        )])
+
+        out = DocumentExtractor(llm, sleeper=lambda _: None).process(page())
+
+        self.assertIn(("주제·카테고리", "장학"), {(item.type, item.name) for item in out[0].entities})
+        self.assertIn(
+            ("목록 제목", "분류", "장학"),
+            {(item.source, item.relation, item.target) for item in out[0].relations},
+        )
+
     def test_reversely_generated_post_relation_is_normalized(self) -> None:
         llm = FakeLLM([Extraction(
             entities=[
@@ -105,8 +147,11 @@ class ExtractorTests(unittest.TestCase):
         out = DocumentExtractor(llm, sleeper=lambda _: None).process(page())
 
         self.assertEqual(out[0].extraction_status, "partial")
-        self.assertEqual([entity.name for entity in out[0].entities], ["목록 제목"])
-        self.assertEqual(out[0].relations, [])
+        self.assertEqual([entity.name for entity in out[0].entities], ["목록 제목", "장학"])
+        self.assertEqual(
+            [(relation.source, relation.relation, relation.target) for relation in out[0].relations],
+            [("목록 제목", "분류", "장학")],
+        )
 
     def test_retries_transient_llm_error(self) -> None:
         llm = FakeLLM([RuntimeError("temporary"), RuntimeError("temporary"), self.valid()])
