@@ -111,10 +111,27 @@ def _body_text(body) -> str:
     """인라인 태그(span 등) 때문에 문장이 한 단어씩 끊어지지 않게 본문을 정제한다."""
     block_selectors = "p, li, tr, h1, h2, h3, h4, h5, h6, dt, dd"
     blocks = [_normalise_text(node.get_text(" ", strip=True)) for node in body.select(block_selectors)]
-    blocks = [block for block in blocks if block]
+    blocks = [block for block in blocks if block and not _is_ui_block(block)]
+    blocks = _deduplicate_adjacent_blocks(blocks)
     if blocks:
         return "\n".join(blocks)
     return _normalise_text(body.get_text(" ", strip=True))
+
+
+def _is_ui_block(text: str) -> bool:
+    return bool(re.match(r"^(?:이전글|다음글)(?:\s|이 없습니다|$)|^(?:수정|삭제|목록|공유|프린트|SNS 공유)$", text))
+
+
+def _deduplicate_adjacent_blocks(blocks: list[str]) -> list[str]:
+    """바로 연달아 반복되는 반응형 표·문단만 제거해 실제 반복 내용을 보존한다."""
+    unique: list[str] = []
+    previous_key: str | None = None
+    for block in blocks:
+        key = re.sub(r"\s+", " ", block).strip()
+        if key != previous_key:
+            unique.append(block)
+        previous_key = key
+    return unique
 
 
 class DocumentExtractor:
@@ -271,6 +288,7 @@ class DocumentExtractor:
         warnings: list[str] = []
         entities: list[ExtractedEntity] = []
         names: set[str] = set()
+        types_by_name: dict[str, set[str]] = {}
         for entity in extraction.entities:
             name = entity.name.strip()
             if entity.type not in ENTITY_TYPES:
@@ -280,10 +298,18 @@ class DocumentExtractor:
             else:
                 entities.append(entity.model_copy(update={"name": name}))
                 names.add(name)
+                types_by_name.setdefault(name, set()).add(entity.type)
 
         relations: list[ExtractedRelation] = []
         for relation in extraction.relations:
             source, target = relation.source.strip(), relation.target.strip()
+            # LLM이 자주 만드는 '부서 → 공지 = 게시'를 문서 계약의 '공지 → 부서 = 게시'로 정리한다.
+            if (
+                relation.relation == "게시"
+                and types_by_name.get(source, set()) & {"부서·기관", "담당자"}
+                and "공지" in types_by_name.get(target, set())
+            ):
+                source, target = target, source
             if relation.relation not in RELATION_TYPES:
                 warnings.append(f"discarded relation type: {relation.relation}")
             elif not source or not target:

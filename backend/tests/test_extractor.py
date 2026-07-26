@@ -64,6 +64,32 @@ class ExtractorTests(unittest.TestCase):
         self.assertEqual(out[0].content, "등록금의 100 분의 2 를 납부합니다.")
         self.assertNotIn("100\n분의", out[0].content)
 
+    def test_common_parser_removes_explicit_ui_lines_and_adjacent_repeated_blocks(self) -> None:
+        llm = FakeLLM([self.valid()])
+        out = DocumentExtractor(llm, sleeper=lambda _: None).process(page(html="""
+            <main>
+              <article><h1>목록 제목</h1><p>실제 공지 본문입니다.</p><p>실제 공지 본문입니다.</p></article>
+              <div class='prev-next'><p>이전글 이전글이 없습니다.</p><p>다음글 다음글이 없습니다.</p></div>
+            </main>
+        """))
+
+        self.assertEqual(out[0].content, "목록 제목\n실제 공지 본문입니다.")
+        self.assertNotIn("이전글", llm.calls[0])
+
+    def test_reversely_generated_post_relation_is_normalized(self) -> None:
+        llm = FakeLLM([Extraction(
+            entities=[
+                ExtractedEntity(type="공지", name="목록 제목"),
+                ExtractedEntity(type="부서·기관", name="학생지원팀"),
+            ],
+            relations=[ExtractedRelation(source="학생지원팀", relation="게시", target="목록 제목")],
+        )])
+
+        out = DocumentExtractor(llm, sleeper=lambda _: None).process(page())
+
+        self.assertEqual(out[0].relations[0].source, "목록 제목")
+        self.assertEqual(out[0].relations[0].target, "학생지원팀")
+
     def test_whitelist_and_unknown_relation_make_partial(self) -> None:
         llm = FakeLLM([Extraction(
             entities=[

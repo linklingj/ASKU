@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("school", choices=sorted(SCHOOLS), help="확인할 학교")
     parser.add_argument("--max-items", type=int, default=1, help="처리할 최대 공지 수 (기본값: 1)")
     parser.add_argument("--show-content", action="store_true", help="정제된 본문도 함께 출력")
+    parser.add_argument("--summary", action="store_true", help="본문 미리보기와 추출 요약만 출력")
     return parser.parse_args()
 
 
@@ -66,7 +67,18 @@ def main() -> None:
             print(result.model_dump_json(indent=2))
             continue
         for chunk in result:
-            print(f"청크 {chunk.chunk_index} / 상태: {chunk.extraction_status}")
+            print(
+                f"청크 {chunk.chunk_index} / 상태: {chunk.extraction_status} / "
+                f"본문: {len(chunk.content)}자 / 엔티티: {len(chunk.entities)}개 / 관계: {len(chunk.relations)}개"
+            )
+            if args.summary:
+                preview = chunk.content.replace("\n", " ")[:240]
+                print(f"본문 미리보기: {preview}{'…' if len(chunk.content) > 240 else ''}")
+                print("엔티티: " + ", ".join(f"{item.type}={item.name}" for item in chunk.entities[:12]))
+                print("관계: " + ", ".join(
+                    f"{item.source} -{item.relation}→ {item.target}" for item in chunk.relations[:12]
+                ))
+                continue
             if args.show_content:
                 print(f"본문:\n{chunk.content}\n")
             payload = {
