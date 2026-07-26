@@ -97,6 +97,7 @@ neighbors(school_id, entity_ids, hops=1) -> [entity, edge, source_doc_ids]
 get_documents(school_id, doc_ids) -> [document]
 
 doc_hash_exists(school_id, source_url, content_hash) -> bool   # 증분 갱신용
+doc_url_exists(school_id, source_url) -> bool                  # 변경 감지용
 ```
 
 `upsert_*`는 유니크 키 충돌 시 갱신(증분 업데이트 지원).

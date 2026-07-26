@@ -217,6 +217,14 @@ UrlExists = Callable[[int, str], bool]
 RobotsAllowed = Callable[[str], bool]
 
 
+class CrawlStorage(Protocol):
+    """변경 감지에 필요한 Storage의 최소 공개 인터페이스."""
+
+    def doc_hash_exists(self, school_id: int, source_url: str, content_hash: str) -> bool: ...
+
+    def doc_url_exists(self, school_id: int, source_url: str) -> bool: ...
+
+
 @dataclass
 class CrawlRun:
     pages: list[CrawledPage] = field(default_factory=list)
@@ -254,6 +262,16 @@ class Crawler:
         self.sleeper = sleeper
         self.robots_allowed = robots_allowed or self._robots_allowed
         self._robots_by_origin: dict[str, RobotFileParser] = {}
+
+    @classmethod
+    def from_storage(cls, storage: CrawlStorage, **kwargs: object) -> "Crawler":
+        """Storage의 공개 조회 인터페이스를 변경 감지 콜백으로 연결한다."""
+
+        return cls(
+            hash_exists=storage.doc_hash_exists,
+            url_exists=storage.doc_url_exists,
+            **kwargs,
+        )
 
     def crawl(self, request: CrawlRequest, adapter: NoticeAdapter) -> CrawlRun:
         run = CrawlRun()

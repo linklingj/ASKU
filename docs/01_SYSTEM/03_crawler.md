@@ -23,7 +23,7 @@ Crawler는 학교의 `base_url`에서 공지·학사 정보를 수집해 Extract
 - 임베딩 생성, 그래프 구성, 데이터베이스 직접 쓰기
 - 재크롤링 주기 결정(이는 Scheduler의 책임)
 
-Crawler는 Storage의 공개 조회 인터페이스로 기존 본문 해시와 원문 URL 처리 이력을 조회하며, 다른 테이블이나 SQL에 직접 접근하지 않는다. 같은 해시이면 `unchanged`, 같은 URL의 다른 해시면 `changed`, 처음 보는 URL이면 `new`다. 현재 Storage의 `doc_hash_exists`는 전자를 제공하며, URL 처리 이력 조회 인터페이스는 Storage 병합 뒤 추가 연결이 필요하다.
+Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_url_exists`로 기존 본문 해시와 원문 URL 처리 이력을 조회하며, 다른 테이블이나 SQL에 직접 접근하지 않는다. 같은 해시이면 `unchanged`, 같은 URL의 다른 해시면 `changed`, 처음 보는 URL이면 `new`다. 구현에서는 `Crawler.from_storage(storage)`로 두 조회를 연결한다.
 
 ## 3. 입력과 출력
 
@@ -81,7 +81,7 @@ Crawler는 Storage의 공개 조회 인터페이스로 기존 본문 해시와 �
 3. 목록 페이지에서 상세 URL과 메타데이터를 수집하고, 다음 목록 링크를 따라 최대 `max_listing_pages`까지 순회한다. 국내 대학의 서버 렌더링 `.do` 게시판은 공통 목록/상세 선택자와 학교별 오버라이드(현재 연세대·세종대·홍익대·성균관대 K2Web 목록)로 처리한다.
 4. URL을 정규화하고 같은 실행 안에서 이미 방문했으면 건너뛴다. 상세 URL에서는 목록 페이지 문맥(예: `article.offset`)을 제거해 고정 공지 중복을 막는다. 상세 URL이 `max_items`에 도달하면 수집을 끝낸다.
 5. 상세 HTML을 수집하고 본문 해시를 계산한다. 목록에서 상세로 이동하는 요청에는 현재 목록 URL을 `Referer`로 전달해 브라우저 클릭 흐름을 요구하는 사이트를 지원한다. 정적 수집이 불완전한 경우에만 렌더링 수집기로 전환한다.
-6. `doc_hash_exists(school_id, source_url, content_hash)`로 이전 처리본과 비교한다.
+6. `doc_hash_exists(school_id, source_url, content_hash)`와 `doc_url_exists(school_id, source_url)`로 이전 처리본과 비교한다.
 7. `new`·`changed`인 `CrawledPage`만 Extractor에 전달한다. `unchanged`는 실행 상태만 기록한다.
 8. 실행 완료 시 성공·변경·실패·미관측 URL 통계를 저장한다.
 

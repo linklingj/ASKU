@@ -44,6 +44,18 @@ class FakeSession:
         return self.pages[url]
 
 
+class FakeStorage:
+    def __init__(self, existing_hashes: set[tuple[int, str, str]], existing_urls: set[tuple[int, str]]) -> None:
+        self.existing_hashes = existing_hashes
+        self.existing_urls = existing_urls
+
+    def doc_hash_exists(self, school_id: int, source_url: str, content_hash: str) -> bool:
+        return (school_id, source_url, content_hash) in self.existing_hashes
+
+    def doc_url_exists(self, school_id: int, source_url: str) -> bool:
+        return (school_id, source_url) in self.existing_urls
+
+
 class CrawlerTests(unittest.TestCase):
     def request(self) -> CrawlRequest:
         return CrawlRequest(
@@ -95,6 +107,13 @@ class CrawlerTests(unittest.TestCase):
         self.assertEqual(run.pages[0].attachments[0].name_hint, "신청서")
         self.assertEqual(run.pages[0].published_at_hint, datetime(2026, 7, 1, tzinfo=timezone.utc))
         self.assertEqual(session.request_headers[1], {"Referer": "https://example.edu/notice/list.do"})
+
+    def test_crawler_from_storage_uses_hash_and_url_history(self) -> None:
+        storage = FakeStorage({(1, "https://example.edu/notice/view.do?id=1", "same")}, { (1, "https://example.edu/notice/view.do?id=2") })
+        crawler = Crawler.from_storage(storage)
+
+        self.assertTrue(crawler.hash_exists(1, "https://example.edu/notice/view.do?id=1", "same"))
+        self.assertTrue(crawler.url_exists(1, "https://example.edu/notice/view.do?id=2"))
 
     def test_retryable_failure_is_recorded_after_retry_limit(self) -> None:
         session = FakeSession({"https://example.edu/notice/list.do": FakeResponse(503)})
