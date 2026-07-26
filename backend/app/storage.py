@@ -361,6 +361,18 @@ class Storage:
         with self._engine.connect() as connection:
             return connection.execute(statement).scalar_one_or_none() is not None
 
+    def doc_url_exists(self, school_id: int, source_url: str) -> bool:
+        """같은 학교에서 원문 URL이 이미 처리된 적 있는지 확인한다."""
+
+        statement = select(documents.c.doc_id).where(
+            and_(
+                documents.c.school_id == school_id,
+                documents.c.source_url == source_url,
+            )
+        ).limit(1)
+        with self._engine.connect() as connection:
+            return connection.execute(statement).scalar_one_or_none() is not None
+
     def vector_search(
         self, school_id: int, query_embedding: Sequence[float], k: int
     ) -> list[tuple[Document, float]]:

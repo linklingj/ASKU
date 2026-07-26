@@ -10,7 +10,7 @@
 | 연세대 | 일반공지 | https://www.yonsei.ac.kr/sc/254/subview.do | 약 8,168건 / ~817p | 장학·학사·모집·일반 + 작성부서 |
 | 세종대 | 공지사항 | https://www.sejong.ac.kr/kor/intro/notice1.do | — | 작성부서(학생생활상담소·어학원·기숙사·보건실 등) |
 | 홍익대 | 공지사항 | https://www.hongik.ac.kr/kr/newscenter/notice.do | 약 1,811건 | 취창업·학사·장학·채용·일반 + 조회수·등록일 |
-| 성균관대 | 공지사항 | https://www.skku.edu/skku/campus/skk_comm/notice01.do | — | 학사·채용모집·취업·행사·장학·입학 + 작성자 |
+| 성균관대 | 공지사항(학사) | https://webzine.skku.edu/skku/campus/skk_comm/notice02.do | — | 분류·작성자·등록일 |
 
 ## 관찰 — 크롤러 설계에 참고
 
@@ -19,3 +19,4 @@
 - **분류·작성부서 컬럼이 이미 있다**: 목록 단계에서 `주제·카테고리`·`부서·기관` 엔티티의 힌트를 공짜로 얻는다([`04_extractor.md`](../01_SYSTEM/04_extractor.md) §2.2).
 - **규모**: 연세대만 8천 건 이상. 전량 크롤링은 비현실적 → 최근 N페이지 또는 기간 필터로 범위를 제한하는 정책 필요([`09_scheduler.md`](../01_SYSTEM/09_scheduler.md) 증분 갱신과 연계).
 - **robots.txt·이용약관 준수**, 요청 속도 제한은 필수([`PLAN.md`](../00_BASICS/PLAN.md) §13).
+- **성균관대 접근 경로**: `webzine.skku.edu`는 기본 Python 요청에서 404가 반환될 수 있다. 명시적인 Crawler 식별값과 공식 `www.skku.edu` 경로(`https://www.skku.edu/skku/campus/skk_comm/notice02.do`)를 사용해 수집 검증한다.

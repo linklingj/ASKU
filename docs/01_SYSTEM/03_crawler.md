@@ -11,8 +11,8 @@ Crawler는 학교의 `base_url`에서 공지·학사 정보를 수집해 Extract
 ### 하는 일
 
 - 학교별 기준 URL에서 목록·상세 페이지를 발견하고, 허용된 호스트와 경로 안에서 순회한다.
-- `robots.txt`, 이용약관, 요청 간격을 적용하고 수집 이력을 기록한다.
-- 정적 HTML을 수집한다. 자바스크립트 렌더링이 필요할 때는 렌더링 수집기 후보(Playwright)를 선택할 수 있게 요청을 구분한다.
+- `robots.txt`, 이용약관, 요청 간격을 적용하고 수집 이력을 기록한다. `robots.txt`를 확인할 수 없거나 허용하지 않는 URL은 수집하지 않는다.
+- MVP는 `requests + BeautifulSoup`으로 정적 HTML을 수집한다. 응답 HTML에 목록 링크나 본문이 없을 때만 렌더링 수집기(Playwright) 전환 후보로 기록한다.
 - 목록의 제목·작성 부서·등록일·분류 등 이미 제공되는 메타데이터와 상세 HTML·첨부파일 URL을 `CrawledPage`로 전달한다.
 - 정규 URL과 본문 해시로 중복과 변경을 판정한다.
 
@@ -23,7 +23,7 @@ Crawler는 학교의 `base_url`에서 공지·학사 정보를 수집해 Extract
 - 임베딩 생성, 그래프 구성, 데이터베이스 직접 쓰기
 - 재크롤링 주기 결정(이는 Scheduler의 책임)
 
-Crawler는 Storage의 `doc_hash_exists`만으로 기존 본문 해시를 조회하며, 다른 테이블이나 SQL에 직접 접근하지 않는다.
+Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_url_exists`로 기존 본문 해시와 원문 URL 처리 이력을 조회하며, 다른 테이블이나 SQL에 직접 접근하지 않는다. 같은 해시이면 `unchanged`, 같은 URL의 다른 해시면 `changed`, 처음 보는 URL이면 `new`다. 구현에서는 `Crawler.from_storage(storage)`로 두 조회를 연결한다.
 
 ## 3. 입력과 출력
 
@@ -38,12 +38,13 @@ Crawler는 Storage의 `doc_hash_exists`만으로 기존 본문 해시를 조회�
   "scope": {
     "allowed_hosts": ["university.example.edu"],
     "path_prefixes": ["/notice", "/academic"],
-    "max_pages": 1000
+    "max_listing_pages": 10,
+    "max_items": 300
   }
 }
 ```
 
-필수 필드는 `crawl_id`, `school_id`, `base_url`, `mode`다. `scope`의 구체값은 학교별 운영 정책으로 아직 미정이다.
+필수 필드는 `crawl_id`, `school_id`, `base_url`, `mode`다. MVP 최초 수집은 최근 목록 10페이지(`max_listing_pages: 10`)를 순회한다. 한 페이지의 공지 수가 사이트마다 다른 점을 고려해 상세 공지는 총 300건(`max_items: 300`)에서만 중단한다. 두 값은 학교별 운영 정책으로 조정할 수 있다.
 
 ### 출력: `CrawledPage`
 
@@ -65,7 +66,7 @@ Crawler는 Storage의 `doc_hash_exists`만으로 기존 본문 해시를 조회�
 }
 ```
 
-`school_id`, `source_url`, `canonical_url`, `raw_html`, `content_hash`, `fetched_at`, `crawl_status`가 성공 출력의 필수 필드다. `raw_html`은 Extractor에 전달할 일시 입력이며, 현재 확정된 Storage 스키마는 정제된 청크와 원문 URL을 보관한다. 원본 HTML 영구 보관은 **미정**이다.
+`school_id`, `source_url`, `canonical_url`, `raw_html`, `content_hash`, `fetched_at`, `crawl_status`가 성공 출력의 필수 필드다. `raw_html`은 Extractor에 전달할 일시 입력이며 장기 보관하지 않는다. 첨부파일은 URL·파일명 힌트만 수집하고 바이너리 다운로드·본문 파싱은 하지 않는다.
 
 실패 시에는 다음 `CrawlFailure`를 실행 이력에 남긴다.
 
@@ -77,10 +78,10 @@ Crawler는 Storage의 `doc_hash_exists`만으로 기존 본문 해시를 조회�
 
 1. Backend API 또는 Scheduler가 `CrawlRequest`를 만든다.
 2. 기준 URL의 허용 범위·`robots.txt`·요청 제한을 확인한다.
-3. 목록 페이지에서 상세 URL과 메타데이터를 수집한다. 국내 대학의 서버 렌더링 `.do` 게시판은 공통 목록/상세 선택자와 학교별 오버라이드로 처리한다.
-4. URL을 정규화하고 같은 실행 안에서 이미 방문했으면 건너뛴다.
-5. 상세 HTML을 수집하고 본문 해시를 계산한다. 정적 수집이 불완전한 경우에만 렌더링 수집기로 전환한다.
-6. `doc_hash_exists(school_id, source_url, content_hash)`로 이전 처리본과 비교한다.
+3. 목록 페이지에서 상세 URL과 메타데이터를 수집하고, 다음 목록 링크를 따라 최대 `max_listing_pages`까지 순회한다. 국내 대학의 서버 렌더링 `.do` 게시판은 공통 목록/상세 선택자와 학교별 오버라이드(현재 연세대·세종대·홍익대·성균관대 K2Web 목록)로 처리한다.
+4. URL을 정규화하고 같은 실행 안에서 이미 방문했으면 건너뛴다. 상세 URL에서는 목록 페이지 문맥(예: `article.offset`)을 제거해 고정 공지 중복을 막는다. 상세 URL이 `max_items`에 도달하면 수집을 끝낸다.
+5. 상세 HTML을 수집하고 본문 해시를 계산한다. 목록에서 상세로 이동하는 요청에는 현재 목록 URL을 `Referer`로 전달해 브라우저 클릭 흐름을 요구하는 사이트를 지원한다. 정적 수집이 불완전한 경우에만 렌더링 수집기로 전환한다.
+6. `doc_hash_exists(school_id, source_url, content_hash)`와 `doc_url_exists(school_id, source_url)`로 이전 처리본과 비교한다.
 7. `new`·`changed`인 `CrawledPage`만 Extractor에 전달한다. `unchanged`는 실행 상태만 기록한다.
 8. 실행 완료 시 성공·변경·실패·미관측 URL 통계를 저장한다.
 
@@ -104,7 +105,7 @@ frontier URL -> 정책 검사 -> 목록/상세 수집 -> URL 정규화 + 해시 
 ## 6. 오류 처리
 
 - `robots.txt` 거부·허용 범위 밖 URL은 재시도하지 않고 정책 거부로 기록한다.
-- 네트워크 오류, 429, 5xx는 제한 횟수의 지수 백오프 재시도 대상이다. 횟수·최대 지연·타임아웃은 **미정**이다.
+- 네트워크 오류, 429, 5xx는 최대 3회, 기본 1초 간격의 지수 백오프 재시도 대상이다. 요청 간 기본 간격은 1초이며 `robots.txt`가 더 엄격하면 그 값을 우선한다.
 - 4xx, 파싱 불가 콘텐츠, 렌더링 실패는 해당 페이지의 실패로 남기고 다른 URL 수집은 계속한다.
 - `school_id + canonical_url + content_hash`와 `crawl_id`를 멱등 키로 사용해 재시도 중복을 막는다.
 - 한 페이지 실패가 기존 문서나 그래프 데이터를 삭제하지 않는다. 미관측 URL의 만료 판정은 Scheduler의 확인 정책 뒤에만 수행한다.
@@ -115,12 +116,20 @@ frontier URL -> 정책 검사 -> 목록/상세 수집 -> URL 정규화 + 해시 
 - 모든 작업에 `school_id`와 URL 범위를 넣어 여러 학교를 격리한다.
 - 목록 탐색, 상세 파싱, 렌더링 수집을 어댑터로 분리해 사이트별 구조 변경에 대응한다.
 - 공지 외 FAQ·규정·시설 안내를 지원할 때는 경로 규칙과 문서 분류 힌트만 추가하고 출력 계약은 유지한다.
-- Playwright, Scrapy, BeautifulSoup 중 실제 수집 도구는 PLAN상 **미정**이다.
+- MVP 수집 도구는 `requests + BeautifulSoup`이다. 동적 페이지가 확인되면 Playwright 어댑터를 추가할 수 있다.
 
 ## 8. 미정 사항
 
-- 학교별 최대 페이지 수·탐색 깊이·최근 N페이지/기간 제한
-- 동적 페이지 판정 기준과 인증 페이지 비수집 정책
-- 첨부파일 바이너리 수집 및 원본 HTML의 영구 저장 범위
-- 속도 제한·재시도·타임아웃 운영값
+- 학교별 탐색 깊이·기간 필터, 인증 페이지 비수집 정책
+- Playwright 전환 뒤의 렌더링 대기·인증 처리 방식
 - 삭제 공지를 만료로 확정하는 연속 미관측 횟수와 수동 확인 절차
+
+## 9. 개발용 수집 미리보기
+
+개발자는 다음 명령으로 연세대·세종대·홍익대·성균관대 중 한 학교의 최근 공지 수집 결과를 터미널에서 확인할 수 있다. 이 명령은 저장소에 쓰지 않으며, 기존 Crawler와 동일하게 `robots.txt`, 기본 1초 요청 간격, `ASKU-Crawler/0.1` 사용자 에이전트를 적용한다.
+
+```bash
+PYTHONPATH=backend python3 backend/scripts/preview_crawl.py hongik
+```
+
+기본 수집량은 목록 1페이지·상세 공지 5건이며, 필요하면 최대 30건까지 `--max-items`를 지정할 수 있다.

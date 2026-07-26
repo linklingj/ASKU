@@ -25,11 +25,12 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class CrawlScope(BaseModel):
-    """크롤 범위. 구체값은 학교별 운영 정책으로 미정(03_crawler.md §3)."""
+    """크롤 범위. 목록 페이지 수와 총 공지 수를 별도로 제한한다."""
 
     allowed_hosts: list[str] = Field(default_factory=list)
     path_prefixes: list[str] = Field(default_factory=list)
-    max_pages: int | None = None
+    max_listing_pages: int = Field(default=10, ge=1)
+    max_items: int = Field(default=300, ge=1)
 
 
 class Attachment(BaseModel):
