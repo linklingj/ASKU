@@ -19,4 +19,4 @@
 - **분류·작성부서 컬럼이 이미 있다**: 목록 단계에서 `주제·카테고리`·`부서·기관` 엔티티의 힌트를 공짜로 얻는다([`04_extractor.md`](../01_SYSTEM/04_extractor.md) §2.2).
 - **규모**: 연세대만 8천 건 이상. 전량 크롤링은 비현실적 → 최근 N페이지 또는 기간 필터로 범위를 제한하는 정책 필요([`09_scheduler.md`](../01_SYSTEM/09_scheduler.md) 증분 갱신과 연계).
 - **robots.txt·이용약관 준수**, 요청 속도 제한은 필수([`PLAN.md`](../00_BASICS/PLAN.md) §13).
-- **성균관대 URL 재검증 필요**: 기존 `www.skku.edu` 목록 주소는 404였고, 현재 공식 검색에 노출되는 `webzine.skku.edu` 주소도 수집 시점에는 404가 반환됐다. 실제 통합 테스트 전에 최신 공개 목록 주소를 다시 확인한다.
+- **성균관대 접근 경로**: `webzine.skku.edu`는 기본 Python 요청에서 404가 반환될 수 있다. 명시적인 Crawler 식별값과 공식 `www.skku.edu` 경로(`https://www.skku.edu/skku/campus/skk_comm/notice02.do`)를 사용해 수집 검증한다.

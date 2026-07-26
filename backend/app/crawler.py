@@ -23,6 +23,7 @@ from app.schemas import Attachment, CrawledPage, CrawlFailure, CrawlRequest
 
 
 TRACKING_QUERY_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
+DETAIL_CONTEXT_QUERY_KEYS = {"article.offset", "articlelimit"}
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 USER_AGENT = "ASKU-Crawler/0.1 (+https://github.com/linklingj/ASKU)"
 
@@ -113,6 +114,7 @@ class CommonNoticeAdapter:
             ".paging .next a[href]",
             "a[aria-label='다음 페이지'][href]",
             "a[title='다음 페이지'][href]",
+            "a[title='다음 페이지로 이동하기'][href]",
         )
         for selector in selectors:
             link = soup.select_one(selector)
@@ -156,6 +158,26 @@ class YonseiNoticeAdapter(CommonNoticeAdapter):
         return f"{urljoin(page_url, str(page_form['action']))}?{urlencode(params)}"
 
 
+class SkkuNoticeAdapter(CommonNoticeAdapter):
+    """성균관대 K2Web ``dl`` 공지 목록용 학교별 오버라이드."""
+
+    def parse_listing(self, html: str, page_url: str) -> Iterable[ListingItem]:
+        soup = BeautifulSoup(html, "html.parser")
+        for row in soup.select("dl.board-list-content-wrap"):
+            link = row.select_one("dt.board-list-content-title a[href*='articleNo']")
+            info = row.select("dd.board-list-content-info li")
+            if link is None or not link.get("href"):
+                continue
+            values = [item.get_text(" ", strip=True) for item in info]
+            yield ListingItem(
+                url=urljoin(page_url, str(link["href"])),
+                title_hint=_text_or_none(link),
+                category_hint=values[0] if len(values) >= 1 else None,
+                author_hint=values[1] if len(values) >= 2 else None,
+                published_at_hint=_parse_date(values[2]) if len(values) >= 3 else None,
+            )
+
+
 HashExists = Callable[[int, str, str], bool]
 UrlExists = Callable[[int, str], bool]
 RobotsAllowed = Callable[[str], bool]
@@ -190,8 +212,11 @@ class Crawler:
         self.url_exists = url_exists
         self.settings = settings or CrawlSettings()
         self.session = session or requests.Session()
-        if hasattr(self.session, "headers"):
-            self.session.headers.setdefault("User-Agent", USER_AGENT)
+        # requests.Session에는 기본 ``python-requests/...`` User-Agent가 이미 있어
+        # setdefault로는 교체되지 않는다. 자동 생성한 세션에만 Crawler 식별값을 넣고,
+        # 호출자가 주입한 세션의 헤더는 그대로 존중한다.
+        if session is None:
+            self.session.headers.update({"User-Agent": USER_AGENT})
         self.sleeper = sleeper
         self.robots_allowed = robots_allowed or self._robots_allowed
         self._robots_by_origin: dict[str, RobotFileParser] = {}
@@ -220,7 +245,7 @@ class Crawler:
             for item in adapter.parse_listing(listing_html, listing_url):
                 if len(visited_detail_urls) >= max_items:
                     return run
-                canonical_url = normalize_url(item.url)
+                canonical_url = normalize_detail_url(item.url)
                 if canonical_url in visited_detail_urls or not is_allowed(canonical_url, request):
                     continue
                 visited_detail_urls.add(canonical_url)
@@ -338,6 +363,22 @@ def normalize_url(url: str) -> str:
     ]
     path = split.path.rstrip("/") or "/"
     return urlunsplit((split.scheme.lower(), split.netloc.lower(), path, urlencode(sorted(query)), ""))
+
+
+def normalize_detail_url(url: str) -> str:
+    """상세 공지 URL에서 목록 페이지 문맥 파라미터를 제거한다.
+
+    일부 K2Web 사이트는 동일 게시글 링크에 목록의 `article.offset`과
+    `articleLimit`을 함께 넣는다. 이 값은 본문을 식별하지 않으므로 중복 판정에서
+    제외한다. 목록 URL 자체는 `normalize_url`을 사용해 페이지 번호를 유지한다.
+    """
+    split = urlsplit(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(split.query, keep_blank_values=True)
+        if key.lower() not in DETAIL_CONTEXT_QUERY_KEYS
+    ]
+    return normalize_url(urlunsplit((split.scheme, split.netloc, split.path, urlencode(query), split.fragment)))
 
 
 def is_allowed(url: str, request: CrawlRequest) -> bool:

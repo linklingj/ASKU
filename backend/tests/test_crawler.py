@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 import unittest
 
-from app.crawler import CommonNoticeAdapter, Crawler, CrawlSettings, YonseiNoticeAdapter, html_hash, normalize_url
+from app.crawler import CommonNoticeAdapter, Crawler, CrawlSettings, SkkuNoticeAdapter, YonseiNoticeAdapter, html_hash, normalize_detail_url, normalize_url
 from app.schemas import CrawlRequest, CrawlScope
 
 
@@ -45,6 +45,12 @@ class CrawlerTests(unittest.TestCase):
         self.assertEqual(
             normalize_url("HTTPS://Example.edu/notice/view.do/?b=2&utm_source=x&a=1#section"),
             "https://example.edu/notice/view.do?a=1&b=2",
+        )
+
+    def test_normalize_detail_url_removes_listing_context(self) -> None:
+        self.assertEqual(
+            normalize_detail_url("https://example.edu/notice.do?mode=view&articleNo=1&article.offset=10&articleLimit=10"),
+            "https://example.edu/notice.do?articleNo=1&mode=view",
         )
 
     def test_crawl_classifies_new_changed_and_unchanged(self) -> None:
@@ -122,6 +128,13 @@ class CrawlerTests(unittest.TestCase):
         self.assertEqual(len(run.pages), 4)
         self.assertIn(second_list, session.calls)
 
+    def test_common_adapter_recognizes_k2web_next_page_title(self) -> None:
+        html = "<a title='다음 페이지로 이동하기' href='?mode=list&article.offset=10'>다음</a>"
+
+        next_url = CommonNoticeAdapter().next_listing_url(html, "https://example.edu/notice/list.do")
+
+        self.assertEqual(next_url, "https://example.edu/notice/list.do?mode=list&article.offset=10")
+
     def test_policy_rejection_stops_before_fetch(self) -> None:
         session = FakeSession({})
         crawler = Crawler(
@@ -134,6 +147,11 @@ class CrawlerTests(unittest.TestCase):
 
         self.assertEqual(run.failures[0].error_code, "ROBOTS_DISALLOWED")
         self.assertEqual(session.calls, [])
+
+    def test_default_session_identifies_asku_crawler(self) -> None:
+        crawler = Crawler(hash_exists=lambda *_args: False)
+
+        self.assertEqual(crawler.session.headers["User-Agent"], "ASKU-Crawler/0.1 (+https://github.com/linklingj/ASKU)")
 
     def test_yonsei_override_reads_card_list_metadata(self) -> None:
         html = """
@@ -154,6 +172,18 @@ class CrawlerTests(unittest.TestCase):
             adapter.next_listing_url(html, "https://www.yonsei.ac.kr/sc/254/subview.do"),
             "https://www.yonsei.ac.kr/bbs/sc/58/artclList.do?layout=abc&page=2",
         )
+
+    def test_skku_override_reads_definition_list_metadata(self) -> None:
+        html = """
+        <dl class='board-list-content-wrap'><dt class='board-list-content-title'><a href='?mode=view&articleNo=1'>학점교류 안내</a></dt>
+        <dd class='board-list-content-info'><ul><li>공지</li><li>교무팀</li><li>2026-07-24</li><li>조회수 10</li></ul></dd></dl>
+        """
+        item = next(iter(SkkuNoticeAdapter().parse_listing(html, "https://www.skku.edu/skku/campus/skk_comm/notice02.do")))
+
+        self.assertEqual(item.title_hint, "학점교류 안내")
+        self.assertEqual(item.category_hint, "공지")
+        self.assertEqual(item.author_hint, "교무팀")
+        self.assertEqual(item.published_at_hint, datetime(2026, 7, 24, tzinfo=timezone.utc))
 
 
 if __name__ == "__main__":

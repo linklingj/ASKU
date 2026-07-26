@@ -78,8 +78,8 @@ Crawler는 Storage의 공개 조회 인터페이스로 기존 본문 해시와 �
 
 1. Backend API 또는 Scheduler가 `CrawlRequest`를 만든다.
 2. 기준 URL의 허용 범위·`robots.txt`·요청 제한을 확인한다.
-3. 목록 페이지에서 상세 URL과 메타데이터를 수집하고, 다음 목록 링크를 따라 최대 `max_listing_pages`까지 순회한다. 국내 대학의 서버 렌더링 `.do` 게시판은 공통 목록/상세 선택자와 학교별 오버라이드(현재 연세대 K2Web 목록)로 처리한다.
-4. URL을 정규화하고 같은 실행 안에서 이미 방문했으면 건너뛴다. 상세 URL이 `max_items`에 도달하면 수집을 끝낸다.
+3. 목록 페이지에서 상세 URL과 메타데이터를 수집하고, 다음 목록 링크를 따라 최대 `max_listing_pages`까지 순회한다. 국내 대학의 서버 렌더링 `.do` 게시판은 공통 목록/상세 선택자와 학교별 오버라이드(현재 연세대·성균관대 K2Web 목록)로 처리한다.
+4. URL을 정규화하고 같은 실행 안에서 이미 방문했으면 건너뛴다. 상세 URL에서는 목록 페이지 문맥(예: `article.offset`)을 제거해 고정 공지 중복을 막는다. 상세 URL이 `max_items`에 도달하면 수집을 끝낸다.
 5. 상세 HTML을 수집하고 본문 해시를 계산한다. 정적 수집이 불완전한 경우에만 렌더링 수집기로 전환한다.
 6. `doc_hash_exists(school_id, source_url, content_hash)`로 이전 처리본과 비교한다.
 7. `new`·`changed`인 `CrawledPage`만 Extractor에 전달한다. `unchanged`는 실행 상태만 기록한다.
