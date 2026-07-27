@@ -31,9 +31,9 @@ extracted(청크, 엔티티, 관계)
 
 ## 3. 증분 갱신
 
-- 문서마다 `content_hash`를 계산해 `doc_hash_exists(school_id, source_url, content_hash)` 확인.
-- 해시가 같으면 **처리 건너뜀**(임베딩·추출 재실행 안 함 → 비용 절감).
-- 바뀐 문서만 위 파이프라인을 다시 태운다. 삭제 감지·만료는 스케줄러 몫
+- 페이지 단위 `content_hash` 비교와 `new`·`changed`·`unchanged` 분류는 **Crawler**가 Storage의 조회 인터페이스로 수행한다.
+- Graph Builder는 Crawler가 전달한 신규·변경 청크를 모두 처리하고, Storage의 `school_id + source_url + content_hash + chunk_index` upsert를 최종 멱등 방어로 사용한다. 긴 문서의 여러 청크는 같은 페이지 해시를 공유하므로 Builder가 해시만으로 청크를 건너뛰지 않는다.
+- 따라서 같은 해시는 Crawler 단계에서 **처리 건너뜀**(크롤링 결과 재추출·재임베딩 방지)되고, 바뀐 문서만 위 파이프라인을 다시 탄다. 삭제 감지·만료는 스케줄러 몫
   ([`09_scheduler.md`](09_scheduler.md)).
 
 ## 4. 공개 인터페이스
@@ -82,7 +82,7 @@ Extractor §4의 `school_id`, `source_url`, `title`, `content`, `chunk_index`, `
 | Storage | 다음 | `upsert_document`, `upsert_entity`, `upsert_edge`만 호출한다. |
 | Scheduler | 간접 | 만료가 확정된 문서를 재처리·만료 대상으로 받는다. |
 
-- `school_id + source_url + content_hash + chunk_index`이 같은 청크는 Storage의 해시 조회를 통해 재처리하지 않는다.
+- `school_id + source_url + content_hash + chunk_index`이 같은 청크는 Storage upsert가 멱등 처리한다. Builder의 입력 중복은 새 그래프 데이터를 만들지 않는다.
 - 관계의 양 끝을 `norm_key`로 해소하지 못하면 해당 엣지만 건너뛰고 로그·경고를 남긴다.
 - 임베딩 오류는 제한 재시도 대상이며, 모델·저장소의 부분 실패에서는 성공한 문서·엔티티와 실패한 벡터/엣지를 구분해 기록한다. 재시도 횟수와 보상 작업은 **미정**이다.
 - 새 버전은 upsert로 반영한다. 삭제·만료의 최종 판정은 Scheduler가 하며, Builder는 확정된 만료 요청에 대해서만 기존 기여분을 비활성화 또는 삭제한다. 실제 보존 방식은 Storage의 미정 사항이다.
