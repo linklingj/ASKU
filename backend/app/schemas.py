@@ -4,6 +4,7 @@
   - CrawlRequest / CrawledPage / CrawlFailure       → docs/01_SYSTEM/03_crawler.md §3
   - ExtractedChunk / ExtractionFailure              → docs/01_SYSTEM/04_extractor.md §4
   - BuildResult                                     → docs/01_SYSTEM/05_graph-builder.md §5
+  - RagAnswer / Source                              → docs/01_SYSTEM/07_graph-rag-engine.md §4
 
 여기 DTO는 영속 엔터티(models.py)와 다르다: DB PK(doc_id·entity_id…)가 없고,
 Extractor 산출 엔티티/관계는 아직 ID 없는 '이름 기반'이다(빌더가 ID 부여).
@@ -154,3 +155,23 @@ class BuildResult(BaseModel):
         elif self.doc_id is None:
             raise ValueError(f"status={self.status} 이면 doc_id 가 있어야 함")
         return self
+
+
+# ── Graph RAG DTO (07_graph-rag-engine.md §4) ──────────────────────
+
+
+class Source(BaseModel):
+    """답변 근거 출처. title 은 원문 제목(없을 수 있음), url 은 원문 링크."""
+
+    title: str | None = None
+    url: str
+
+
+class RagAnswer(BaseModel):
+    """Graph RAG 엔진 출력 = API POST /schools/{id}/query 응답 본문.
+
+    근거가 없거나 유사도 임계 미만이면 answer 는 보류 문구, sources 는 빈 목록이다.
+    """
+
+    answer: str
+    sources: list[Source] = Field(default_factory=list)
