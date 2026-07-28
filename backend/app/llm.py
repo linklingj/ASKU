@@ -18,6 +18,7 @@ import os
 from pydantic import BaseModel, Field
 
 from app.models import EMBEDDING_DIM
+from app.prompts import EXTRACT_JSON_INSTRUCTION
 from app.schemas import ExtractedEntity, ExtractedRelation
 
 
@@ -74,16 +75,7 @@ class GeminiProvider(Generator, Extractor):
     쓰는 모듈에 무거운 의존을 강제하지 않기 위해서다.
     """
 
-    # 형식(JSON 모양)만 지시한다. 타입·관계 화이트리스트는 04(추출기)가 소유·검증하므로
-    # 여기 프롬프트에 옮겨 담지 않는다(단일 기준 중복 방지).
-    _EXTRACT_INSTRUCTION = (
-        "다음 대학 공지 본문에서 엔티티(노드)와 관계를 추출해 JSON 으로만 응답하라.\n"
-        '형식: {"entities":[{"type":"타입","name":"이름","attributes":{}}],'
-        '"relations":[{"source":"엔티티이름","relation":"관계","target":"엔티티이름"}]}\n'
-        "source/target 은 엔티티 name 문자열이다. 날짜·금액·인원 등은 관계가 아니라 "
-        "해당 엔티티의 attributes 에 담는다. 타입·관계 화이트리스트 검증은 추출기가 "
-        "하므로 형식만 지키면 된다."
-    )
+    # 추출 프롬프트 문안은 app/prompts.py(EXTRACT_JSON_INSTRUCTION)가 소유한다.
 
     def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
         from google import genai
@@ -106,7 +98,7 @@ class GeminiProvider(Generator, Extractor):
 
         resp = self._client.models.generate_content(
             model=self._model,
-            contents=f"{self._EXTRACT_INSTRUCTION}\n\n본문:\n{text}",
+            contents=f"{EXTRACT_JSON_INSTRUCTION}\n\n본문:\n{text}",
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
         return Extraction.model_validate_json(resp.text)

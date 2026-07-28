@@ -392,6 +392,18 @@ class Storage:
             rows = connection.execute(statement).mappings().all()
         return [(_document(row), float(row["score"])) for row in rows]
 
+    def entities_by_norm_keys(self, school_id: int, norm_keys: Sequence[str]) -> list[Entity]:
+        """정규화 키로 학교 범위 안의 엔티티를 찾는다. RAG 질의 엔티티 매핑용."""
+
+        if not norm_keys:
+            return []
+        statement = select(entities).where(
+            and_(entities.c.school_id == school_id, entities.c.norm_key.in_(list(norm_keys)))
+        )
+        with self._engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+        return [_entity(row) for row in rows]
+
     def neighbors(self, school_id: int, entity_ids: Sequence[int], *, hops: int = 1) -> list[Neighbor]:
         """지정 엔티티의 1-hop 이웃만 학교 범위 안에서 반환한다."""
 

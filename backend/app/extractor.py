@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
 from app.llm import Extraction, Extractor as LLMExtractor
+from app.prompts import whitelist_instruction
 from app.schemas import CrawledPage, ExtractedChunk, ExtractedEntity, ExtractedRelation, ExtractionFailure
 
 
@@ -36,19 +37,9 @@ RELATION_TYPES = frozenset(
     }
 )
 
-_WHITELIST_INSTRUCTION = (
-    "아래 대학 공지에서 엔티티와 관계를 추출하라. 반드시 다음 타입만 사용하고, "
-    "목록 밖 타입·관계는 만들지 마라. 날짜·기간·금액·인원은 관계가 아니라 관련 "
-    "엔티티의 attributes에 담아라.\n"
-    f"허용 엔티티 타입: {', '.join(sorted(ENTITY_TYPES))}\n"
-    f"허용 관계 타입: {', '.join(sorted(RELATION_TYPES))}\n"
-    "관계의 source와 target은 entities에 포함한 정확한 name 문자열을 사용하라. "
-    "관계 방향은 의미의 주체에서 대상으로 쓴다. 예: 공지→부서·기관/담당자=게시, "
-    "공지→장학금·프로그램·채용·행사·학사일정·규정=안내, "
-    "공지→주제·카테고리=분류, 공지·프로그램·장학금→대상·자격=대상이다. "
-    "소속 관계는 본문이 조직의 상하 관계를 명시할 때만 만들고, 표에서 함께 보이거나 "
-    "대학명·부서명이 함께 등장한다는 이유만으로 추정하지 마라."
-)
+# 프롬프트 문안은 app/prompts.py 가 소유한다. 화이트리스트 타입 집합은 이 모듈이
+# 소유·검증(§2)하므로, 문안 빌더에 넘겨 한 번만 조립한다.
+_WHITELIST_INSTRUCTION = whitelist_instruction(ENTITY_TYPES, RELATION_TYPES)
 
 DEFAULT_CHUNK_CHARS = 2_000  # 약 500 tokens의 의존성 없는 근사치
 DEFAULT_OVERLAP_CHARS = 200  # 약 50 tokens의 의존성 없는 근사치
