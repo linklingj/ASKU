@@ -17,22 +17,18 @@ from typing import TYPE_CHECKING, Protocol
 from app.graph_builder import normalize_entity_key
 from app.llm import Embedder, Extractor, Generator
 from app.models import Document, Entity
+from app.prompts import rag_answer_instruction
 from app.schemas import RagAnswer, Source
 
 if TYPE_CHECKING:  # storage.py 는 pgvector 를 top-level import 하므로 런타임 의존을 피한다
     from app.storage import Neighbor
 
 
-# 근거 부족 시 생성 대신 반환하는 보류 문구(07 §3).
+# 근거 부족 시 생성 대신 반환하는 보류 문구(07 §3). 답변 지시문에도 끼워 넣는다.
 NO_EVIDENCE_ANSWER = "해당 정보를 찾지 못했습니다."
 
-# "컨텍스트에만 근거해 답하라"는 제약은 호출자(엔진) 책임이다(08_llm-provider.md).
-_ANSWER_INSTRUCTION = (
-    "너는 대학 공지 안내 도우미다. 아래 [컨텍스트]의 근거에만 기반해 한국어로 답하라.\n"
-    "- 컨텍스트에 없는 내용은 추측하지 말고 모른다고 답하라.\n"
-    "- 날짜·금액·자격 등 조건은 근거에 있는 값을 그대로 인용하라.\n"
-    f'- 근거가 부족하면 "{NO_EVIDENCE_ANSWER}" 라고 답하라.'
-)
+# 프롬프트 문안은 app/prompts.py 가 소유한다. 여기서는 보류 문구를 끼워 조립만 한다.
+_ANSWER_INSTRUCTION = rag_answer_instruction(NO_EVIDENCE_ANSWER)
 
 
 class RagStorage(Protocol):
