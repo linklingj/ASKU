@@ -93,6 +93,7 @@ upsert_entity(school_id, type, name, norm_key, attributes, source_doc_ids) -> en
 upsert_edge(school_id, source_entity_id, target_entity_id, relation, source_doc_ids) -> edge_id
 
 vector_search(school_id, query_embedding, k) -> [doc_id, source_url, title, content, score]
+entities_by_norm_keys(school_id, norm_keys) -> [entity]        # RAG 질의 엔티티 매핑용
 neighbors(school_id, entity_ids, hops=1) -> [entity, edge, source_doc_ids]
 get_documents(school_id, doc_ids) -> [document]
 
@@ -131,7 +132,7 @@ Storage는 URL 수집·HTML 파싱·LLM 호출·엔티티 의미 판단·스케�
 
 ## 7. 조회·백업·확장
 
-- RAG 조회는 모든 `vector_search`, `neighbors`, `get_documents` 호출에 `school_id` 필터를 강제한다.
+- RAG 조회는 모든 `vector_search`, `entities_by_norm_keys`, `neighbors`, `get_documents` 호출에 `school_id` 필터를 강제한다.
 - 인덱스는 기존 HNSW 벡터 인덱스, `documents(school_id)`, `entities(school_id, norm_key)`, `edges(school_id, source_entity_id)`를 기본으로 한다. 해시·URL 조합 인덱스 추가 여부는 실제 데이터 규모를 측정해 결정한다.
 - 백업 범위는 `schools`, `documents`, `entities`, `edges`, 실행 이력, 그리고 추후 도입될 원문 저장소다. 백업 주기, RPO/RTO, 복구 리허설, 접근 제어·개인정보 마스킹은 **미정**이다.
 - 단일 Postgres + pgvector + edges 테이블은 현재 확정 구조다. 그래프 순회가 측정상 병목일 때만 Neo4j 등 별도 Graph DB를 재검토한다.

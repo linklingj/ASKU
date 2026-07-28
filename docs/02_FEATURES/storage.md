@@ -29,6 +29,7 @@ PYTHONPATH=backend python -m unittest discover -s backend/tests -v
 - `doc_hash_exists(school_id, source_url, content_hash) -> bool`
 - `doc_url_exists(school_id, source_url) -> bool`
 - `vector_search(school_id, query_embedding, k) -> list[(Document, score)]`
+- `entities_by_norm_keys(school_id, norm_keys) -> list[Entity]`
 - `neighbors(school_id, entity_ids, hops=1) -> list[Neighbor]`
 - `get_documents(school_id, doc_ids) -> list[Document]`
 
