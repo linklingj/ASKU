@@ -8,6 +8,8 @@
 
 관련 문서: [`10_data-model.md`](10_data-model.md) · [`07_graph-rag-engine.md`](07_graph-rag-engine.md) · [`01_backend-api.md`](01_backend-api.md) · [`00_BASICS/PLAN.md`](../00_BASICS/PLAN.md) §11(API 초안)
 
+실행: `cd "frontend/src" && python3 -m http.server 5500`
+
 ---
 
 ## 0. 범위 · 스택
