@@ -7,15 +7,14 @@ import sys
 import unittest
 from unittest.mock import MagicMock
 
-for _m in [
-    "pgvector", "pgvector.sqlalchemy", "sqlalchemy",
-    "sqlalchemy.dialects", "sqlalchemy.dialects.postgresql",
-    "sqlalchemy.engine",
-]:
-    try:
-        __import__(_m)
-    except ImportError:
-        sys.modules[_m] = MagicMock()
+try:
+    import pgvector.sqlalchemy  # type: ignore
+except ImportError:
+    mock_vector = MagicMock()
+    mock_pgvector = MagicMock()
+    mock_pgvector.sqlalchemy.Vector = mock_vector
+    sys.modules["pgvector"] = mock_pgvector
+    sys.modules["pgvector.sqlalchemy"] = mock_pgvector.sqlalchemy
 
 from app.models import EMBEDDING_DIM
 from app.storage import (
