@@ -136,7 +136,8 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         run = crawler.crawl(crawl_request, adapter)
         pages = crawler.pages_for_extractor(run)
 
-        _PROGRESS_MAP[school_id]["pages"] = len(pages)
+        # 전체 방문/수집된 페이지 수
+        _PROGRESS_MAP[school_id]["pages"] = len(run.pages)
         _PROGRESS_MAP[school_id]["progress"] = 0.3
 
         if not pages and run.failures:
@@ -148,9 +149,9 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
 
         # 2. 인덱싱 (추출 → 그래프 빌드)
         storage.update_school_status(school_id, "indexing")
-        _PROGRESS_MAP[school_id]["stage"] = "indexing"
+        _PROGRESS_MAP[school_id]["stage"] = "extracting"
         _PROGRESS_MAP[school_id]["progress"] = 0.4
-        _PROGRESS_MAP[school_id]["message"] = "엔티티 추출 및 그래프 구축 중..."
+        _PROGRESS_MAP[school_id]["message"] = "본문 파싱 및 엔티티 추출 중..."
 
         from app.llm import GeminiProvider, LocalEmbedder
 
@@ -164,6 +165,7 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
 
         for i, page in enumerate(pages):
             try:
+                _PROGRESS_MAP[school_id]["stage"] = "extracting"
                 result = extractor.process(page)
                 if isinstance(result, ExtractionFailure):
                     has_failures = True
@@ -173,6 +175,7 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
                     )
                     continue
 
+                _PROGRESS_MAP[school_id]["stage"] = "building"
                 for chunk in result:
                     _PROGRESS_MAP[school_id]["chunks"] += 1
                     build_result = builder.build(school_id, chunk)

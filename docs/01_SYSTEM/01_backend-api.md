@@ -326,9 +326,11 @@ GET /schools/{school_id}/entities/{entity_id}
 4. 프론트엔드는 `GET /schools/{id}/status`를 폴링해 진행 상태를 확인한다.
 5. 파이프라인이 끝나면 상태가 `ready` 또는 `failed`로 전이된다.
 
-> Crawler → Extractor → Graph Builder 파이프라인의 각 단계 호출이 동기 API인지
-> 작업 큐인지는 **미정**이다 ([`03_crawler.md`](03_crawler.md) §5).
-> 어느 방식이든 Backend API는 상태 전이만 추적한다.
+> **실행 모델 및 진행도 추적 (MVP)**
+> - 크롤링·인덱싱 비동기 작업은 FastAPI의 `BackgroundTasks`로 단일 프로세스 백그라운드 태스크로 실행된다.
+> - 작업 중 실시간 세부 진행도(`pages`, `chunks`, `entities`, `edges`, `stage`, `progress`)는 메모리 진행도 맵(`_PROGRESS_MAP`)에서 추적되며, `GET /schools/{id}/status`에서 반환된다.
+> - 서버 재시작 시에는 Storage의 DB 영속 상태(`status`, `crawl_started_at`) 및 집계 수치로 안전하게 폴백한다.
+> - 추후 다중 워커/분산 처리 전환 시 Celery / Redis / DB 작업 큐 기반 저장소로 이관한다 ([`03_crawler.md`](03_crawler.md) §5).
 
 ## 7. 미정 사항
 
