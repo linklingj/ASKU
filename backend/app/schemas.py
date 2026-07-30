@@ -175,6 +175,7 @@ class RagAnswer(BaseModel):
 
     answer: str
     sources: list[Source] = Field(default_factory=list)
+    entity_ids: list[str] = Field(default_factory=list)
 
 
 # ── Backend API 요청·응답 스키마 (01_backend-api.md) ─────────────────

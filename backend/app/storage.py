@@ -211,11 +211,14 @@ class Storage:
         self._engine.dispose()
 
     def create_schema(self) -> None:
-        """pgvector 확장과 Storage 테이블·인덱스를 생성한다."""
+        """pgvector 확장과 Storage 테이블·인덱스를 생성하고 기존 DB 호환성 컬럼을 보완한다."""
 
         with self._engine.begin() as connection:
             connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             metadata.create_all(connection)
+            # 기존 테이블 호환성을 위한 경량 멱등 마이그레이션
+            connection.execute(text("ALTER TABLE schools ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'idle'"))
+            connection.execute(text("ALTER TABLE schools ADD COLUMN IF NOT EXISTS crawl_started_at TIMESTAMPTZ"))
 
     def create_school(self, school: School) -> School:
         values = {
@@ -247,6 +250,20 @@ class Storage:
         with self._engine.connect() as connection:
             rows = connection.execute(statement).mappings().all()
             return [_school(row) for row in rows]
+
+    def list_schools_with_entity_counts(self, query: str | None = None) -> list[tuple[School, int]]:
+        """학교 목록과 소속 엔티티 수를 단일 JOIN/GROUP BY 쿼리로 조회한다 (N+1 방지)."""
+
+        statement = (
+            select(*schools.c, func.count(entities.c.entity_id).label("entity_count"))
+            .outerjoin(entities, schools.c.school_id == entities.c.school_id)
+        )
+        if query is not None:
+            statement = statement.where(schools.c.name.ilike(f"%{query}%"))
+        statement = statement.group_by(*schools.c).order_by(schools.c.name)
+        with self._engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+            return [(_school(row), int(row["entity_count"])) for row in rows]
 
     def try_start_crawl(self, school_id: int) -> School | None:
         """원자적으로 크롤링 시작 상태로 변경한다. 이미 crawling/indexing 중이면 None을 반환한다."""

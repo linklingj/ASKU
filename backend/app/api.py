@@ -97,6 +97,11 @@ def _school_not_found(school_id: int) -> JSONResponse:
 # ── 비동기 크롤링 백그라운드 태스크 ────────────────────────────────────
 
 
+# ── 비동기 크롤링 진행 추적 메타데이터 ────────────────────────────────────
+
+_PROGRESS_MAP: dict[int, dict] = {}
+
+
 def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
     """백그라운드에서 크롤링 파이프라인을 실행한다.
 
@@ -104,6 +109,15 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
     실패 시 failed 또는 partial_failed 로 전이한다.
     """
     storage = _get_storage()
+    _PROGRESS_MAP[school_id] = {
+        "pages": 0,
+        "chunks": 0,
+        "entities": 0,
+        "edges": 0,
+        "progress": 0.1,
+        "stage": "crawling",
+        "message": "공지 페이지 수집 중...",
+    }
     try:
         from app.crawler import CommonNoticeAdapter, Crawler
         from app.extractor import DocumentExtractor
@@ -122,12 +136,21 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         run = crawler.crawl(crawl_request, adapter)
         pages = crawler.pages_for_extractor(run)
 
+        _PROGRESS_MAP[school_id]["pages"] = len(pages)
+        _PROGRESS_MAP[school_id]["progress"] = 0.3
+
         if not pages and run.failures:
             storage.update_school_status(school_id, "failed")
+            _PROGRESS_MAP[school_id]["stage"] = "failed"
+            _PROGRESS_MAP[school_id]["progress"] = 0.0
+            _PROGRESS_MAP[school_id]["message"] = "크롤링 실패"
             return
 
         # 2. 인덱싱 (추출 → 그래프 빌드)
         storage.update_school_status(school_id, "indexing")
+        _PROGRESS_MAP[school_id]["stage"] = "indexing"
+        _PROGRESS_MAP[school_id]["progress"] = 0.4
+        _PROGRESS_MAP[school_id]["message"] = "엔티티 추출 및 그래프 구축 중..."
 
         from app.llm import GeminiProvider, LocalEmbedder
 
@@ -137,10 +160,11 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         builder = GraphBuilder(storage=storage, embedder=embedder)
 
         has_failures = len(run.failures) > 0
-        for page in pages:
+        total_pages = max(len(pages), 1)
+
+        for i, page in enumerate(pages):
             try:
                 result = extractor.process(page)
-                # ExtractionFailure가 반환되면 실패로 기록
                 if isinstance(result, ExtractionFailure):
                     has_failures = True
                     logger.warning(
@@ -148,17 +172,22 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
                         school_id, page.source_url, result.error_code,
                     )
                     continue
-                # result는 list[ExtractedChunk]
+
                 for chunk in result:
+                    _PROGRESS_MAP[school_id]["chunks"] += 1
                     build_result = builder.build(school_id, chunk)
                     if build_result.status == "failed":
                         has_failures = True
-                        logger.warning(
-                            "빌드 실패: school_id=%d, url=%s, code=%s",
-                            school_id, chunk.source_url, build_result.error_code,
-                        )
-                    elif build_result.status == "partial":
-                        has_failures = True
+                    else:
+                        _PROGRESS_MAP[school_id]["entities"] += len(build_result.entity_ids)
+                        _PROGRESS_MAP[school_id]["edges"] += len(build_result.edge_ids)
+                        if build_result.status == "partial":
+                            has_failures = True
+
+                # 진행률 계산 (0.4 ~ 0.9)
+                curr_p = 0.4 + (0.5 * (i + 1) / total_pages)
+                _PROGRESS_MAP[school_id]["progress"] = round(curr_p, 2)
+
             except Exception:
                 has_failures = True
                 logger.exception("파이프라인 실패: school_id=%d, url=%s", school_id, page.source_url)
@@ -167,8 +196,16 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         final_status = "partial_failed" if has_failures else "ready"
         storage.update_school_status(school_id, final_status)
 
+        _PROGRESS_MAP[school_id]["stage"] = "done" if final_status == "ready" else final_status
+        _PROGRESS_MAP[school_id]["progress"] = 1.0
+        _PROGRESS_MAP[school_id]["message"] = "인덱싱이 완료되었습니다."
+
     except Exception:
         logger.exception("크롤링 전체 실패: school_id=%d", school_id)
+        _PROGRESS_MAP[school_id] = {
+            "pages": 0, "chunks": 0, "entities": 0, "edges": 0,
+            "progress": 0.0, "stage": "failed", "message": "파이프라인 전체 실패",
+        }
         try:
             storage.update_school_status(school_id, "failed")
         except Exception:
@@ -275,21 +312,19 @@ def create_school(body: SchoolCreateRequest, background_tasks: BackgroundTasks):
 
 @app.get("/schools", response_model=SchoolListResponse)
 def list_schools(query: str | None = Query(default=None, description="학교명 검색어")):
-    """등록된 학교를 이름으로 검색한다. 빈 쿼리 시 전체 목록."""
+    """등록된 학교를 이름으로 검색한다 (N+1 쿼리 방지 단일 조인 조회)."""
     storage = _get_storage()
-    schools = storage.list_schools(query=query)
-    items = []
-    for s in schools:
-        stats = storage.get_school_stats(s.school_id)
-        items.append(
-            SchoolListItem(
-                school_id=s.school_id,
-                name=s.name,
-                status=s.status,
-                entity_count=stats.get("entity_count", 0),
-                updated_at=s.updated_at,
-            )
+    schools_with_counts = storage.list_schools_with_entity_counts(query=query)
+    items = [
+        SchoolListItem(
+            school_id=s.school_id,
+            name=s.name,
+            status=s.status,
+            entity_count=count,
+            updated_at=s.updated_at,
         )
+        for s, count in schools_with_counts
+    ]
     return SchoolListResponse(schools=items)
 
 
@@ -333,17 +368,10 @@ def query_school(school_id: int, body: QueryRequest):
     rag = _get_rag_engine()
     result = rag.answer(school_id, body.question)
 
-    # 답변 근거 관련 엔티티 ID 하이라이트용 목록 구성
-    entity_ids: list[str] = []
-    if result.sources:
-        # 서브그래프 엔티티 중 관련 항목 반환
-        top_entities = storage.get_entities_for_graph(school_id, limit=20)
-        entity_ids = [f"e_{e.entity_id}" for e in top_entities]
-
     return QueryResponse(
         answer=result.answer,
         sources=result.sources,
-        entity_ids=entity_ids,
+        entity_ids=result.entity_ids,
     )
 
 
@@ -371,7 +399,7 @@ def recrawl_school(school_id: int, background_tasks: BackgroundTasks):
 
 @app.get("/schools/{school_id}/status", response_model=StatusResponse)
 def get_school_status(school_id: int):
-    """현재 크롤링·인덱싱 진행 상태를 반환한다 (프론트·백엔드 통합 명세)."""
+    """현재 크롤링·인덱싱 진행 상태를 반환한다 (실시간 추적 메타데이터 + 프론트/백엔드 통합 명세)."""
     storage = _get_storage()
     school = storage.get_school(school_id)
     if school is None:
@@ -380,36 +408,58 @@ def get_school_status(school_id: int):
     stats = storage.get_school_stats(school_id)
     status = school.status
 
-    # 진행률 및 메세지 산출
-    if status in ("ready", "partial_failed"):
-        progress_val = 1.0
-        msg = "인덱싱이 완료되어 질의 가능한 상태입니다."
-    elif status == "crawling":
-        progress_val = 0.3
-        msg = "웹 페이지 및 공지 수집 중입니다."
-    elif status == "indexing":
-        progress_val = 0.7
-        msg = "정보 추출 및 지식그래프 구축 중입니다."
-    elif status == "failed":
-        progress_val = 0.0
-        msg = "크롤링 또는 인덱싱 처리에 실패했습니다."
+    # 실시간 진행도 추적 정보가 있으면 우선 반영
+    live_progress = _PROGRESS_MAP.get(school_id)
+    if live_progress and status in ("crawling", "indexing"):
+        progress_val = live_progress.get("progress", 0.5)
+        stage_val = live_progress.get("stage", status)
+        msg = live_progress.get("message", "처리 중입니다.")
+        detail_obj = StatusProgressDetail(
+            pages=live_progress.get("pages", 0),
+            chunks=live_progress.get("chunks", 0),
+            entities=live_progress.get("entities", 0),
+            edges=live_progress.get("edges", 0),
+        )
     else:
-        progress_val = 0.0
-        msg = "대기 중입니다."
+        # DB 기반 기본 진행률 산출 및 프론트 stage 변환 ('ready' -> 'done')
+        if status == "ready":
+            progress_val = 1.0
+            stage_val = "done"
+            msg = "인덱싱이 완료되어 질의 가능한 상태입니다."
+        elif status == "partial_failed":
+            progress_val = 1.0
+            stage_val = "partial_failed"
+            msg = "일부 처리 실패가 있었으나 질의 가능한 상태입니다."
+        elif status == "crawling":
+            progress_val = 0.3
+            stage_val = "crawling"
+            msg = "웹 페이지 수집 중입니다."
+        elif status == "indexing":
+            progress_val = 0.7
+            stage_val = "indexing"
+            msg = "지식그래프 인덱싱 중입니다."
+        elif status == "failed":
+            progress_val = 0.0
+            stage_val = "failed"
+            msg = "크롤링 또는 인덱싱 처리에 실패했습니다."
+        else:
+            progress_val = 0.0
+            stage_val = "idle"
+            msg = "대기 중입니다."
 
-    from app.schemas import StatusProgressDetail
-
-    return StatusResponse(
-        school_id=school_id,
-        status=status,
-        stage=status,
-        progress=progress_val,
-        detail=StatusProgressDetail(
+        detail_obj = StatusProgressDetail(
             pages=stats.get("document_count", 0),
             chunks=stats.get("document_count", 0),
             entities=stats.get("entity_count", 0),
             edges=0,
-        ),
+        )
+
+    return StatusResponse(
+        school_id=school_id,
+        status=status,
+        stage=stage_val,
+        progress=progress_val,
+        detail=detail_obj,
         message=msg,
         started_at=school.crawl_started_at or school.updated_at,
     )

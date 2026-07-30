@@ -100,6 +100,7 @@ def mock_storage():
     storage.create_school.return_value = school
     storage.get_school.return_value = school
     storage.list_schools.return_value = [school]
+    storage.list_schools_with_entity_counts.return_value = [(school, 1023)]
     storage.try_start_crawl.return_value = _make_school(status="crawling")
     storage.update_school_status.return_value = school
     storage.get_school_stats.return_value = {
@@ -192,7 +193,7 @@ class TestListSchools:
     def test_200_with_query(self, client, mock_storage):
         resp = client.get("/schools?query=연세")
         assert resp.status_code == 200
-        mock_storage.list_schools.assert_called_with(query="연세")
+        mock_storage.list_schools_with_entity_counts.assert_called_with(query="연세")
 
 
 # ── GET /schools/{id} ──────────────────────────────────────────────────
@@ -222,6 +223,7 @@ class TestQuerySchool:
         rag_answer = RagAnswer(
             answer="성적우수 장학금 마감일은 2026년 3월 15일입니다.",
             sources=[Source(title="장학금 안내", url="https://example.com/notice")],
+            entity_ids=["e_123"],
         )
         with patch("app.api._get_rag_engine") as mock_rag:
             mock_rag.return_value.answer.return_value = rag_answer
@@ -231,7 +233,7 @@ class TestQuerySchool:
         body = resp.json()
         assert "마감일" in body["answer"]
         assert len(body["sources"]) == 1
-        assert len(body["entity_ids"]) > 0
+        assert body["entity_ids"] == ["e_123"]
 
     def test_503_not_ready(self, client, mock_storage):
         mock_storage.get_school.return_value = _make_school(status="crawling")

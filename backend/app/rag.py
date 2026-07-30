@@ -93,7 +93,22 @@ class GraphRAG:
         context, sources = self._assemble_context(school_id, hits, neighbors)
         prompt = f"{_ANSWER_INSTRUCTION}\n\n[질문]\n{question}"
         answer = self.generator.generate(prompt, context).strip()
-        return RagAnswer(answer=answer, sources=sources)
+
+        # 컨텍스트 확장에 사용된 실제 그래프 엔티티 ID들 수집
+        used_entity_ids: set[str] = set()
+        for n in neighbors:
+            src_id = getattr(n.source, "entity_id", None) if hasattr(n.source, "entity_id") else None
+            tgt_id = getattr(n.target, "entity_id", None) if hasattr(n.target, "entity_id") else None
+            if src_id is not None:
+                used_entity_ids.add(f"e_{src_id}")
+            if tgt_id is not None:
+                used_entity_ids.add(f"e_{tgt_id}")
+
+        return RagAnswer(
+            answer=answer,
+            sources=sources,
+            entity_ids=sorted(used_entity_ids),
+        )
 
     def _expand_neighbors(self, school_id: int, question: str) -> list["Neighbor"]:
         """질문에서 뽑은 엔티티를 norm_key 로 그래프에 매핑해 1-hop 이웃을 가져온다."""

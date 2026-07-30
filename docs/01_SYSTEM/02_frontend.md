@@ -221,12 +221,14 @@
 ```json
 {
   "school_id": "…",
-  "stage": "crawling|extracting|building|indexing|done|failed",
+  "stage": "crawling|extracting|building|indexing|done|ready|partial_failed|failed",
   "progress": 0.42,
   "detail": { "pages": 128, "chunks": 540, "entities": 210, "edges": 180 },
   "message": "공지 페이지 순회 중…"
 }
 ```
+
+> `stage`가 `"done"` 또는 `"ready"` 또는 `"partial_failed"` 일 경우 인덱싱 완료 상태로 처리하여 화면 전환을 수행한다.
 
 > 노드/엣지 필드 정의의 원본은 [`10_data-model.md`](10_data-model.md). 프론트는 그 부분집합만 사용한다. 모든 조회는 `school_id` 로 격리된다(학교 간 참조 없음).
 
