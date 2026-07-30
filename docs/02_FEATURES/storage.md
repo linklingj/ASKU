@@ -28,7 +28,9 @@ PYTHONPATH=backend python -m unittest discover -s backend/tests -v
 - `upsert_edge(...) -> edge_id`
 - `doc_hash_exists(school_id, source_url, content_hash) -> bool`
 - `doc_url_exists(school_id, source_url) -> bool`
-- `vector_search(school_id, query_embedding, k) -> list[(Document, score)]`
+- `record_url_observations(school_id, observed_urls) -> None`
+- `expire_documents_by_miss_count(school_id=None, threshold=3) -> list[doc_id]`
+- `vector_search(school_id, query_embedding, k) -> list[(Document, score)]` (만료 문서 제외)
 - `entities_by_norm_keys(school_id, norm_keys) -> list[Entity]`
 - `neighbors(school_id, entity_ids, hops=1) -> list[Neighbor]`
 - `get_documents(school_id, doc_ids) -> list[Document]`
@@ -40,5 +42,5 @@ PYTHONPATH=backend python -m unittest discover -s backend/tests -v
 - 문서: `school_id + source_url + content_hash + chunk_index`이 같으면 같은 청크다.
 - 엔티티: `(school_id, norm_key)`가 같으면 같은 엔티티다. 새 속성 값이 기존 같은 키를 갱신하고, 근거 문서 ID는 누적한다.
 - 엣지: 양 끝 엔티티가 같은 학교 소속일 때만 저장한다. `school_id + source_entity_id + target_entity_id + relation`이 같으면 하나로 병합하고 근거 문서 ID를 누적한다.
-- 자동 만료, 속성 이력, 실패 작업 재처리 큐는 Scheduler·운영 정책 단계에서 추가한다.
+- 문서 만료: 재크롤 관측 URL로 `miss_count`를 갱신하고, Scheduler가 임계값 이상이면 `expired_at`을 기록한다.
 - 현재 MVP는 각 테이블의 유니크 키로 멱등성을 보장한다. 실행 이력과 요청 ID 추적은 후속 작업이다.

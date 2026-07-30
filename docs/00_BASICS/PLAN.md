@@ -162,7 +162,7 @@ Graph RAG는 엔티티 간 관계를 명시적으로 다뤄 복합 질문에 강
 | 정보 추출 LLM | API (Claude / GPT) | 확정 |
 | 답변 생성 LLM | API 또는 로컬(Ollama), 단계별 전환 가능 | 확정 |
 | 백엔드 | FastAPI | 미정 |
-| 스케줄러 | Celery + Redis, APScheduler | 미정 |
+| 스케줄러 | FastAPI lifespan + asyncio 루프 (MVP). Celery/APScheduler는 멀티워커 시 재검토 | 확정(MVP) |
 | 프론트 | React / Next.js | 미정 |
 
 > Neo4j·Qdrant/Chroma 별도 도입은 보류. 그래프 순회가 실제 병목으로 측정되면 재검토.

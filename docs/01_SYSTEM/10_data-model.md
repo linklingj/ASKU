@@ -27,6 +27,8 @@
 | content_hash | 변경 감지용 본문 해시 |
 | embedding | vector(1024) |
 | crawled_at | 크롤링 시각 |
+| miss_count | 연속 미관측 횟수 (Scheduler 만료 판정) |
+| expired_at | 만료 확정 시각 (`NULL`이면 유효) |
 
 > 공지 1건 = 기본 Document 1행. 긴 문서만 `source_url`을 공유하는 여러 행으로 분할.
 

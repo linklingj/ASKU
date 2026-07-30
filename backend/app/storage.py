@@ -64,6 +64,8 @@ documents = Table(
     Column("content_hash", TEXT, nullable=False),
     Column("embedding", Vector(EMBEDDING_DIM)),
     Column("crawled_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
+    Column("miss_count", INTEGER, nullable=False, server_default=text("0")),
+    Column("expired_at", TIMESTAMP(timezone=True)),
     UniqueConstraint(
         "school_id",
         "source_url",
@@ -155,6 +157,8 @@ def _document(row: RowMapping) -> Document:
         content_hash=row["content_hash"],
         embedding=list(row["embedding"]) if row["embedding"] is not None else None,
         crawled_at=row["crawled_at"],
+        miss_count=int(row["miss_count"]) if row.get("miss_count") is not None else 0,
+        expired_at=row.get("expired_at"),
     )
 
 
@@ -219,6 +223,8 @@ class Storage:
             # 기존 테이블 호환성을 위한 경량 멱등 마이그레이션
             connection.execute(text("ALTER TABLE schools ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'idle'"))
             connection.execute(text("ALTER TABLE schools ADD COLUMN IF NOT EXISTS crawl_started_at TIMESTAMPTZ"))
+            connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS miss_count INT NOT NULL DEFAULT 0"))
+            connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ"))
 
     def create_school(self, school: School) -> School:
         values = {
@@ -422,6 +428,8 @@ class Storage:
                 "content": statement.excluded.content,
                 "embedding": statement.excluded.embedding,
                 "crawled_at": statement.excluded.crawled_at,
+                "miss_count": 0,
+                "expired_at": None,
             },
         ).returning(documents.c.doc_id)
         with self._engine.begin() as connection:
@@ -557,7 +565,13 @@ class Storage:
         distance = documents.c.embedding.cosine_distance(list(query_embedding))
         statement = (
             select(*documents.c, (1 - distance).label("score"))
-            .where(and_(documents.c.school_id == school_id, documents.c.embedding.is_not(None)))
+            .where(
+                and_(
+                    documents.c.school_id == school_id,
+                    documents.c.embedding.is_not(None),
+                    documents.c.expired_at.is_(None),
+                )
+            )
             .order_by(distance)
             .limit(k)
         )
@@ -624,8 +638,58 @@ class Storage:
         if not doc_ids:
             return []
         statement = select(documents).where(
-            and_(documents.c.school_id == school_id, documents.c.doc_id.in_(doc_ids))
+            and_(documents.c.school_id == school_id, documents.c.doc_id.in_(list(doc_ids)))
         )
         with self._engine.connect() as connection:
             rows = connection.execute(statement).mappings().all()
         return [_document(row) for row in rows]
+
+    def record_url_observations(self, school_id: int, observed_urls: Sequence[str]) -> None:
+        """재크롤에서 관측된 URL은 miss_count를 0으로, 미관측 URL은 1 증가시킨다.
+
+        이미 만료된 문서(expired_at IS NOT NULL)는 건드리지 않는다.
+        observed_urls가 비어 있으면 no-op (실패·빈 수집으로 전량 미관측 처리 방지).
+        """
+
+        urls = [u for u in dict.fromkeys(observed_urls) if u]
+        if not urls:
+            return
+
+        active = and_(documents.c.school_id == school_id, documents.c.expired_at.is_(None))
+        with self._engine.begin() as connection:
+            connection.execute(
+                documents.update()
+                .where(and_(active, documents.c.source_url.in_(urls)))
+                .values(miss_count=0)
+            )
+            connection.execute(
+                documents.update()
+                .where(and_(active, documents.c.source_url.notin_(urls)))
+                .values(miss_count=documents.c.miss_count + 1)
+            )
+
+    def expire_documents_by_miss_count(
+        self,
+        school_id: int | None = None,
+        threshold: int = 3,
+    ) -> list[int]:
+        """연속 미관측 횟수가 threshold 이상인 문서를 만료(expired_at 기록)하고 doc_id 목록을 반환한다."""
+
+        if threshold < 1:
+            raise ValueError("threshold는 1 이상이어야 합니다")
+
+        conditions = [
+            documents.c.miss_count >= threshold,
+            documents.c.expired_at.is_(None),
+        ]
+        if school_id is not None:
+            conditions.append(documents.c.school_id == school_id)
+
+        statement = (
+            documents.update()
+            .where(and_(*conditions))
+            .values(expired_at=func.now())
+            .returning(documents.c.doc_id)
+        )
+        with self._engine.begin() as connection:
+            return list(connection.execute(statement).scalars().all())

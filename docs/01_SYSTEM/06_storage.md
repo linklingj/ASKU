@@ -48,7 +48,9 @@ CREATE TABLE documents (
   chunk_index   INT DEFAULT 0,          -- 같은 원문 내 순번
   content_hash  TEXT NOT NULL,          -- 변경 감지용(본문 해시)
   embedding     vector(1024),
-  crawled_at    TIMESTAMPTZ DEFAULT now()
+  crawled_at    TIMESTAMPTZ DEFAULT now(),
+  miss_count    INT NOT NULL DEFAULT 0, -- 연속 미관측 횟수 (Scheduler 만료)
+  expired_at    TIMESTAMPTZ             -- 만료 확정 시각 (NULL이면 유효)
 );
 
 -- 엔티티(노드)
@@ -130,7 +132,7 @@ Storage는 URL 수집·HTML 파싱·LLM 호출·엔티티 의미 판단·스케�
 - `upsert_edge`는 두 엔티티가 요청 `school_id`에 모두 속할 때만 생성한다. `school_id + source_entity_id + target_entity_id + relation`을 중복 키로 사용하며, 같은 관계는 하나의 엣지로 병합하고 `source_doc_ids`에 근거 문서를 누적한다.
 - MVP는 문서·엔티티·엣지의 유니크 키를 멱등 키로 사용해 중복 반영을 막는다. 실행 이력 테이블과 요청 ID 추적은 Crawler·Scheduler 도입 시 별도로 추가한다.
 - pgvector 임베딩과 관계 테이블 반영이 일부만 성공하면 MVP에서는 오류를 호출자에게 전파한다. 자동 실행 이력, 보상·재처리 큐는 후속 작업으로 유보한다.
-- Crawler의 단일 미관측만으로 삭제하지 않는다. Scheduler가 삭제·만료를 확정한 뒤에만 문서·관련 근거를 만료 또는 물리 삭제한다. 만료 상태 컬럼과 보존 기간은 **미정**이다.
+- Crawler의 단일 미관측만으로 삭제하지 않는다. Scheduler가 연속 미관측 N회(`documents.miss_count`) 뒤에 `expired_at`을 기록해 만료를 확정한다. 벡터 검색은 `expired_at IS NULL`인 문서만 반환한다. 만료 문서의 그래프 기여분 물리 삭제 여부는 **미정**이다.
 
 ## 7. 조회·백업·확장
 

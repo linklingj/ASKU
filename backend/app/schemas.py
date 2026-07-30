@@ -186,8 +186,9 @@ class SchoolCreateRequest(BaseModel):
 
     name: str = Field(..., min_length=1, description="학교명")
     base_url: str = Field(..., description="공지·학사 기준 URL")
-    crawl_schedule: Literal["daily", "weekly", "monthly"] | None = Field(
-        default=None, description="재크롤링 주기"
+    crawl_schedule: str | None = Field(
+        default=None,
+        description="재크롤링 주기 (daily/weekly/monthly/hourly, 30m·1h, 또는 5필드 cron)",
     )
 
 
