@@ -175,3 +175,159 @@ class RagAnswer(BaseModel):
 
     answer: str
     sources: list[Source] = Field(default_factory=list)
+
+
+# ── Backend API 요청·응답 스키마 (01_backend-api.md) ─────────────────
+
+
+class SchoolCreateRequest(BaseModel):
+    """POST /schools 요청 본문."""
+
+    name: str
+    base_url: str
+    crawl_schedule: str | None = None
+
+
+class SchoolResponse(BaseModel):
+    """학교 응답 (등록·상세 공통)."""
+
+    school_id: int
+    name: str
+    base_url: str
+    crawl_schedule: str | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class SchoolListItem(BaseModel):
+    """GET /schools 목록 항목."""
+
+    school_id: int
+    name: str
+    status: str
+    updated_at: datetime
+
+
+class SchoolListResponse(BaseModel):
+    """GET /schools 응답."""
+
+    schools: list[SchoolListItem]
+
+
+class SchoolDetailStats(BaseModel):
+    """학교 상세의 통계 섹션."""
+
+    document_count: int = 0
+    entity_count: int = 0
+    last_crawled_at: datetime | None = None
+
+
+class SchoolDetailResponse(BaseModel):
+    """GET /schools/{id} 응답."""
+
+    school_id: int
+    name: str
+    base_url: str
+    crawl_schedule: str | None = None
+    status: str
+    stats: SchoolDetailStats
+    created_at: datetime
+    updated_at: datetime
+
+
+class QueryRequest(BaseModel):
+    """POST /schools/{id}/query 요청 본문."""
+
+    question: str
+
+
+class QueryResponse(BaseModel):
+    """POST /schools/{id}/query 응답."""
+
+    answer: str
+    sources: list[Source] = Field(default_factory=list)
+    entity_ids: list[str] = Field(default_factory=list)
+
+
+class RecrawlResponse(BaseModel):
+    """POST /schools/{id}/recrawl 응답."""
+
+    school_id: int
+    status: str
+    message: str
+
+
+class StatusProgress(BaseModel):
+    """크롤링·인덱싱 진행 상세."""
+
+    crawled_pages: int = 0
+    total_pages: int = 0
+    indexed_documents: int = 0
+
+
+class StatusResponse(BaseModel):
+    """GET /schools/{id}/status 응답."""
+
+    school_id: int
+    status: str
+    progress: StatusProgress
+    started_at: datetime | None = None
+
+
+class GraphNode(BaseModel):
+    """그래프 노드 (프론트엔드 소비용)."""
+
+    id: str
+    type: str
+    name: str
+    degree: int = 0
+    doc_count: int = 0
+
+
+class GraphEdge(BaseModel):
+    """그래프 엣지 (프론트엔드 소비용)."""
+
+    source: str
+    target: str
+    relation: str
+
+
+class GraphResponse(BaseModel):
+    """GET /schools/{id}/graph 응답."""
+
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+
+
+class EntityNeighbor(BaseModel):
+    """엔티티 이웃 정보."""
+
+    id: str
+    name: str
+    relation: str
+
+
+class EntityDetailResponse(BaseModel):
+    """GET /schools/{id}/entities/{eid} 응답."""
+
+    id: str
+    type: str
+    name: str
+    attributes: dict = Field(default_factory=dict)
+    sources: list[Source] = Field(default_factory=list)
+    neighbors: list[EntityNeighbor] = Field(default_factory=list)
+
+
+class ErrorDetail(BaseModel):
+    """공통 에러 본문."""
+
+    code: str
+    message: str
+    details: dict | None = None
+
+
+class ErrorResponse(BaseModel):
+    """공통 에러 응답 형식. {error: {code, message, details}}"""
+
+    error: ErrorDetail

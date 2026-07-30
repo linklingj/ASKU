@@ -221,6 +221,48 @@ GET /schools/{school_id}/status
 | `partial_failed` | 일부 실패, 질의는 가능 |
 | `failed` | 전체 실패 |
 
+### 2.7 코어 서브그래프 (프론트 소비용 확장)
+
+```
+GET /schools/{school_id}/graph
+```
+
+차수(degree) 상위 엔티티와 그 사이의 엣지를 반환한다. QA 화면의 네트워크 그래프 초기 로드용.
+
+**응답 `200 OK`**
+
+```json
+{
+  "nodes": [
+    { "id": "e_123", "type": "장학금", "name": "국가장학금", "degree": 5, "doc_count": 3 }
+  ],
+  "edges": [
+    { "source": "e_123", "target": "e_45", "relation": "담당" }
+  ]
+}
+```
+
+---
+
+### 2.8 엔티티 상세 (프론트 소비용 확장)
+
+```
+GET /schools/{school_id}/entities/{entity_id}
+```
+
+노드 상세·이웃·근거 문서를 반환한다. QA 화면의 노드 선택 패널용.
+
+**응답 `200 OK`**
+
+```json
+{
+  "id": "e_123", "type": "장학금", "name": "국가장학금",
+  "attributes": { "마감일": "3/15", "금액": "300만원" },
+  "sources": [ { "title": "2026 교내 장학금 안내", "url": "https://…" } ],
+  "neighbors": [ { "id": "e_45", "name": "학생지원팀", "relation": "담당" } ]
+}
+```
+
 ## 3. 학교 상태 전이
 
 ```

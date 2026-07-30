@@ -46,6 +46,7 @@ schools = Table(
     Column("name", TEXT, nullable=False),
     Column("base_url", TEXT, nullable=False),
     Column("crawl_schedule", TEXT),
+    Column("status", TEXT, nullable=False, server_default=text("'idle'")),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
 )
@@ -179,6 +180,18 @@ def _edge(row: RowMapping) -> Edge:
     )
 
 
+def _school(row: RowMapping) -> School:
+    return School(
+        school_id=row["school_id"],
+        name=row["name"],
+        base_url=row["base_url"],
+        crawl_schedule=row["crawl_schedule"],
+        status=row["status"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 class Storage:
     """학교 격리가 강제된 동기식 Postgres 저장소."""
 
@@ -213,6 +226,125 @@ class Storage:
                 insert(schools).values(**values).returning(*schools.c)
             ).mappings().one()
         return School(**row)
+
+    def get_school(self, school_id: int) -> School | None:
+        """학교 ID로 단일 학교를 조회한다."""
+
+        statement = select(schools).where(schools.c.school_id == school_id)
+        with self._engine.connect() as connection:
+            row = connection.execute(statement).mappings().one_or_none()
+            return _school(row) if row is not None else None
+
+    def list_schools(self, query: str | None = None) -> list[School]:
+        """학교 목록을 조회한다. 이름으로 필터링할 수 있다."""
+
+        statement = select(schools)
+        if query is not None:
+            statement = statement.where(schools.c.name.ilike(f"%{query}%"))
+        statement = statement.order_by(schools.c.name)
+        with self._engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+            return [_school(row) for row in rows]
+
+    def update_school_status(self, school_id: int, status: str) -> School | None:
+        """학교의 상태를 업데이트한다."""
+
+        statement = (
+            schools.update()
+            .where(schools.c.school_id == school_id)
+            .values(status=status)
+            .returning(*schools.c)
+        )
+        with self._engine.begin() as connection:
+            row = connection.execute(statement).mappings().one_or_none()
+            return _school(row) if row is not None else None
+
+    def get_school_stats(self, school_id: int) -> dict:
+        """학교의 문서 수, 엔티티 수, 마지막 크롤링 시각을 반환한다."""
+
+        with self._engine.connect() as connection:
+            document_count = connection.execute(
+                select(func.count()).where(documents.c.school_id == school_id)
+            ).scalar_one()
+
+            entity_count = connection.execute(
+                select(func.count()).where(entities.c.school_id == school_id)
+            ).scalar_one()
+
+            last_crawled_at = connection.execute(
+                select(func.max(documents.c.crawled_at)).where(documents.c.school_id == school_id)
+            ).scalar_one_or_none()
+
+            return {
+                "document_count": document_count,
+                "entity_count": entity_count,
+                "last_crawled_at": last_crawled_at,
+            }
+
+    def get_entities_for_graph(self, school_id: int, *, limit: int = 100) -> list[Entity]:
+        """그래프 코어 표시를 위해 차수가 높은 엔티티를 반환한다."""
+
+        statement = (
+            select(entities)
+            .join(
+                edges,
+                and_(
+                    edges.c.school_id == school_id,
+                    or_(
+                        edges.c.source_entity_id == entities.c.entity_id,
+                        edges.c.target_entity_id == entities.c.entity_id
+                    )
+                )
+            )
+            .where(entities.c.school_id == school_id)
+            .group_by(entities.c.entity_id)
+            .order_by(func.count(edges.c.edge_id).desc())
+            .limit(limit)
+        )
+        with self._engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+            return [_entity(row) for row in rows]
+
+    def get_edges_for_graph(self, school_id: int, entity_ids: Sequence[int]) -> list[Edge]:
+        """주어진 엔티티들 사이의 엣지를 모두 반환한다."""
+
+        if not entity_ids:
+            return []
+
+        statement = select(edges).where(
+            and_(
+                edges.c.school_id == school_id,
+                edges.c.source_entity_id.in_(list(entity_ids)),
+                edges.c.target_entity_id.in_(list(entity_ids)),
+            )
+        )
+        with self._engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+            return [_edge(row) for row in rows]
+
+    def get_entity(self, school_id: int, entity_id: int) -> Entity | None:
+        """단일 엔티티를 조회한다."""
+
+        statement = select(entities).where(
+            and_(entities.c.school_id == school_id, entities.c.entity_id == entity_id)
+        )
+        with self._engine.connect() as connection:
+            row = connection.execute(statement).mappings().one_or_none()
+            return _entity(row) if row is not None else None
+
+    def get_entity_neighbors(self, school_id: int, entity_id: int) -> list[Neighbor]:
+        """단일 엔티티의 이웃을 조회한다."""
+
+        return self.neighbors(school_id, [entity_id])
+
+    def get_entity_sources(self, school_id: int, entity_id: int) -> list[Document]:
+        """엔티티의 근거 문서를 조회한다."""
+
+        entity = self.get_entity(school_id, entity_id)
+        if entity is None or not entity.source_doc_ids:
+            return []
+
+        return self.get_documents(school_id, entity.source_doc_ids)
 
     def upsert_document(
         self,
