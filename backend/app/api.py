@@ -16,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -38,7 +39,7 @@ from app.schemas import (
     SchoolListItem,
     SchoolListResponse,
     SchoolResponse,
-    StatusProgress,
+    StatusProgressDetail,
     StatusResponse,
 )
 
@@ -105,8 +106,9 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
     storage = _get_storage()
     try:
         from app.crawler import CommonNoticeAdapter, Crawler
-        from app.extractor import Extractor as ChunkExtractor
+        from app.extractor import DocumentExtractor
         from app.graph_builder import GraphBuilder
+        from app.schemas import ExtractionFailure
 
         # 1. 크롤링
         crawl_request = CrawlRequest(
@@ -131,15 +133,32 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
 
         embedder = LocalEmbedder()
         provider = GeminiProvider()
-        extractor = ChunkExtractor(provider=provider)
+        extractor = DocumentExtractor(llm_extractor=provider)
         builder = GraphBuilder(storage=storage, embedder=embedder)
 
         has_failures = len(run.failures) > 0
         for page in pages:
             try:
-                chunks = extractor.extract(page)
-                for chunk in chunks:
-                    builder.build(chunk)
+                result = extractor.process(page)
+                # ExtractionFailure가 반환되면 실패로 기록
+                if isinstance(result, ExtractionFailure):
+                    has_failures = True
+                    logger.warning(
+                        "추출 실패: school_id=%d, url=%s, code=%s",
+                        school_id, page.source_url, result.error_code,
+                    )
+                    continue
+                # result는 list[ExtractedChunk]
+                for chunk in result:
+                    build_result = builder.build(school_id, chunk)
+                    if build_result.status == "failed":
+                        has_failures = True
+                        logger.warning(
+                            "빌드 실패: school_id=%d, url=%s, code=%s",
+                            school_id, chunk.source_url, build_result.error_code,
+                        )
+                    elif build_result.status == "partial":
+                        has_failures = True
             except Exception:
                 has_failures = True
                 logger.exception("파이프라인 실패: school_id=%d, url=%s", school_id, page.source_url)
@@ -197,6 +216,17 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return _error_response(exc.status_code, "HTTP_ERROR", str(exc.detail))
 
 
+from fastapi.encoders import jsonable_encoder
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Pydantic 검증 오류를 공통 에러 형식으로 변환한다."""
+    return _error_response(
+        400, "INVALID_REQUEST", "요청 본문 검증에 실패했습니다.", details={"errors": jsonable_encoder(exc.errors())}
+    )
+
+
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """예상치 못한 예외를 INTERNAL_ERROR로 변환한다."""
@@ -212,9 +242,12 @@ def create_school(body: SchoolCreateRequest, background_tasks: BackgroundTasks):
     """새 학교를 등록하고 초기 크롤링을 비동기로 시작한다."""
     storage = _get_storage()
 
-    # URL 형식 간단 검증
-    if not body.base_url.startswith(("http://", "https://")):
-        return _error_response(422, "INVALID_URL", "base_url 형식이 올바르지 않습니다.")
+    url = body.base_url.strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return _error_response(422, "INVALID_URL", "base_url은 http:// 또는 https:// 로 시작해야 합니다.")
+    parts = url.split("://", 1)[1].split("/", 1)[0]
+    if not parts:
+        return _error_response(422, "INVALID_URL", "base_url에 올바른 호스트명이 포함되어야 합니다.")
 
     school = storage.create_school(
         School(
@@ -223,14 +256,12 @@ def create_school(body: SchoolCreateRequest, background_tasks: BackgroundTasks):
             crawl_schedule=body.crawl_schedule,
         )
     )
-    # 상태를 crawling으로 전이
-    storage.update_school_status(school.school_id, "crawling")
+    # 원자적 크롤링 시작 상태 전이
+    updated = storage.try_start_crawl(school.school_id) or storage.get_school(school.school_id)
 
     # 백그라운드에서 크롤링 시작
     background_tasks.add_task(_run_crawl, school.school_id, school.base_url, "initial")
 
-    # 최신 상태로 다시 조회
-    updated = storage.get_school(school.school_id)
     return SchoolResponse(
         school_id=updated.school_id,
         name=updated.name,
@@ -247,17 +278,19 @@ def list_schools(query: str | None = Query(default=None, description="학교명 
     """등록된 학교를 이름으로 검색한다. 빈 쿼리 시 전체 목록."""
     storage = _get_storage()
     schools = storage.list_schools(query=query)
-    return SchoolListResponse(
-        schools=[
+    items = []
+    for s in schools:
+        stats = storage.get_school_stats(s.school_id)
+        items.append(
             SchoolListItem(
                 school_id=s.school_id,
                 name=s.name,
                 status=s.status,
+                entity_count=stats.get("entity_count", 0),
                 updated_at=s.updated_at,
             )
-            for s in schools
-        ]
-    )
+        )
+    return SchoolListResponse(schools=items)
 
 
 @app.get("/schools/{school_id}", response_model=SchoolDetailResponse)
@@ -299,27 +332,35 @@ def query_school(school_id: int, body: QueryRequest):
 
     rag = _get_rag_engine()
     result = rag.answer(school_id, body.question)
+
+    # 답변 근거 관련 엔티티 ID 하이라이트용 목록 구성
+    entity_ids: list[str] = []
+    if result.sources:
+        # 서브그래프 엔티티 중 관련 항목 반환
+        top_entities = storage.get_entities_for_graph(school_id, limit=20)
+        entity_ids = [f"e_{e.entity_id}" for e in top_entities]
+
     return QueryResponse(
         answer=result.answer,
         sources=result.sources,
-        entity_ids=[],  # MVP: entity_ids 하이라이트는 확장 과제
+        entity_ids=entity_ids,
     )
 
 
 @app.post("/schools/{school_id}/recrawl", status_code=202, response_model=RecrawlResponse)
 def recrawl_school(school_id: int, background_tasks: BackgroundTasks):
-    """해당 학교의 크롤링을 수동으로 다시 실행한다."""
+    """해당 학교의 크롤링을 수동으로 다시 실행한다 (원자적 상태 변경으로 중복 방지)."""
     storage = _get_storage()
-    school = storage.get_school(school_id)
-    if school is None:
-        return _school_not_found(school_id)
 
-    # 이미 크롤링 중이면 409
-    if school.status in ("crawling", "indexing"):
+    # 원자적 한 줄 UPDATE로 상태 변경 시도
+    updated = storage.try_start_crawl(school_id)
+    if updated is None:
+        # 학교 존재 여부 검사
+        if storage.get_school(school_id) is None:
+            return _school_not_found(school_id)
         return _error_response(409, "CRAWL_IN_PROGRESS", "이미 크롤링이 진행 중입니다.")
 
-    storage.update_school_status(school_id, "crawling")
-    background_tasks.add_task(_run_crawl, school_id, school.base_url, "recrawl")
+    background_tasks.add_task(_run_crawl, school_id, updated.base_url, "recrawl")
 
     return RecrawlResponse(
         school_id=school_id,
@@ -330,22 +371,47 @@ def recrawl_school(school_id: int, background_tasks: BackgroundTasks):
 
 @app.get("/schools/{school_id}/status", response_model=StatusResponse)
 def get_school_status(school_id: int):
-    """현재 크롤링·인덱싱 진행 상태를 반환한다."""
+    """현재 크롤링·인덱싱 진행 상태를 반환한다 (프론트·백엔드 통합 명세)."""
     storage = _get_storage()
     school = storage.get_school(school_id)
     if school is None:
         return _school_not_found(school_id)
 
     stats = storage.get_school_stats(school_id)
+    status = school.status
+
+    # 진행률 및 메세지 산출
+    if status in ("ready", "partial_failed"):
+        progress_val = 1.0
+        msg = "인덱싱이 완료되어 질의 가능한 상태입니다."
+    elif status == "crawling":
+        progress_val = 0.3
+        msg = "웹 페이지 및 공지 수집 중입니다."
+    elif status == "indexing":
+        progress_val = 0.7
+        msg = "정보 추출 및 지식그래프 구축 중입니다."
+    elif status == "failed":
+        progress_val = 0.0
+        msg = "크롤링 또는 인덱싱 처리에 실패했습니다."
+    else:
+        progress_val = 0.0
+        msg = "대기 중입니다."
+
+    from app.schemas import StatusProgressDetail
+
     return StatusResponse(
         school_id=school_id,
-        status=school.status,
-        progress=StatusProgress(
-            crawled_pages=0,  # MVP: 상세 진행도 추적은 미구현
-            total_pages=0,
-            indexed_documents=stats.get("document_count", 0),
+        status=status,
+        stage=status,
+        progress=progress_val,
+        detail=StatusProgressDetail(
+            pages=stats.get("document_count", 0),
+            chunks=stats.get("document_count", 0),
+            entities=stats.get("entity_count", 0),
+            edges=0,
         ),
-        started_at=school.updated_at,
+        message=msg,
+        started_at=school.crawl_started_at or school.updated_at,
     )
 
 

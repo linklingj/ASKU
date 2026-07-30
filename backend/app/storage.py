@@ -47,6 +47,7 @@ schools = Table(
     Column("base_url", TEXT, nullable=False),
     Column("crawl_schedule", TEXT),
     Column("status", TEXT, nullable=False, server_default=text("'idle'")),
+    Column("crawl_started_at", TIMESTAMP(timezone=True)),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
 )
@@ -187,6 +188,7 @@ def _school(row: RowMapping) -> School:
         base_url=row["base_url"],
         crawl_schedule=row["crawl_schedule"],
         status=row["status"],
+        crawl_started_at=row.get("crawl_started_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -246,13 +248,35 @@ class Storage:
             rows = connection.execute(statement).mappings().all()
             return [_school(row) for row in rows]
 
+    def try_start_crawl(self, school_id: int) -> School | None:
+        """원자적으로 크롤링 시작 상태로 변경한다. 이미 crawling/indexing 중이면 None을 반환한다."""
+
+        statement = (
+            schools.update()
+            .where(
+                and_(
+                    schools.c.school_id == school_id,
+                    schools.c.status.notin_(["crawling", "indexing"]),
+                )
+            )
+            .values(status="crawling", crawl_started_at=func.now())
+            .returning(*schools.c)
+        )
+        with self._engine.begin() as connection:
+            row = connection.execute(statement).mappings().one_or_none()
+            return _school(row) if row is not None else None
+
     def update_school_status(self, school_id: int, status: str) -> School | None:
         """학교의 상태를 업데이트한다."""
+
+        values: dict[str, Any] = {"status": status}
+        if status in ("crawling",):
+            values["crawl_started_at"] = func.now()
 
         statement = (
             schools.update()
             .where(schools.c.school_id == school_id)
-            .values(status=status)
+            .values(**values)
             .returning(*schools.c)
         )
         with self._engine.begin() as connection:

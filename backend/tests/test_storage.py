@@ -3,7 +3,19 @@
 Postgres/pgvector 통합 테스트는 DATABASE_URL이 구성된 환경에서 별도로 실행한다.
 """
 
+import sys
 import unittest
+from unittest.mock import MagicMock
+
+for _m in [
+    "pgvector", "pgvector.sqlalchemy", "sqlalchemy",
+    "sqlalchemy.dialects", "sqlalchemy.dialects.postgresql",
+    "sqlalchemy.engine",
+]:
+    try:
+        __import__(_m)
+    except ImportError:
+        sys.modules[_m] = MagicMock()
 
 from app.models import EMBEDDING_DIM
 from app.storage import (

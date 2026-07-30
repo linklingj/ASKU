@@ -203,16 +203,20 @@ GET /schools/{school_id}/status
 {
   "school_id": 1,
   "status": "indexing",
-  "progress": {
-    "crawled_pages": 150,
-    "total_pages": 200,
-    "indexed_documents": 120
+  "stage": "indexing",
+  "progress": 0.7,
+  "detail": {
+    "pages": 150,
+    "chunks": 150,
+    "entities": 120,
+    "edges": 45
   },
+  "message": "정보 추출 및 지식그래프 구축 중입니다.",
   "started_at": "2026-07-24T12:00:00Z"
 }
 ```
 
-| status 값 | 의미 |
+| status / stage 값 | 의미 |
 |---|---|
 | `idle` | 작업 없음 |
 | `crawling` | 페이지 수집 중 |

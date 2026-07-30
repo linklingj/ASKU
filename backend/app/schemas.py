@@ -183,9 +183,11 @@ class RagAnswer(BaseModel):
 class SchoolCreateRequest(BaseModel):
     """POST /schools 요청 본문."""
 
-    name: str
-    base_url: str
-    crawl_schedule: str | None = None
+    name: str = Field(..., min_length=1, description="학교명")
+    base_url: str = Field(..., description="공지·학사 기준 URL")
+    crawl_schedule: Literal["daily", "weekly", "monthly"] | None = Field(
+        default=None, description="재크롤링 주기"
+    )
 
 
 class SchoolResponse(BaseModel):
@@ -206,6 +208,7 @@ class SchoolListItem(BaseModel):
     school_id: int
     name: str
     status: str
+    entity_count: int = 0
     updated_at: datetime
 
 
@@ -239,7 +242,7 @@ class SchoolDetailResponse(BaseModel):
 class QueryRequest(BaseModel):
     """POST /schools/{id}/query 요청 본문."""
 
-    question: str
+    question: str = Field(..., min_length=1)
 
 
 class QueryResponse(BaseModel):
@@ -258,20 +261,24 @@ class RecrawlResponse(BaseModel):
     message: str
 
 
-class StatusProgress(BaseModel):
-    """크롤링·인덱싱 진행 상세."""
+class StatusProgressDetail(BaseModel):
+    """크롤링·인덱싱 단계별 상세 카운트."""
 
-    crawled_pages: int = 0
-    total_pages: int = 0
-    indexed_documents: int = 0
+    pages: int = 0
+    chunks: int = 0
+    entities: int = 0
+    edges: int = 0
 
 
 class StatusResponse(BaseModel):
-    """GET /schools/{id}/status 응답."""
+    """GET /schools/{id}/status 응답 (프론트·백엔드 문서 계약 통합)."""
 
     school_id: int
-    status: str
-    progress: StatusProgress
+    status: str  # 백엔드 하위호환 status
+    stage: str   # 프론트엔드 소비용 stage (idle|crawling|extracting|building|indexing|ready|partial_failed|failed)
+    progress: float = 0.0  # 0.0 ~ 1.0 진행률
+    detail: StatusProgressDetail = Field(default_factory=StatusProgressDetail)
+    message: str | None = None
     started_at: datetime | None = None
 
 

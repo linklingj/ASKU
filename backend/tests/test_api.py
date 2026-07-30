@@ -2,34 +2,43 @@
 
 Storage·Crawler·RAG를 모킹하여 API 동작만 검증한다.
 DB 없이 순수 단위 테스트로 실행된다.
+
+NOTE: 다른 테스트 모듈(test_storage 등)이 실제 SQLAlchemy를 사용하므로,
+여기서 sys.modules를 오염시키지 않는다. Neighbor dataclass는 직접 정의한다.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
-
-import sys
-from unittest.mock import MagicMock
-
-# pgvector·SQLAlchemy가 설치되지 않은 환경에서도 테스트가 돌도록
-# import 전에 스텁 모듈을 등록한다.
-for _mod in (
-    "pgvector", "pgvector.sqlalchemy",
-    "sqlalchemy", "sqlalchemy.dialects", "sqlalchemy.dialects.postgresql",
-    "sqlalchemy.engine",
-):
-    sys.modules.setdefault(_mod, MagicMock())
 
 import pytest
 from fastapi.testclient import TestClient
 
+import app.api
 from app.models import Document, Edge, Entity, School
-from app.schemas import RagAnswer, Source
-from app.storage import Neighbor
+from app.schemas import (
+    BuildResult,
+    ExtractionFailure,
+    RagAnswer,
+    Source,
+)
 
 
-# ── 픽스처 ─────────────────────────────────────────────────────────────
+# ── Neighbor 스텁 (app.storage import 없이) ───────────────────────────
+
+
+@dataclass(frozen=True)
+class Neighbor:
+    """테스트용 Neighbor. app.storage.Neighbor 와 동일한 구조."""
+
+    source: Entity
+    edge: Edge
+    target: Entity
+
+
+# ── 팩토리 ─────────────────────────────────────────────────────────────
 
 _NOW = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -78,6 +87,9 @@ def _make_document(**overrides) -> Document:
     return Document(**defaults)
 
 
+# ── 픽스처 ─────────────────────────────────────────────────────────────
+
+
 @pytest.fixture
 def mock_storage():
     """Storage 의 모든 공개 메서드를 모킹한다."""
@@ -88,6 +100,7 @@ def mock_storage():
     storage.create_school.return_value = school
     storage.get_school.return_value = school
     storage.list_schools.return_value = [school]
+    storage.try_start_crawl.return_value = _make_school(status="crawling")
     storage.update_school_status.return_value = school
     storage.get_school_stats.return_value = {
         "document_count": 245,
@@ -125,7 +138,7 @@ def client(mock_storage):
     with patch("app.api._get_storage", return_value=mock_storage):
         from app.api import app
 
-        with TestClient(app) as c:
+        with TestClient(app, raise_server_exceptions=False) as c:
             yield c
 
 
@@ -154,9 +167,14 @@ class TestCreateSchool:
         body = resp.json()
         assert body["error"]["code"] == "INVALID_URL"
 
-    def test_missing_required_fields(self, client):
+    def test_missing_required_fields_returns_400_invalid_request(self, client):
+        """필수 필드 누락 시 RequestValidationError → 400 INVALID_REQUEST."""
         resp = client.post("/schools", json={"name": "테스트대학교"})
-        assert resp.status_code == 422
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "INVALID_REQUEST"
+        assert body["error"]["details"] is not None
+        assert "errors" in body["error"]["details"]
 
 
 # ── GET /schools ───────────────────────────────────────────────────────
@@ -169,6 +187,7 @@ class TestListSchools:
         body = resp.json()
         assert len(body["schools"]) == 1
         assert body["schools"][0]["name"] == "연세대학교"
+        assert body["schools"][0]["entity_count"] == 1023
 
     def test_200_with_query(self, client, mock_storage):
         resp = client.get("/schools?query=연세")
@@ -212,6 +231,7 @@ class TestQuerySchool:
         body = resp.json()
         assert "마감일" in body["answer"]
         assert len(body["sources"]) == 1
+        assert len(body["entity_ids"]) > 0
 
     def test_503_not_ready(self, client, mock_storage):
         mock_storage.get_school.return_value = _make_school(status="crawling")
@@ -224,6 +244,13 @@ class TestQuerySchool:
         mock_storage.get_school.return_value = None
         resp = client.post("/schools/999/query", json={"question": "질문"})
         assert resp.status_code == 404
+
+    def test_missing_question_returns_400(self, client):
+        """question 필드 누락 시 400 INVALID_REQUEST."""
+        resp = client.post("/schools/1/query", json={})
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "INVALID_REQUEST"
 
 
 # ── POST /schools/{id}/recrawl ─────────────────────────────────────────
@@ -238,6 +265,8 @@ class TestRecrawl:
         assert body["message"] == "재크롤링이 시작되었습니다."
 
     def test_409_crawl_in_progress(self, client, mock_storage):
+        # try_start_crawl 실패 (이미 진행 중)
+        mock_storage.try_start_crawl.return_value = None
         mock_storage.get_school.return_value = _make_school(status="crawling")
         resp = client.post("/schools/1/recrawl")
         assert resp.status_code == 409
@@ -245,6 +274,7 @@ class TestRecrawl:
         assert body["error"]["code"] == "CRAWL_IN_PROGRESS"
 
     def test_404_not_found(self, client, mock_storage):
+        mock_storage.try_start_crawl.return_value = None
         mock_storage.get_school.return_value = None
         resp = client.post("/schools/999/recrawl")
         assert resp.status_code == 404
@@ -314,3 +344,156 @@ class TestGetEntityDetail:
         mock_storage.get_school.return_value = None
         resp = client.get("/schools/999/entities/123")
         assert resp.status_code == 404
+
+
+# ── 백그라운드 파이프라인 테스트 ────────────────────────────────────────
+
+
+class TestRunCrawlPipeline:
+    """_run_crawl 함수의 실제 연동 계약을 검증한다."""
+
+    def test_pipeline_calls_correct_interfaces(self, mock_storage):
+        """DocumentExtractor.process → GraphBuilder.build(school_id, chunk) 순서로 호출."""
+        from app.schemas import ExtractedChunk
+
+        chunk = ExtractedChunk(
+            school_id=1,
+            source_url="https://example.com/notice",
+            title="테스트",
+            content="테스트 본문",
+            chunk_index=0,
+            content_hash="hash123",
+            entities=[],
+            relations=[],
+            extraction_status="complete",
+        )
+        build_result = BuildResult(
+            school_id=1,
+            source_url="https://example.com/notice",
+            content_hash="hash123",
+            doc_id=1,
+            status="complete",
+        )
+
+        mock_extractor = MagicMock()
+        mock_extractor.process.return_value = [chunk]
+
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = build_result
+
+        mock_crawler = MagicMock()
+        mock_run = MagicMock()
+        mock_run.failures = []
+        mock_page = MagicMock()
+        mock_page.source_url = "https://example.com/notice"
+        mock_crawler.crawl.return_value = mock_run
+        mock_crawler.pages_for_extractor.return_value = [mock_page]
+
+        with (
+            patch("app.api._get_storage", return_value=mock_storage),
+            patch("app.api.Crawler", create=True) as MockCrawlerClass,
+            patch("app.crawler.Crawler") as MockCrawlerModule,
+            patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
+            patch("app.extractor.DocumentExtractor", return_value=mock_extractor),
+            patch("app.graph_builder.GraphBuilder", return_value=mock_builder),
+            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.LocalEmbedder", return_value=MagicMock()),
+        ):
+            MockCrawlerModule.from_storage.return_value = mock_crawler
+
+            from app.api import _run_crawl
+            _run_crawl(1, "https://example.com", "initial")
+
+        # process 가 호출되었는지 (extract 가 아니라)
+        mock_extractor.process.assert_called_once_with(mock_page)
+        # build(school_id, chunk) 시그니처
+        mock_builder.build.assert_called_once_with(1, chunk)
+        # 성공 시 ready
+        mock_storage.update_school_status.assert_any_call(1, "ready")
+
+    def test_build_failure_triggers_partial_failed(self, mock_storage):
+        """BuildResult(status='failed')이면 partial_failed 상태가 된다."""
+        from app.schemas import ExtractedChunk
+
+        chunk = ExtractedChunk(
+            school_id=1,
+            source_url="https://example.com/notice",
+            content="본문",
+            chunk_index=0,
+            content_hash="hash123",
+            entities=[],
+            relations=[],
+            extraction_status="complete",
+        )
+        failed_result = BuildResult(
+            school_id=1,
+            source_url="https://example.com/notice",
+            content_hash="hash123",
+            status="failed",
+            error_code="EMBED_ERROR",
+        )
+
+        mock_extractor = MagicMock()
+        mock_extractor.process.return_value = [chunk]
+
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = failed_result
+
+        mock_crawler = MagicMock()
+        mock_run = MagicMock()
+        mock_run.failures = []
+        mock_crawler.crawl.return_value = mock_run
+        mock_crawler.pages_for_extractor.return_value = [MagicMock(source_url="url")]
+
+        with (
+            patch("app.api._get_storage", return_value=mock_storage),
+            patch("app.crawler.Crawler") as MockCrawlerModule,
+            patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
+            patch("app.extractor.DocumentExtractor", return_value=mock_extractor),
+            patch("app.graph_builder.GraphBuilder", return_value=mock_builder),
+            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.LocalEmbedder", return_value=MagicMock()),
+        ):
+            MockCrawlerModule.from_storage.return_value = mock_crawler
+
+            from app.api import _run_crawl
+            _run_crawl(1, "https://example.com", "initial")
+
+        # 빌드 실패 → partial_failed
+        mock_storage.update_school_status.assert_any_call(1, "partial_failed")
+
+    def test_extraction_failure_triggers_partial_failed(self, mock_storage):
+        """ExtractionFailure 반환 시 partial_failed 상태가 된다."""
+        extraction_failure = ExtractionFailure(
+            school_id=1,
+            source_url="https://example.com/notice",
+            content_hash="hash123",
+            error_code="EMPTY_BODY",
+            retryable=False,
+        )
+
+        mock_extractor = MagicMock()
+        mock_extractor.process.return_value = extraction_failure
+
+        mock_crawler = MagicMock()
+        mock_run = MagicMock()
+        mock_run.failures = []
+        mock_crawler.crawl.return_value = mock_run
+        mock_crawler.pages_for_extractor.return_value = [MagicMock(source_url="url")]
+
+        with (
+            patch("app.api._get_storage", return_value=mock_storage),
+            patch("app.crawler.Crawler") as MockCrawlerModule,
+            patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
+            patch("app.extractor.DocumentExtractor", return_value=mock_extractor),
+            patch("app.graph_builder.GraphBuilder", return_value=MagicMock()),
+            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.LocalEmbedder", return_value=MagicMock()),
+        ):
+            MockCrawlerModule.from_storage.return_value = mock_crawler
+
+            from app.api import _run_crawl
+            _run_crawl(1, "https://example.com", "initial")
+
+        # 추출 실패 → partial_failed
+        mock_storage.update_school_status.assert_any_call(1, "partial_failed")
