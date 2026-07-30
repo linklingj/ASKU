@@ -10,6 +10,7 @@ from app.scheduler import (
     KEYWORD_SCHEDULES,
     Scheduler,
     SchoolJob,
+    _backoff_seconds,
     calculate_next_run,
     parse_schedule,
 )
@@ -78,6 +79,15 @@ def test_calculate_next_run():
     assert next_cron == datetime(2026, 7, 30, 12, 30, 0, tzinfo=timezone.utc)
 
 
+def test_calculate_next_run_cron_monday():
+    """표준 cron 요일: 1=월요일. 2026-07-30은 목요일이므로 다음 월요일 09:00."""
+    # Thursday 2026-07-30
+    base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+    next_mon = calculate_next_run("0 9 * * 1", base_time)
+    assert next_mon == datetime(2026, 8, 3, 9, 0, 0, tzinfo=timezone.utc)
+    assert next_mon.weekday() == 0  # Monday
+
+
 def test_scheduler_register_and_unregister():
     """스케줄러 작업 등록, 조회, 해제 검증."""
     scheduler = Scheduler(check_interval=0.1)
@@ -102,6 +112,22 @@ def test_scheduler_register_and_unregister():
     scheduler.register_school(school_id=2, crawl_schedule="hourly")
     assert scheduler.unregister_school(2) is True
     assert scheduler.unregister_school(999) is False
+
+
+def test_scheduler_preserve_next_run_on_sync_register():
+    """동일 주기 재등록 시 preserve_next_run이 next_run_at을 유지한다."""
+    scheduler = Scheduler(check_interval=0.1)
+    job = scheduler.register_school(school_id=1, crawl_schedule="daily")
+    original_next = job.next_run_at
+
+    later = datetime.now(timezone.utc)
+    scheduler.register_school(
+        school_id=1,
+        crawl_schedule="daily",
+        last_run_at=later,
+        preserve_next_run=True,
+    )
+    assert scheduler.get_job(1).next_run_at == original_next
 
 
 def test_scheduler_sync_from_storage():
@@ -142,8 +168,8 @@ def test_scheduler_trigger_school_success():
     assert job.last_status == "triggered"
 
 
-def test_scheduler_trigger_school_conflict_skip():
-    """이미 크롤링/인덱싱 중인 경우 트리거 건너뜀 검증."""
+def test_scheduler_trigger_school_conflict_skip_advances_next_run():
+    """이미 크롤링/인덱싱 중인 경우 skip 하고 next_run_at을 다음 주기로 갱신한다."""
     mock_storage = MagicMock()
     mock_school = School(school_id=1, name="연세대학교", base_url="https://yonsei.ac.kr", crawl_schedule="daily")
     mock_storage.get_school.return_value = mock_school
@@ -151,14 +177,17 @@ def test_scheduler_trigger_school_conflict_skip():
 
     runner_callback = MagicMock()
     scheduler = Scheduler(storage=mock_storage, runner_callback=runner_callback)
-    scheduler.register_school(school_id=1, crawl_schedule="daily")
+    job = scheduler.register_school(school_id=1, crawl_schedule="daily")
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    job.next_run_at = past
 
     success = scheduler.trigger_school(school_id=1, force=False)
 
     assert success is False
     runner_callback.assert_not_called()
-    job = scheduler.get_job(1)
     assert job.last_status == "skipped"
+    assert job.next_run_at is not None
+    assert job.next_run_at > past
 
 
 def test_scheduler_check_and_run_due_jobs():
@@ -188,6 +217,32 @@ def test_scheduler_check_and_run_due_jobs():
     runner_callback.assert_called_once_with(1, "https://yonsei.ac.kr", "recrawl")
 
 
+def test_scheduler_on_crawl_finished_backoff():
+    """파이프라인 실패 통지 시 지수 백오프가 적용된다."""
+    scheduler = Scheduler(check_interval=0.1)
+    job = scheduler.register_school(school_id=1, crawl_schedule="daily")
+    before = datetime.now(timezone.utc)
+
+    scheduler.on_crawl_finished(1, success=False)
+
+    assert job.last_status == "failed"
+    assert job.error_count == 1
+    assert job.next_run_at is not None
+    assert job.next_run_at >= before + timedelta(seconds=_backoff_seconds(1) - 1)
+
+
+def test_scheduler_expire_stale_documents_delegates_to_storage():
+    """만료 처리가 Storage.expire_documents_by_miss_count를 호출한다."""
+    mock_storage = MagicMock()
+    mock_storage.expire_documents_by_miss_count.return_value = [10, 11]
+    scheduler = Scheduler(storage=mock_storage, miss_threshold=3)
+
+    expired = scheduler.expire_stale_documents(school_id=1)
+
+    assert expired == [10, 11]
+    mock_storage.expire_documents_by_miss_count.assert_called_once_with(school_id=1, threshold=3)
+
+
 def test_scheduler_async_lifespan():
     """Async 백그라운드 스케줄러 시작 및 정지 라이프사이클 검증."""
     import asyncio
@@ -195,6 +250,7 @@ def test_scheduler_async_lifespan():
     async def _runner():
         mock_storage = MagicMock()
         mock_storage.list_schools.return_value = []
+        mock_storage.expire_documents_by_miss_count.return_value = []
 
         scheduler = Scheduler(storage=mock_storage, check_interval=0.05)
         assert scheduler.is_running() is False

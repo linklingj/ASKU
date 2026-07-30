@@ -109,6 +109,7 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
     실패 시 failed 또는 partial_failed 로 전이한다.
     """
     storage = _get_storage()
+    crawl_ok = False
     _PROGRESS_MAP[school_id] = {
         "pages": 0,
         "chunks": 0,
@@ -139,6 +140,19 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         # 전체 방문/수집된 페이지 수
         _PROGRESS_MAP[school_id]["pages"] = len(run.pages)
         _PROGRESS_MAP[school_id]["progress"] = 0.3
+
+        # 재크롤 시 관측 URL로 연속 미관측 카운트를 갱신 (목록이 비면 전량 bump 방지로 스킵)
+        if mode == "recrawl" and run.pages:
+            observed_urls: list[str] = []
+            for page in run.pages:
+                if page.source_url:
+                    observed_urls.append(page.source_url)
+                if page.canonical_url:
+                    observed_urls.append(page.canonical_url)
+            try:
+                storage.record_url_observations(school_id, observed_urls)
+            except Exception:
+                logger.exception("미관측 카운트 갱신 실패: school_id=%d", school_id)
 
         if not pages and run.failures:
             storage.update_school_status(school_id, "failed")
@@ -202,6 +216,7 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         _PROGRESS_MAP[school_id]["stage"] = "done" if final_status == "ready" else final_status
         _PROGRESS_MAP[school_id]["progress"] = 1.0
         _PROGRESS_MAP[school_id]["message"] = "인덱싱이 완료되었습니다."
+        crawl_ok = final_status in ("ready", "partial_failed")
 
     except Exception:
         logger.exception("크롤링 전체 실패: school_id=%d", school_id)
@@ -213,6 +228,13 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
             storage.update_school_status(school_id, "failed")
         except Exception:
             logger.exception("상태 갱신 실패: school_id=%d", school_id)
+    finally:
+        try:
+            from app.scheduler import get_scheduler
+
+            get_scheduler().on_crawl_finished(school_id, success=crawl_ok)
+        except Exception:
+            logger.exception("스케줄러 완료 통지 실패: school_id=%d", school_id)
 
 
 # ── FastAPI 앱 ────────────────────────────────────────────────────────
@@ -313,6 +335,18 @@ def create_school(body: SchoolCreateRequest, background_tasks: BackgroundTasks):
     # 원자적 크롤링 시작 상태 전이
     updated = storage.try_start_crawl(school.school_id) or storage.get_school(school.school_id)
 
+    # 스케줄러에 학교 주기 등록 (앱 재시작 전에도 자동 재크롤 대상이 되도록)
+    try:
+        from app.scheduler import get_scheduler
+
+        get_scheduler().register_school(
+            school_id=school.school_id,
+            crawl_schedule=school.crawl_schedule,
+            last_run_at=datetime.now(timezone.utc),
+        )
+    except Exception:
+        logger.exception("스케줄러 등록 실패: school_id=%s", school.school_id)
+
     # 백그라운드에서 크롤링 시작
     background_tasks.add_task(_run_crawl, school.school_id, school.base_url, "initial")
 
@@ -406,6 +440,20 @@ def recrawl_school(school_id: int, background_tasks: BackgroundTasks):
         return _error_response(409, "CRAWL_IN_PROGRESS", "이미 크롤링이 진행 중입니다.")
 
     background_tasks.add_task(_run_crawl, school_id, updated.base_url, "recrawl")
+
+    try:
+        from app.scheduler import calculate_next_run, get_scheduler
+
+        job = get_scheduler().get_job(school_id)
+        if job is not None:
+            now = datetime.now(timezone.utc)
+            job.last_run_at = now
+            job.last_status = "triggered"
+            job.run_count += 1
+            if job.crawl_schedule:
+                job.next_run_at = calculate_next_run(job.crawl_schedule, base_time=now)
+    except Exception:
+        logger.exception("스케줄러 수동 재크롤 시각 갱신 실패: school_id=%d", school_id)
 
     return RecrawlResponse(
         school_id=school_id,

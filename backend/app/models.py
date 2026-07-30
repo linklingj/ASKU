@@ -51,6 +51,8 @@ class Document(BaseModel):
     content_hash: str  # 변경 감지용 본문 해시
     embedding: list[float] | None = None  # vector(EMBEDDING_DIM)
     crawled_at: datetime | None = None
+    miss_count: int = 0  # 연속 미관측 횟수 (스케줄러 만료 판정)
+    expired_at: datetime | None = None  # 만료 확정 시각 (None이면 유효)
 
     @field_validator("embedding")
     @classmethod
