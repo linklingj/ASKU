@@ -33,6 +33,8 @@ class School(BaseModel):
     name: str
     base_url: str
     crawl_schedule: str | None = None  # 예: 'daily', 'weekly'
+    status: str = "idle"
+    crawl_started_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

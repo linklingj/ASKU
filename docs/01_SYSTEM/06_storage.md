@@ -27,12 +27,14 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 학교
 CREATE TABLE schools (
-  school_id       BIGSERIAL PRIMARY KEY,
-  name            TEXT NOT NULL,
-  base_url        TEXT NOT NULL,
-  crawl_schedule  TEXT,                 -- 예: 'daily', 'weekly'
-  created_at      TIMESTAMPTZ DEFAULT now(),
-  updated_at      TIMESTAMPTZ DEFAULT now()
+  school_id         BIGSERIAL PRIMARY KEY,
+  name              TEXT NOT NULL,
+  base_url          TEXT NOT NULL,
+  crawl_schedule    TEXT,                 -- 예: 'daily', 'weekly'
+  status            TEXT NOT NULL DEFAULT 'idle',
+  crawl_started_at  TIMESTAMPTZ,          -- 수집·인덱싱 시작 시각
+  created_at        TIMESTAMPTZ DEFAULT now(),
+  updated_at        TIMESTAMPTZ DEFAULT now()
 );
 
 -- 문서 = 검색·인용의 최소 단위(청크). 공지 1건 = 기본 1행.

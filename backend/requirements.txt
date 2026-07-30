@@ -5,6 +5,11 @@ SQLAlchemy>=2.0
 psycopg[binary]>=3.1
 pgvector>=0.3
 
+# Backend API (FastAPI)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27           # FastAPI TestClient 내부 의존
+
 # LLM Provider 구현체별 의존 (지연 import — 해당 제공자를 쓸 때만 필요)
 google-genai        # GeminiProvider: 답변 생성·구조화 추출
 FlagEmbedding       # LocalEmbedder: 로컬 bge-m3 임베딩(dense)

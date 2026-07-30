@@ -12,6 +12,8 @@
 | name | 학교명 |
 | base_url | 공지·학사 기준 URL |
 | crawl_schedule | 재크롤링 주기 |
+| status | 수집·인덱싱 진행 상태 (`idle`, `crawling`, `indexing`, `ready`, `partial_failed`, `failed`) |
+| crawl_started_at | 최근 크롤링·인덱싱 시작 시각 |
 | created_at / updated_at | 생성·갱신 시각 |
 
 ### Document (= 검색·인용의 최소 단위 / 청크)

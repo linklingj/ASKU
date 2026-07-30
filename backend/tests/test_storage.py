@@ -3,7 +3,20 @@
 Postgres/pgvector 통합 테스트는 DATABASE_URL이 구성된 환경에서 별도로 실행한다.
 """
 
+import sys
 import unittest
+from unittest.mock import MagicMock
+
+for _m in [
+    "psycopg", "psycopg.rows", "psycopg_binary", "psycopg.adapt"
+]:
+    try:
+        __import__(_m)
+    except ImportError:
+        mock_mod = MagicMock()
+        mock_mod.__version__ = "3.1.0"
+        mock_mod.adapt = MagicMock()
+        sys.modules[_m] = mock_mod
 
 from app.models import EMBEDDING_DIM
 from app.storage import (
