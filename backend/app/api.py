@@ -220,13 +220,27 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """앱 시작·종료 시 Storage를 초기화·정리한다."""
+    """앱 시작·종료 시 Storage 및 Scheduler를 초기화·정리한다."""
     storage = _get_storage()
     try:
         storage.create_schema()
     except Exception:
         logger.warning("스키마 생성 실패 (이미 존재할 수 있음)", exc_info=True)
+
+    from app.scheduler import get_scheduler
+
+    scheduler = get_scheduler()
+    try:
+        await scheduler.start()
+    except Exception:
+        logger.warning("스케줄러 시작 실패", exc_info=True)
+
     yield
+
+    try:
+        await scheduler.stop()
+    except Exception:
+        logger.warning("스케줄러 정지 실패", exc_info=True)
     storage.close()
 
 
