@@ -209,10 +209,10 @@
     else if (e.key === 'Enter' && (e.target === listbox || e.target === document.body)) { e.preventDefault(); confirmSchool(); }
   });
 
-  // — 확정 → QA (/s/{schoolId}) 로 전환 —
+  // — 확정 → QA 페이지로 전환 —
   function confirmSchool() {
-    // ponytail: QA 페이지(/s/{id}) 미구현. 인덱스로 라우팅 — 백엔드 school_id 나오면 교체.
-    location.href = 's/' + active;
+    // ponytail: qa.html 은 이름만 사이드바 제목에 씀(그래프는 세종대 샘플 고정). 백엔드 school_id 나오면 ?school= 를 id 로 교체.
+    location.href = 'qa.html?school=' + encodeURIComponent(DATA[active].name);
   }
   $('ss-cont').addEventListener('click', function (e) { e.preventDefault(); confirmSchool(); });
 
