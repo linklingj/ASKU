@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ASKU — 우리 학교 정보, 그만 찾고 물어보세요</title>
 <link rel="stylesheet" href="_ds/modernist-c94de0c9-726d-442a-9bb3-d3b24f39b8cb/styles.css">
+<script src="api.js"></script>
 <style>
 @font-face { font-family:"Hostero"; src:url("uploads/HosteroRegular-e9RAe.ttf") format("truetype"); font-display:swap; }
 body { margin:0; background:#f3f2f2; }
@@ -116,32 +117,17 @@ a:hover { color:var(--asku-accent,#ec3013); }
     </div>
   </section>
 
-  <section id="schools" data-nav="light" style="background:#201e1d; color:#f3f2f2; padding:clamp(90px,15vh,160px) 0; overflow:hidden;">
+  <section id="schools" data-nav="light" style="background:#201e1d; color:#f3f2f2; padding:clamp(90px,15vh,160px) 0; overflow:hidden; display:none;">
     <div style="padding:0 clamp(20px,5vw,72px);">
       <div data-reveal style="display:flex; align-items:center; gap:12px; margin-bottom:clamp(24px,4vh,40px);">
         <span style="width:11px; height:11px; background:var(--asku-accent,#ec3013); display:block;"></span>
-        <span style="font-size:13px; letter-spacing:.16em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#f3f2f2 70%,transparent);">Coverage · 지원 학교</span>
+        <span style="font-size:13px; letter-spacing:.16em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#f3f2f2 70%,transparent);">Coverage · 등록된 학교</span>
       </div>
-      <h2 data-reveal style="transition-delay:.08s; margin:0; font-family:var(--font-heading); font-weight:800; letter-spacing:-.02em; line-height:1.02; font-size:clamp(34px,5.6vw,76px); max-width:18ch;">국내 <span style="color:var(--asku-accent,#ec3013);">30개+</span> 대학을 이미 지원하고 있습니다.</h2>
-      <p data-reveal style="transition-delay:.16s; margin:clamp(20px,3vh,28px) 0 0; max-width:48ch; font-size:clamp(16px,1.4vw,20px); line-height:1.6; color:color-mix(in srgb,#f3f2f2 74%,transparent);">새로운 학교도 공지 URL 하나면 바로 추가됩니다. 로고 위에 마우스를 올려보세요.</p>
+      <h2 data-reveal style="transition-delay:.08s; margin:0; font-family:var(--font-heading); font-weight:800; letter-spacing:-.02em; line-height:1.02; font-size:clamp(34px,5.6vw,76px); max-width:18ch;">이미 <span id="cov-count" style="color:var(--asku-accent,#ec3013);">0개</span> 대학이 등록되어 있습니다.</h2>
+      <p data-reveal style="transition-delay:.16s; margin:clamp(20px,3vh,28px) 0 0; max-width:48ch; font-size:clamp(16px,1.4vw,20px); line-height:1.6; color:color-mix(in srgb,#f3f2f2 74%,transparent);">새로운 학교도 공지 URL 하나면 바로 추가됩니다.</p>
     </div>
     <div data-reveal style="transition-delay:.24s; margin-top:clamp(48px,8vh,88px); -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 7%,#000 93%,transparent 100%); mask-image:linear-gradient(90deg,transparent 0,#000 7%,#000 93%,transparent 100%);">
-      <div class="mq-track" style="display:flex; align-items:center; gap:clamp(40px,6vw,90px); width:max-content; animation:marquee 34s linear infinite;">
-        <span class="mq-logo" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="세종대학교" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="세종대학교" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="세종대학교" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="세종대학교" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="세종대학교" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="세종대학교" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="세종대학교" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" aria-hidden="true" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" aria-hidden="true" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" aria-hidden="true" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" aria-hidden="true" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" aria-hidden="true" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" aria-hidden="true" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="" style="width:100%; height:100%; object-fit:contain;"></span>
-        <span class="mq-logo" aria-hidden="true" style="flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:clamp(96px,10vw,130px); height:clamp(96px,10vw,130px); opacity:.5; transition:transform .35s cubic-bezier(.2,.7,.2,1), opacity .35s ease, filter .35s ease;" style-hover="transform:scale(1.16); opacity:1; filter:drop-shadow(0 0 26px color-mix(in srgb, var(--asku-accent,#ec3013) 55%, transparent));"><img src="uploads/pasted-1784883904517-0.png" alt="" style="width:100%; height:100%; object-fit:contain;"></span>
-      </div>
+      <div class="mq-track" id="cov-track" style="display:flex; align-items:center; gap:clamp(28px,4vw,60px); width:max-content; animation:marquee 34s linear infinite;"></div>
     </div>
   </section>
 
@@ -222,6 +208,27 @@ a:hover { color:var(--asku-accent,#ec3013); }
     }, { rootMargin: '-70px 0px -100% 0px', threshold: 0 });
     root.querySelectorAll('[data-nav]').forEach(function (s) { navio.observe(s); });
   }
+
+  // 등록된 학교 섹션: 백엔드에서 실제 목록을 받아 채운다. 없거나 못 닿으면 섹션을 숨긴다(허위 노출 방지).
+  (function () {
+    var sec = root.querySelector('#schools'), track = root.querySelector('#cov-track'), count = root.querySelector('#cov-count');
+    if (!sec || !track || !window.ASKU) return;
+    ASKU.get('/schools').then(function (res) {
+      var schools = (res && res.schools) || [];
+      if (!schools.length) return; // 섹션은 display:none 유지
+      count.textContent = schools.length + '개';
+      var pill = function (name) {
+        var s = document.createElement('a');
+        s.href = 'find.html';
+        s.textContent = name;
+        s.style.cssText = 'flex:0 0 auto;font-family:var(--font-heading);font-weight:800;letter-spacing:-.01em;font-size:clamp(22px,3vw,44px);white-space:nowrap;color:color-mix(in srgb,#f3f2f2 55%,transparent);transition:color .3s ease;';
+        return s;
+      };
+      // 마퀴 무한 루프: 목록을 두 번 이어붙인다(keyframes marquee 가 -50%→0).
+      schools.concat(schools).forEach(function (s) { track.appendChild(pill(s.name)); });
+      sec.style.display = '';
+    }).catch(function () { /* 백엔드 미연결 시 섹션 숨김 유지 */ });
+  })();
 
   if (!reduce) {
     var whySec = root.querySelector('#why'), whyBg = root.querySelector('.why-bg');
