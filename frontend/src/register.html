@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ASKU — 학교 등록</title>
+<!-- Register.dc.html 을 DC(React) 런타임 없이 이식. 디자인 시스템 토큰(styles.css)·Archivo 계승, 진행 애니메이션은 rAF 로만 구동. -->
+<link rel="stylesheet" href="_ds/modernist-c94de0c9-726d-442a-9bb3-d3b24f39b8cb/styles.css">
+<style>
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{background:var(--color-bg,#f3f2f2);color:var(--color-text,#201e1d);font-family:var(--font-body,'Archivo',sans-serif);-webkit-font-smoothing:antialiased;overflow:hidden;}
+  a{color:inherit;text-decoration:none;}
+  a:hover{color:var(--color-accent,#ec3013);}
+  ::selection{background:color-mix(in srgb,var(--color-accent,#ec3013) 22%,transparent);}
+  @keyframes rg-fadeup{from{opacity:0;transform:translateY(16px);}to{opacity:1;transform:translateY(0);}}
+  @keyframes rg-fadein{from{opacity:0;}to{opacity:1;}}
+  @keyframes rg-out{from{opacity:1;transform:translateY(0);filter:blur(0);}to{opacity:0;transform:translateY(70px);filter:blur(3px);}}
+  @keyframes rg-drop{from{opacity:0;transform:translateY(-80px);color:color-mix(in srgb,var(--color-text,#201e1d) 12%,transparent);letter-spacing:.02em;}60%{opacity:1;}to{opacity:1;transform:translateY(0);color:var(--color-text,#201e1d);letter-spacing:-.025em;}}
+  @keyframes rg-stagger{from{opacity:0;transform:translateY(22px);}to{opacity:1;transform:translateY(0);}}
+  .rg-out{animation:rg-out .5s cubic-bezier(.5,0,.75,0) forwards;}
+  .rg-drop{opacity:0;animation:rg-drop .85s cubic-bezier(.16,.9,.3,1) forwards;}
+  .rg-st{opacity:0;animation:rg-stagger .6s cubic-bezier(.2,.7,.2,1) forwards;}
+  .rg-fu{opacity:0;animation:rg-fadeup .7s cubic-bezier(.2,.7,.2,1) forwards;}
+  .rg-fi{opacity:0;animation:rg-fadein .8s ease forwards;}
+  .rg-back:hover{background:var(--color-text,#201e1d);color:var(--color-bg,#f3f2f2);}
+  .rg-cta{transition:background .22s ease,transform .22s ease;}
+  .rg-cta:hover{background:var(--color-accent-600,#c9280f);}
+  .rg-rule{transition:border-color .25s ease;}
+  .rg-input{width:100%;border:0;outline:0;background:transparent;font-family:var(--font-body,'Archivo',sans-serif);color:var(--color-text,#201e1d);font-weight:700;letter-spacing:-.02em;line-height:1.15;font-size:clamp(24px,3.6vw,48px);padding:0 0 clamp(14px,1.8vh,22px) 0;}
+  .rg-input::placeholder{color:color-mix(in srgb,var(--color-text,#201e1d) 26%,transparent);font-weight:600;}
+  .rg-ghost{position:absolute;right:clamp(22px,3.6vw,52px);bottom:clamp(-18px,-1vw,0px);font-weight:900;font-size:clamp(58px,9.5vw,146px);line-height:.78;letter-spacing:-.05em;color:color-mix(in srgb,var(--color-text,#201e1d) 5%,transparent);user-select:none;pointer-events:none;z-index:0;}
+  @media (prefers-reduced-motion: reduce){
+    .rg-fu,.rg-fi,.rg-st,.rg-drop{animation:none;opacity:1;transform:none;}
+    .rg-out{animation:none;}
+  }
+</style>
+</head>
+<body>
+<div style="position:relative;height:100vh;width:100%;overflow:hidden;display:flex;flex-direction:column;">
+
+  <div class="rg-ghost" aria-hidden="true">Register</div>
+
+  <div class="rg-fu" style="position:absolute;top:clamp(22px,3.2vw,40px);left:clamp(22px,3.6vw,52px);z-index:20;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+      <span style="width:10px;height:10px;background:var(--color-accent,#ec3013);display:block;"></span>
+      <span style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 60%,transparent);">ASKU · Onboarding</span>
+    </div>
+    <h1 style="margin:0;font-weight:800;letter-spacing:-.02em;line-height:.92;font-size:clamp(30px,4.2vw,52px);">학교 등록</h1>
+  </div>
+
+  <a class="rg-back rg-fu" id="rg-back" href="index.html" style="position:absolute;top:clamp(22px,3.2vw,40px);right:clamp(22px,3.6vw,52px);z-index:30;display:inline-flex;align-items:center;gap:9px;border:2px solid var(--color-text,#201e1d);background:var(--color-bg,#f3f2f2);padding:11px 17px;font-weight:700;font-size:14px;letter-spacing:.02em;transition:background .2s ease,color .2s ease;">
+    <span style="font-size:16px;line-height:1;">←</span>뒤로가기
+  </a>
+
+  <div style="position:relative;z-index:10;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:clamp(100px,13vh,170px) clamp(22px,3.6vw,52px) clamp(36px,5vh,80px);">
+    <div style="width:min(920px,100%);">
+
+      <!-- Step 01 — URL 입력 -->
+      <div class="rg-fi" id="rg-input-panel" style="animation-delay:.12s;">
+        <div style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);margin-bottom:clamp(16px,2.4vh,26px);">Step 01 — Source</div>
+        <div class="rg-rule" id="rg-rule" style="border-bottom:3px solid var(--color-text,#201e1d);">
+          <input class="rg-input" id="rg-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://" />
+        </div>
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-top:clamp(14px,2vh,20px);">
+          <p style="margin:0;font-size:clamp(14px,1.4vw,17px);font-weight:500;line-height:1.5;color:color-mix(in srgb,var(--color-text,#201e1d) 60%,transparent);max-width:34em;text-wrap:pretty;">대학교 공지사항 페이지의 url을 입력하세요</p>
+          <span id="rg-hint" style="flex:0 0 auto;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 40%,transparent);padding-top:3px;">Required</span>
+        </div>
+        <div class="rg-fu" id="rg-submit-wrap" style="margin-top:clamp(30px,4.6vh,52px);display:none;align-items:center;gap:20px;">
+          <a class="rg-cta" id="rg-submit" href="#" style="display:inline-flex;align-items:center;gap:12px;background:var(--color-accent,#ec3013);color:var(--color-bg,#f3f2f2);font-weight:800;font-size:15px;letter-spacing:.02em;padding:15px 26px;">등록하기 <span style="font-size:16px;">→</span></a>
+        </div>
+      </div>
+
+      <!-- Step 02 — 지식 그래프 구축 진행 -->
+      <div class="rg-fi" id="rg-loading-panel" style="display:none;">
+        <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:32px;flex-wrap:wrap;">
+          <div style="min-width:0;">
+            <div id="rg-grad-label" style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;margin-bottom:14px;">Step 02 — Building</div>
+            <h2 id="rg-phase" style="margin:0;font-weight:800;letter-spacing:-.02em;line-height:1;font-size:clamp(30px,4.4vw,58px);"></h2>
+            <div id="rg-load-url" style="margin-top:14px;font-size:13px;font-weight:600;letter-spacing:.02em;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);word-break:break-all;"></div>
+          </div>
+          <div style="display:flex;align-items:baseline;gap:4px;font-weight:900;letter-spacing:-.04em;line-height:.85;">
+            <span id="rg-pct" style="font-size:clamp(56px,9vw,130px);transition:color .3s linear;">0</span>
+            <span style="font-size:clamp(22px,2.6vw,38px);color:color-mix(in srgb,var(--color-text,#201e1d) 40%,transparent);">%</span>
+          </div>
+        </div>
+
+        <div style="margin-top:clamp(22px,3.2vh,36px);height:10px;background:color-mix(in srgb,var(--color-text,#201e1d) 10%,transparent);position:relative;overflow:hidden;">
+          <div id="rg-bar" style="position:absolute;left:0;top:0;bottom:0;width:0%;"></div>
+        </div>
+
+        <div id="rg-steps" style="margin-top:clamp(16px,2.6vh,40px);border-top:2px solid var(--color-divider,#d8d5d4);"></div>
+      </div>
+
+      <!-- Step 03 — 완료 -->
+      <div id="rg-done-panel" style="display:none;">
+        <div class="rg-st" style="animation-delay:.72s;font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--color-accent,#ec3013);margin-bottom:clamp(16px,2.4vh,26px);">Complete</div>
+        <h2 class="rg-drop" style="margin:0;font-weight:800;letter-spacing:-.025em;line-height:.95;font-size:clamp(38px,6vw,84px);">등록이 완료되었습니다</h2>
+        <p class="rg-st" style="animation-delay:.92s;margin:clamp(16px,2.4vh,24px) 0 0;font-size:clamp(14px,1.5vw,18px);font-weight:500;line-height:1.5;color:color-mix(in srgb,var(--color-text,#201e1d) 60%,transparent);max-width:38em;text-wrap:pretty;word-break:break-all;"><span id="rg-done-url"></span> 의 지식 그래프가 생성되었습니다. 이제 이 학교에 대해 질문할 수 있습니다.</p>
+        <div style="display:grid;grid-template-columns:repeat(3,auto);justify-content:start;gap:clamp(28px,4vw,64px);margin:clamp(28px,4vh,46px) 0 clamp(28px,4vh,44px);">
+          <div class="rg-st" style="animation-delay:1.08s;">
+            <div style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">문서</div>
+            <div id="rg-docs" style="font-weight:800;font-size:clamp(26px,3.2vw,44px);line-height:1;"></div>
+          </div>
+          <div class="rg-st" style="animation-delay:1.2s;">
+            <div style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">노드</div>
+            <div id="rg-nodes" style="font-weight:800;font-size:clamp(26px,3.2vw,44px);line-height:1;"></div>
+          </div>
+          <div class="rg-st" style="animation-delay:1.32s;">
+            <div style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">소요</div>
+            <div id="rg-time" style="font-weight:800;font-size:clamp(26px,3.2vw,44px);line-height:1;"></div>
+          </div>
+        </div>
+        <div class="rg-st" style="animation-delay:1.5s;display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
+          <a class="rg-cta" id="rg-go" href="qa.html" style="display:inline-flex;align-items:center;gap:12px;background:var(--color-accent,#ec3013);color:var(--color-bg,#f3f2f2);font-weight:800;font-size:15px;letter-spacing:.02em;padding:15px 26px;">질문하러 가기 <span style="font-size:16px;">→</span></a>
+          <a class="rg-back" id="rg-again" href="#" style="display:inline-flex;align-items:center;gap:9px;border:2px solid var(--color-text,#201e1d);padding:13px 22px;font-weight:700;font-size:15px;letter-spacing:.02em;transition:background .2s ease,color .2s ease;">다른 학교 등록</a>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="rg-fu" id="rg-foot" style="position:absolute;left:clamp(22px,3.6vw,52px);bottom:clamp(22px,3vw,36px);z-index:20;display:flex;align-items:center;gap:22px;animation-delay:.3s;">
+    <span style="font-family:var(--font-heading,'Archivo',sans-serif);font-weight:800;font-size:15px;letter-spacing:.06em;"><span style="color:var(--color-accent,#ec3013);">01</span> / 03</span>
+    <span style="width:1px;height:16px;background:var(--color-divider,#d8d5d4);"></span>
+    <span style="font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">공지사항 URL 입력</span>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // — 진행 단계 (라벨 + 지속시간 ms). SchoolQA 로 넘어가기 전 지식 그래프 구축 시뮬레이션. —
+  var PHASES = [
+    { label: "학교 페이지 접속 확인", dur: 1300 },
+    { label: "공지사항 페이지 크롤링중", dur: 3200 },
+    { label: "문서 구조 분석중", dur: 2400 },
+    { label: "지식 그래프 생성중", dur: 3600 },
+    { label: "임베딩 인덱싱중", dur: 2200 },
+    { label: "검증 및 마무리", dur: 1300 }
+  ];
+  var TOTAL = PHASES.reduce(function (a, p) { return a + p.dur; }, 0);
+
+  var INK = "var(--color-text,#201e1d)";
+  var ACCENT = "var(--color-accent,#ec3013)";
+  var GFROM = "#e3a89c";              // 진행 그라디언트 시작색 (DC props 기본값)
+  var GTO = ACCENT;                    // 끝색
+  function dim(n) { return "color-mix(in srgb," + INK + " " + n + "%,transparent)"; }
+  function gradAt(pct) { return "color-mix(in srgb, " + GTO + " " + pct + "%, " + GFROM + ")"; }
+
+  // URL 유효성 — 신뢰 경계: 사용자가 넣는 값. 스킴 없어도 도메인 형태면 통과.
+  function valid(u) {
+    var t = (u || "").trim();
+    if (t.length < 4) return false;
+    return /^(https?:\/\/)?[\w-]+(\.[\w-]+)+([\/?#][^\s]*)?$/i.test(t);
+  }
+  // 경과시간(ms) → 현재 단계 인덱스 (마지막에서 clamp).
+  function phaseAt(e) {
+    var acc = 0, ph = 0;
+    for (var i = 0; i < PHASES.length; i++) { acc += PHASES[i].dur; if (e < acc) { ph = i; break; } ph = i; }
+    return ph;
+  }
+
+  // 테스트 훅: 브라우저 없이 valid()/phaseAt() 를 검증할 수 있게 노출 (register.selfcheck.js).
+  if (typeof globalThis !== "undefined" && globalThis.__RG_TEST__) {
+    globalThis.__RG__ = { valid: valid, phaseAt: phaseAt, TOTAL: TOTAL, PHASES: PHASES };
+    return; // 테스트 모드에선 DOM 배선 생략
+  }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { url: "", stage: "input", pct: 0, phase: 0, focus: false };
+  var T0 = null, END = null, ELAPSED = null, raf = 0;
+
+  // — DOM refs —
+  var inputPanel = $("rg-input-panel"), loadingPanel = $("rg-loading-panel"), donePanel = $("rg-done-panel"), foot = $("rg-foot");
+  var urlInput = $("rg-url"), rule = $("rg-rule"), hint = $("rg-hint"), submitWrap = $("rg-submit-wrap");
+  var gradLabel = $("rg-grad-label"), phaseEl = $("rg-phase"), loadUrl = $("rg-load-url"), pctEl = $("rg-pct"), bar = $("rg-bar");
+  var doneUrl = $("rg-done-url"), docsEl = $("rg-docs"), nodesEl = $("rg-nodes"), timeEl = $("rg-time");
+
+  // — 진행 단계 행: PHASES 고정이라 한 번만 만들고 참조를 들고 있다가 프레임마다 값만 갱신 —
+  var stepEls = PHASES.map(function (p, i) {
+    var row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:18px;padding:clamp(6px,1.2vh,14px) 0;border-bottom:1px solid color-mix(in srgb," + INK + " 12%,transparent);";
+    var num = document.createElement("span");
+    num.style.cssText = "flex:0 0 auto;width:22px;font-family:var(--font-heading,'Archivo',sans-serif);font-size:12px;font-weight:800;letter-spacing:.08em;color:" + dim(45) + ";";
+    num.textContent = String(i + 1).padStart(2, "0");
+    var dot = document.createElement("span");
+    dot.style.cssText = "flex:0 0 auto;width:12px;height:12px;";
+    var label = document.createElement("span");
+    label.style.cssText = "flex:1;min-width:0;font-size:clamp(14px,1.5vw,18px);letter-spacing:-.01em;";
+    label.textContent = p.label;
+    var st = document.createElement("span");
+    st.style.cssText = "flex:0 0 auto;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;";
+    row.appendChild(num); row.appendChild(dot); row.appendChild(label); row.appendChild(st);
+    $("rg-steps").appendChild(row);
+    return { row: row, dot: dot, label: label, state: st };
+  });
+
+  function setState(patch) { for (var k in patch) state[k] = patch[k]; render(); }
+
+  function render() {
+    var s = state;
+    var ok = valid(s.url);
+    inputPanel.style.display = s.stage === "input" ? "block" : "none";
+    var loadingVis = s.stage === "loading" || s.stage === "exit";
+    loadingPanel.style.display = loadingVis ? "block" : "none";
+    loadingPanel.classList.toggle("rg-out", s.stage === "exit");
+    donePanel.style.display = s.stage === "done" ? "block" : "none";
+    foot.style.display = s.stage === "input" ? "flex" : "none";
+
+    if (s.stage === "input") {
+      rule.style.borderBottomColor = s.focus ? ACCENT : INK;
+      hint.textContent = ok ? "Valid URL" : (s.url.trim() ? "Checking…" : "Required");
+      hint.style.color = ok ? ACCENT : dim(40);
+      submitWrap.style.display = ok ? "flex" : "none";
+    }
+
+    if (loadingVis) {
+      var grad = gradAt(s.pct);
+      gradLabel.style.color = grad;
+      phaseEl.textContent = (PHASES[s.phase] || PHASES[0]).label;
+      loadUrl.textContent = s.url;
+      pctEl.textContent = s.pct;
+      pctEl.style.color = grad;
+      bar.style.width = s.pct + "%";
+      bar.style.background = "linear-gradient(90deg," + GFROM + "," + grad + ")";
+      for (var i = 0; i < PHASES.length; i++) {
+        var done = i < s.phase, act = i === s.phase, e = stepEls[i];
+        e.row.style.opacity = done ? "0.42" : act ? "1" : "0.28";
+        e.dot.style.background = act ? grad : done ? INK : dim(18);
+        e.label.style.fontWeight = act ? 800 : 500;
+        e.state.textContent = done ? "Done" : act ? "Running" : "Queued";
+        e.state.style.color = act ? grad : dim(40);
+      }
+    }
+
+    if (s.stage === "done") {
+      doneUrl.textContent = s.url;
+      var seed = s.url.length || 7;
+      var docs = 820 + seed * 137;
+      docsEl.textContent = docs.toLocaleString("en-US");
+      nodesEl.textContent = (docs * 27 / 1000).toFixed(0) + "K";
+      timeEl.textContent = ELAPSED || "14.0s";
+    }
+  }
+
+  // — rAF: 경과시간 기반으로 pct/phase 를 밀고, 완료 후 exit→done 로 전이 —
+  function tick() {
+    if (T0 != null) {
+      var e = performance.now() - T0;
+      var p = Math.min(1, e / TOTAL);
+      var ph = phaseAt(e);
+      var pct = Math.floor(p * 100);
+      if (pct !== state.pct || ph !== state.phase) setState({ pct: pct, phase: ph });
+      if (p >= 1) {
+        if (END == null) { END = performance.now(); ELAPSED = (e / 1000).toFixed(1) + "s"; }
+        var q = performance.now() - END;
+        if (q > 900) { if (state.stage !== "done") setState({ stage: "done" }); }
+        else if (q > 400) { if (state.stage === "loading") setState({ stage: "exit" }); }
+      }
+    }
+    raf = requestAnimationFrame(tick);
+  }
+
+  function start() {
+    if (!valid(state.url) || state.stage !== "input") return;
+    T0 = performance.now(); END = null; ELAPSED = null;
+    setState({ stage: "loading", pct: 0, phase: 0 });
+  }
+
+  function again() {
+    T0 = null; END = null; ELAPSED = null;
+    urlInput.value = "";
+    setState({ url: "", stage: "input", pct: 0, phase: 0, focus: false });
+    if (urlInput.focus) urlInput.focus();
+  }
+
+  // — 이벤트 배선 —
+  urlInput.addEventListener("input", function () { setState({ url: urlInput.value }); }); // render 는 input.value 를 되쓰지 않음 → 캐럿 보존
+  urlInput.addEventListener("focus", function () { setState({ focus: true }); });
+  urlInput.addEventListener("blur", function () { setState({ focus: false }); });
+  urlInput.addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); start(); } });
+  $("rg-submit").addEventListener("click", function (ev) { ev.preventDefault(); start(); });
+  $("rg-again").addEventListener("click", function (ev) { ev.preventDefault(); again(); });
+  // 뒤로: 히스토리 있으면 back, 없으면 href(index.html) 로.
+  $("rg-back").addEventListener("click", function (ev) { if (window.history.length > 1) { ev.preventDefault(); window.history.back(); } });
+  // ponytail: 등록은 URL 기반이라 아직 school_id 가 없음 → qa.html 로만 이동(샘플 그래프). 백엔드 나오면 ?school=id 부착.
+
+  render();
+  urlInput.focus();
+  raf = requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

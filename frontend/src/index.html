@@ -22,7 +22,7 @@ a:hover { color:var(--asku-accent,#ec3013); }
 .arrow .draw{ stroke-dasharray:1; stroke-dashoffset:1; transition:stroke-dashoffset 1.05s cubic-bezier(.65,0,.35,1); }
 .arrow.vis .draw{ stroke-dashoffset:0; }
 #asku-root[data-grid="on"]::after{ content:""; position:fixed; inset:0; z-index:60; pointer-events:none; background:repeating-linear-gradient(90deg, transparent 0, transparent calc((100% - 11px) / 12), color-mix(in srgb, var(--asku-accent,#ec3013) 18%, transparent) calc((100% - 11px) / 12), color-mix(in srgb, var(--asku-accent,#ec3013) 18%, transparent) calc((100% - 11px) / 12 + 1px)); }
-#asku-root a[href="#flow"]{ white-space:nowrap; }
+#asku-root a[href="register.html"]{ white-space:nowrap; }
 @keyframes whyDrift{ 0%{ background-position:0% 50%; } 100%{ background-position:100% 50%; } }
 @keyframes marquee{ 0%{ transform:translateX(-50%); } 100%{ transform:translateX(0); } }
 .mq-track:hover{ animation-play-state:paused; }
@@ -38,7 +38,7 @@ a:hover { color:var(--asku-accent,#ec3013); }
     <a href="#top" style="font-family:'Hostero',var(--font-heading); font-size:28px; letter-spacing:.03em; color:inherit;">ASKU</a>
     <div class="nav-links" style="display:flex; align-items:center; gap:clamp(16px,2vw,34px);">
       <a href="find.html" class="nav-find" style="color:inherit; font-weight:600; font-size:15px;" style-hover="color:var(--asku-accent,#ec3013)">학교 찾기</a>
-      <a href="#flow" style="color:inherit; font-family:var(--font-heading); font-weight:800; font-size:14px; border:1.5px solid currentColor; padding:9px 18px;" style-hover="background:var(--asku-accent,#ec3013); border-color:var(--asku-accent,#ec3013); color:#f3f2f2">학교 등록</a>
+      <a href="register.html" style="color:inherit; font-family:var(--font-heading); font-weight:800; font-size:14px; border:1.5px solid currentColor; padding:9px 18px;" style-hover="background:var(--asku-accent,#ec3013); border-color:var(--asku-accent,#ec3013); color:#f3f2f2">학교 등록</a>
     </div>
   </nav>
 
@@ -57,7 +57,7 @@ a:hover { color:var(--asku-accent,#ec3013); }
     <p data-reveal style="transition-delay:.55s; max-width:54ch; margin:clamp(26px,4vh,42px) 0 0; font-size:clamp(16px,1.4vw,20px); line-height:1.6; color:color-mix(in srgb,#201e1d 72%,transparent);">대학교 웹사이트를 자동으로 크롤링해 지식 그래프를 만들고, 근거를 갖춘 답변을 제공하는 Graph RAG 기반 QA 시스템입니다.</p>
     <div data-reveal style="transition-delay:.65s; display:flex; gap:14px; flex-wrap:wrap; margin-top:clamp(30px,4vh,40px);">
       <a href="find.html" style="display:inline-flex; align-items:center; gap:10px; background:var(--asku-accent,#ec3013); color:#f3f2f2; font-family:var(--font-heading); font-weight:800; font-size:15px; padding:15px 28px;" style-hover="filter:brightness(.9)">학교 찾기 <span style="font-size:18px; line-height:1;">→</span></a>
-      <a href="#flow" style="display:inline-flex; align-items:center; gap:10px; border:1.5px solid #201e1d; color:#201e1d; font-family:var(--font-heading); font-weight:800; font-size:15px; padding:15px 28px;" style-hover="background:#201e1d; color:#f3f2f2">학교 등록</a>
+      <a href="register.html" style="display:inline-flex; align-items:center; gap:10px; border:1.5px solid #201e1d; color:#201e1d; font-family:var(--font-heading); font-weight:800; font-size:15px; padding:15px 28px;" style-hover="background:#201e1d; color:#f3f2f2">학교 등록</a>
     </div>
   </section>
 
