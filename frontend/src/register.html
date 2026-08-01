@@ -4,8 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ASKU — 학교 등록</title>
-<!-- Register.dc.html 을 DC(React) 런타임 없이 이식. 디자인 시스템 토큰(styles.css)·Archivo 계승, 진행 애니메이션은 rAF 로만 구동. -->
+<!-- Register.dc.html 을 DC(React) 런타임 없이 이식. 디자인 시스템 토큰(styles.css)·Archivo 계승. 진행도는 백엔드 /status 폴링으로 구동. -->
 <link rel="stylesheet" href="_ds/modernist-c94de0c9-726d-442a-9bb3-d3b24f39b8cb/styles.css">
+<script src="api.js"></script>
 <style>
   *{box-sizing:border-box;}
   html,body{margin:0;height:100%;}
@@ -132,20 +133,18 @@
 (function () {
   "use strict";
 
-  // — 진행 단계 (라벨 + 지속시간 ms). SchoolQA 로 넘어가기 전 지식 그래프 구축 시뮬레이션. —
+  // — 진행 단계: 백엔드 파이프라인 stage 와 1:1 (docs/01_SYSTEM 03~06). —
   var PHASES = [
-    { label: "학교 페이지 접속 확인", dur: 1300 },
-    { label: "공지사항 페이지 크롤링중", dur: 3200 },
-    { label: "문서 구조 분석중", dur: 2400 },
-    { label: "지식 그래프 생성중", dur: 3600 },
-    { label: "임베딩 인덱싱중", dur: 2200 },
-    { label: "검증 및 마무리", dur: 1300 }
+    { key: "crawling",   label: "공지사항 크롤링중" },
+    { key: "extracting", label: "본문 추출중" },
+    { key: "building",   label: "지식 그래프 생성중" },
+    { key: "indexing",   label: "임베딩 인덱싱중" }
   ];
-  var TOTAL = PHASES.reduce(function (a, p) { return a + p.dur; }, 0);
+  var POLL_MS = 1200;
 
   var INK = "var(--color-text,#201e1d)";
   var ACCENT = "var(--color-accent,#ec3013)";
-  var GFROM = "#e3a89c";              // 진행 그라디언트 시작색 (DC props 기본값)
+  var GFROM = "#e3a89c";              // 진행 그라디언트 시작색
   var GTO = ACCENT;                    // 끝색
   function dim(n) { return "color-mix(in srgb," + INK + " " + n + "%,transparent)"; }
   function gradAt(pct) { return "color-mix(in srgb, " + GTO + " " + pct + "%, " + GFROM + ")"; }
@@ -156,30 +155,43 @@
     if (t.length < 4) return false;
     return /^(https?:\/\/)?[\w-]+(\.[\w-]+)+([\/?#][^\s]*)?$/i.test(t);
   }
-  // 경과시간(ms) → 현재 단계 인덱스 (마지막에서 clamp).
-  function phaseAt(e) {
-    var acc = 0, ph = 0;
-    for (var i = 0; i < PHASES.length; i++) { acc += PHASES[i].dur; if (e < acc) { ph = i; break; } ph = i; }
-    return ph;
+  // 스킴이 없으면 https:// 를 붙여 백엔드(POST /schools)의 http(s) 요구를 만족시킨다.
+  function normalizeUrl(u) {
+    var t = (u || "").trim();
+    return /^https?:\/\//i.test(t) ? t : "https://" + t;
+  }
+  // 학교명 자동 추론(naive): 호스트에서 www. 와 TLD 를 떼고 첫 라벨을 쓴다. 백엔드는 name 을 요구.
+  function deriveName(u) {
+    var host = normalizeUrl(u).replace(/^https?:\/\//i, "").split(/[\/?#]/)[0].replace(/^www\./i, "");
+    var first = host.split(".")[0];
+    return first || host || "학교";
+  }
+  // 백엔드 stage → 시각 단계 인덱스.
+  function stageToPhase(stage) {
+    for (var i = 0; i < PHASES.length; i++) if (PHASES[i].key === stage) return i;
+    if (stage === "done" || stage === "ready" || stage === "partial_failed") return PHASES.length - 1;
+    return 0; // idle/알 수 없음 → 첫 단계
   }
 
-  // 테스트 훅: 브라우저 없이 valid()/phaseAt() 를 검증할 수 있게 노출 (register.selfcheck.js).
+  // 테스트 훅: 브라우저 없이 순수 함수들을 검증할 수 있게 노출 (register.selfcheck.js).
   if (typeof globalThis !== "undefined" && globalThis.__RG_TEST__) {
-    globalThis.__RG__ = { valid: valid, phaseAt: phaseAt, TOTAL: TOTAL, PHASES: PHASES };
+    globalThis.__RG__ = { valid: valid, normalizeUrl: normalizeUrl, deriveName: deriveName, stageToPhase: stageToPhase, PHASES: PHASES };
     return; // 테스트 모드에선 DOM 배선 생략
   }
 
   var $ = function (id) { return document.getElementById(id); };
-  var state = { url: "", stage: "input", pct: 0, phase: 0, focus: false };
-  var T0 = null, END = null, ELAPSED = null, raf = 0;
+  var state = { url: "", stage: "input", pct: 0, phase: 0, focus: false, message: "", detail: {}, error: "" };
+  var T0 = null, ELAPSED = null, schoolId = null, pollTimer = null, pollErr = 0;
 
   // — DOM refs —
   var inputPanel = $("rg-input-panel"), loadingPanel = $("rg-loading-panel"), donePanel = $("rg-done-panel"), foot = $("rg-foot");
   var urlInput = $("rg-url"), rule = $("rg-rule"), hint = $("rg-hint"), submitWrap = $("rg-submit-wrap");
   var gradLabel = $("rg-grad-label"), phaseEl = $("rg-phase"), loadUrl = $("rg-load-url"), pctEl = $("rg-pct"), bar = $("rg-bar");
   var doneUrl = $("rg-done-url"), docsEl = $("rg-docs"), nodesEl = $("rg-nodes"), timeEl = $("rg-time");
+  var doneHead = donePanel.querySelector("h2"), doneKicker = donePanel.querySelector(".rg-st"), goBtn = $("rg-go");
+  var doneText = $("rg-done-url").parentElement, statsGrid = doneText.nextElementSibling;
 
-  // — 진행 단계 행: PHASES 고정이라 한 번만 만들고 참조를 들고 있다가 프레임마다 값만 갱신 —
+  // — 진행 단계 행: PHASES 고정이라 한 번만 만들고 참조를 들고 있다가 갱신 시 값만 바꾼다 —
   var stepEls = PHASES.map(function (p, i) {
     var row = document.createElement("div");
     row.style.cssText = "display:flex;align-items:center;gap:18px;padding:clamp(6px,1.2vh,14px) 0;border-bottom:1px solid color-mix(in srgb," + INK + " 12%,transparent);";
@@ -207,7 +219,7 @@
     var loadingVis = s.stage === "loading" || s.stage === "exit";
     loadingPanel.style.display = loadingVis ? "block" : "none";
     loadingPanel.classList.toggle("rg-out", s.stage === "exit");
-    donePanel.style.display = s.stage === "done" ? "block" : "none";
+    donePanel.style.display = (s.stage === "done" || s.stage === "error") ? "block" : "none";
     foot.style.display = s.stage === "input" ? "flex" : "none";
 
     if (s.stage === "input") {
@@ -220,7 +232,7 @@
     if (loadingVis) {
       var grad = gradAt(s.pct);
       gradLabel.style.color = grad;
-      phaseEl.textContent = (PHASES[s.phase] || PHASES[0]).label;
+      phaseEl.textContent = s.message || (PHASES[s.phase] || PHASES[0]).label;
       loadUrl.textContent = s.url;
       pctEl.textContent = s.pct;
       pctEl.style.color = grad;
@@ -237,43 +249,77 @@
     }
 
     if (s.stage === "done") {
-      doneUrl.textContent = s.url;
-      var seed = s.url.length || 7;
-      var docs = 820 + seed * 137;
-      docsEl.textContent = docs.toLocaleString("en-US");
-      nodesEl.textContent = (docs * 27 / 1000).toFixed(0) + "K";
-      timeEl.textContent = ELAPSED || "14.0s";
+      doneKicker.textContent = "Complete";
+      doneHead.textContent = "등록이 완료되었습니다";
+      doneText.style.display = "";
+      doneText.innerHTML = '<span id="rg-done-url"></span> 의 지식 그래프가 생성되었습니다. 이제 이 학교에 대해 질문할 수 있습니다.';
+      $("rg-done-url").textContent = s.url;
+      statsGrid.style.display = "";
+      docsEl.textContent = (s.detail.pages || 0).toLocaleString("en-US");
+      nodesEl.textContent = (s.detail.entities || 0).toLocaleString("en-US");
+      timeEl.textContent = ELAPSED || "—";
+      goBtn.style.display = "";
+      goBtn.setAttribute("href", "qa.html?school=" + encodeURIComponent(schoolId));
+    }
+
+    if (s.stage === "error") {
+      doneKicker.textContent = "Failed";
+      doneHead.textContent = "등록에 실패했습니다";
+      doneText.style.display = "";
+      doneText.textContent = s.error || "잠시 후 다시 시도해 주세요.";
+      statsGrid.style.display = "none";
+      goBtn.style.display = "none";
     }
   }
 
-  // — rAF: 경과시간 기반으로 pct/phase 를 밀고, 완료 후 exit→done 로 전이 —
-  function tick() {
-    if (T0 != null) {
-      var e = performance.now() - T0;
-      var p = Math.min(1, e / TOTAL);
-      var ph = phaseAt(e);
-      var pct = Math.floor(p * 100);
-      if (pct !== state.pct || ph !== state.phase) setState({ pct: pct, phase: ph });
-      if (p >= 1) {
-        if (END == null) { END = performance.now(); ELAPSED = (e / 1000).toFixed(1) + "s"; }
-        var q = performance.now() - END;
-        if (q > 900) { if (state.stage !== "done") setState({ stage: "done" }); }
-        else if (q > 400) { if (state.stage === "loading") setState({ stage: "exit" }); }
-      }
-    }
-    raf = requestAnimationFrame(tick);
-  }
-
+  // — 등록 시작: POST /schools → school_id 받고 폴링 시작 —
   function start() {
     if (!valid(state.url) || state.stage !== "input") return;
-    T0 = performance.now(); END = null; ELAPSED = null;
-    setState({ stage: "loading", pct: 0, phase: 0 });
+    T0 = performance.now(); ELAPSED = null; pollErr = 0;
+    var url = normalizeUrl(state.url);
+    setState({ stage: "loading", pct: 0, phase: 0, message: "학교 등록 요청 중…" });
+    ASKU.post("/schools", { name: deriveName(state.url), base_url: url })
+      .then(function (school) {
+        schoolId = school.school_id;
+        poll();
+      })
+      .catch(function (err) { fail(err.message); });
+  }
+
+  // — /status 를 주기적으로 폴링해 진행도·단계를 반영 —
+  function poll() {
+    if (schoolId == null) return;
+    ASKU.get("/schools/" + schoolId + "/status")
+      .then(function (s) {
+        pollErr = 0;
+        var pct = Math.round((s.progress || 0) * 100);
+        setState({ pct: Math.max(state.pct, pct), phase: stageToPhase(s.stage), message: s.message || "", detail: s.detail || {} });
+        if (s.stage === "failed") { fail(s.message || "파이프라인 처리에 실패했습니다."); return; }
+        if (s.stage === "done" || s.stage === "ready" || s.stage === "partial_failed") { finish(); return; }
+        pollTimer = setTimeout(poll, POLL_MS);
+      })
+      .catch(function (err) {
+        if (++pollErr <= 5) { pollTimer = setTimeout(poll, POLL_MS); }
+        else fail(err.message);
+      });
+  }
+
+  function finish() {
+    if (ELAPSED == null && T0 != null) ELAPSED = ((performance.now() - T0) / 1000).toFixed(1) + "s";
+    setState({ pct: 100, stage: "exit" });
+    setTimeout(function () { setState({ stage: "done" }); }, 520);
+  }
+
+  function fail(msg) {
+    if (pollTimer) clearTimeout(pollTimer);
+    setState({ stage: "error", error: msg || "알 수 없는 오류" });
   }
 
   function again() {
-    T0 = null; END = null; ELAPSED = null;
+    if (pollTimer) clearTimeout(pollTimer);
+    T0 = null; ELAPSED = null; schoolId = null; pollErr = 0;
     urlInput.value = "";
-    setState({ url: "", stage: "input", pct: 0, phase: 0, focus: false });
+    setState({ url: "", stage: "input", pct: 0, phase: 0, focus: false, message: "", detail: {}, error: "" });
     if (urlInput.focus) urlInput.focus();
   }
 
@@ -286,11 +332,10 @@
   $("rg-again").addEventListener("click", function (ev) { ev.preventDefault(); again(); });
   // 뒤로: 히스토리 있으면 back, 없으면 href(index.html) 로.
   $("rg-back").addEventListener("click", function (ev) { if (window.history.length > 1) { ev.preventDefault(); window.history.back(); } });
-  // ponytail: 등록은 URL 기반이라 아직 school_id 가 없음 → qa.html 로만 이동(샘플 그래프). 백엔드 나오면 ?school=id 부착.
 
   render();
   urlInput.focus();
-  raf = requestAnimationFrame(tick);
+  window.addEventListener("beforeunload", function () { if (pollTimer) clearTimeout(pollTimer); });
 })();
 </script>
 </body>
