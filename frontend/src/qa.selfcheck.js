@@ -1,4 +1,5 @@
-// Runs qa.html's REAL script under DOM/d3 stubs and asserts build()+answer().
+// Runs qa.html's REAL script under the __QA_TEST__ hook and asserts the pure transforms
+// that turn a backend /graph payload into d3 structures: buildGraph/assignTypeColors/parseEid.
 const fs = require("fs");
 const assert = require("assert");
 const html = fs.readFileSync(process.argv[2], "utf8");
@@ -8,41 +9,45 @@ const start = html.indexOf("(function () {\n  \"use strict\";");
 const end = html.indexOf("})();", start) + "})();".length;
 const iife = html.slice(start, end);
 
-// Stubs so the IIFE loads without a browser.
-const listeners = {};
-globalThis.__QA_TEST__ = true;
-globalThis.window = { addEventListener() {}, history: { length: 1 }, matchMedia: () => ({ matches: false }) };
+globalThis.__QA_TEST__ = true; // hook returns before any DOM/d3 wiring, so no stubs needed
 globalThis.location = { search: "" };
 globalThis.URLSearchParams = require("url").URLSearchParams;
-globalThis.document = {
-  addEventListener(ev, cb) { listeners[ev] = cb; },
-  getElementById: () => ({ style: {}, addEventListener() {}, set innerHTML(v) {}, get innerHTML() { return ""; } }),
-  querySelector: () => ({ style: {} }),
-};
-globalThis.ResizeObserver = class { observe() {} disconnect() {} };
-
 eval(iife);
 const QA = globalThis.__QA__;
 assert(QA, "test hook not exposed");
 
-QA.build();
-const { nodes, adj, byId } = QA.get();
+// parseEid(): strips the "e_" prefix the API uses for node ids
+assert.strictEqual(QA.parseEid("e_123"), 123);
+assert.strictEqual(QA.parseEid("e_7"), 7);
 
-// build() invariants
-assert(nodes.length > 30, "expected a sizable graph, got " + nodes.length);
-assert.equal(nodes.filter(n => n.type === "school").length, 1, "exactly one school root");
-assert(nodes.filter(n => n.type === "dept").length === 6, "6 depts");
-nodes.forEach(n => assert(adj.get(n.id).size > 0, "no orphan node: " + n.name)); // everything connected
+// buildGraph(): builds nodes/adj/byId and drops edges whose endpoints aren't loaded (core subgraph)
+const payload = {
+  nodes: [
+    { id: "e_1", type: "장학금", name: "국가장학금", degree: 2, doc_count: 3 },
+    { id: "e_2", type: "부서", name: "학생지원팀", degree: 1 },
+    { id: "e_3", type: "장학금", name: "교내장학금", degree: 1 },
+  ],
+  edges: [
+    { source: "e_1", target: "e_2", relation: "담당" },
+    { source: "e_1", target: "e_3", relation: "관련" },
+    { source: "e_1", target: "e_999", relation: "댕글링" }, // 끝점 없음 → 버려져야 함
+  ],
+};
+const g = QA.buildGraph(payload);
+assert.strictEqual(g.nodes.length, 3, "3 nodes");
+assert.strictEqual(g.rawLinks.length, 2, "dangling edge dropped");
+assert.strictEqual(g.adj.get("e_1").size, 2, "e_1 has 2 neighbors");
+assert(g.byId.has("e_2"), "byId indexed");
 
-// answer() — a graduation query should surface the graduation doc as evidence, with ids
-const r = QA.answer("졸업요건이 어떻게 되나요?");
-assert(r.text && r.text.length > 20, "answer text present");
-assert(r.ids.length >= 1 && r.ids.length <= 3, "1..3 evidence ids, got " + r.ids.length);
-assert(r.ids.every(id => byId.has(id)), "evidence ids are real nodes");
-assert(r.text.includes("졸업요건"), "graduation answer references the graduation node");
+// assignTypeColors(): a color per distinct type, most-frequent first, counts correct
+const ti = QA.assignTypeColors(g.nodes);
+assert.strictEqual(ti.types[0], "장학금", "most frequent type ranked first");
+assert.strictEqual(ti.counts["장학금"], 2);
+assert(ti.color["장학금"] && ti.color["부서"], "every type gets a color");
+assert.notStrictEqual(ti.color["장학금"], ti.color["부서"], "distinct types get distinct colors");
 
-// a nonsense query still returns a graceful fallback (no crash, still 1..3 ids)
-const r2 = QA.answer("asdfqwer zzz");
-assert(r2.text.length > 20 && r2.ids.length >= 1, "fallback answer is graceful");
+// nodeRadius(): clamped and grows with degree
+assert(QA.nodeRadius({ degree: 0 }) >= 6 && QA.nodeRadius({ degree: 100 }) <= 18, "radius clamped");
+assert(QA.nodeRadius({ degree: 5 }) > QA.nodeRadius({ degree: 0 }), "radius grows with degree");
 
-console.log("OK — nodes:%d links-per-node ok, answer ids:%s", nodes.length, JSON.stringify(r.ids));
+console.log("OK — buildGraph/assignTypeColors/parseEid/nodeRadius pass; nodes:%d links:%d", g.nodes.length, g.rawLinks.length);

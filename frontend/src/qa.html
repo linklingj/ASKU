@@ -7,6 +7,7 @@
 <!-- SchoolQA.dc.html 을 DC(React) 런타임 없이 이식. 디자인 시스템 토큰(styles.css)·Archivo 계승, 그래프는 d3 로만 구동. -->
 <link rel="stylesheet" href="_ds/modernist-c94de0c9-726d-442a-9bb3-d3b24f39b8cb/styles.css">
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="api.js"></script>
 <style>
   *{box-sizing:border-box;}
   html,body{margin:0;height:100%;}
@@ -68,73 +69,57 @@
   "use strict";
   var esc = function (s) { return String(s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); };
 
-  var TYPES = [
-    { key: "dept",   label: "학과",   color: "#ec3013", r: 12, meta: "단과대 소속 학과 · 커리큘럼 허브" },
-    { key: "course", label: "강의",   color: "#1f6f8b", r: 8,  meta: "개설 강의 · 강의계획서 연결" },
-    { key: "prof",   label: "교수",   color: "#c98b00", r: 8,  meta: "담당 교수 · 연구실 정보" },
-    { key: "doc",    label: "문서",   color: "#6b6764", r: 6,  meta: "학사 문서 · 규정 및 안내" },
-    { key: "notice", label: "공지",   color: "#9b2f6e", r: 6,  meta: "학사 공지 · 기한 있는 안내" }
-  ];
-  var SCHOOL = { name: "세종대학교", en: "Sejong University" };
-  var DEPTS = [
-    ["컴퓨터공학과", ["자료구조", "운영체제", "인공지능", "컴파일러"], ["김도현 교수", "이서준 교수"]],
-    ["소프트웨어학과", ["웹서비스설계", "데이터베이스", "분산시스템"], ["박하늘 교수"]],
-    ["전자정보통신공학과", ["신호및시스템", "회로이론", "무선통신"], ["정민우 교수", "한지수 교수"]],
-    ["경영학과", ["재무관리", "마케팅원론", "조직행동론"], ["오세영 교수"]],
-    ["건축학과", ["설계스튜디오", "구조역학", "도시계획"], ["윤재현 교수"]],
-    ["디자인이노베이션", ["시각디자인", "인터랙션디자인"], ["강은비 교수"]]
-  ];
-  var DOCS = ["졸업요건 안내", "수강신청 매뉴얼", "전공로드맵", "실험실 안전규정", "학점교류 절차", "복수전공 신청서", "장학금 지급 기준", "교환학생 안내", "학사경고 규정", "논문 제출 지침"];
-  var NOTICES = ["2026-2학기 수강신청 일정", "장학금 신청 마감 안내", "졸업논문 심사 공고", "교내 장비 대여 변경", "계절학기 개설 공지"];
-  var CHIPS = ["졸업요건이 어떻게 되나요?", "수강신청 일정 알려줘", "복수전공 신청 절차"];
-  var LABEL_MODE = "auto"; // DC 프롭 labelMode(auto|hubs|all) 기본값. UI 미노출 — 필요하면 여기서 조정.
+  // 백엔드 엔티티 타입은 임의의 한글 문자열이라 색을 순번으로 배정한다(등장 빈도 높은 타입에 강한 색부터).
+  var PALETTE = ["#ec3013", "#1f6f8b", "#c98b00", "#9b2f6e", "#3f7a3f", "#5a4fcf", "#b5532a", "#2f8f8f", "#8a2be2", "#6b6764"];
+  var CHIPS = ["졸업요건이 어떻게 되나요?", "수강신청 일정 알려줘", "장학금 신청 방법"];
 
-  // ?school= 로 사이드바 제목만 바꿀 수 있음(그래프 데이터는 세종대 샘플 고정 — 백엔드 연동 시 교체).
-  var SCHOOL_NAME = new URLSearchParams(location.search).get("school") || SCHOOL.name;
-
-  var state = { sidebar: true, off: {}, selId: null, q: "", busy: false, ans: null, srcIds: [] };
-  var nodes, rawLinks, byId, adj, rootId;
-  var svg, gLayer, lLayer, nLayer, zoom, sim, drag, lSel, nSel, hover = null;
-  var _ro, _rf, _t, _a;
-
-  var host = function () { return document.getElementById("qa-graph"); };
-
-  function setState(patch, cb) { for (var k in patch) state[k] = patch[k]; render(); if (cb) cb(); }
-  function meta(n) { var t = TYPES.find(function (x) { return x.key === n.type; }); return { color: t ? t.color : "#201e1d", label: t ? t.label : "학교", r: t ? t.r : 17 }; }
-  function visNodes() { return nodes.filter(function (n) { return n.type === "school" || !state.off[n.type]; }); }
-
-  // ── 그래프 데이터 빌드 (DC build() 이식) ──────────────────────────
-  function build() {
-    var N = [], L = [], id = 0;
-    var add = function (name, type, extra) { var n = { id: "n" + id++, name: name, type: type }; if (extra) for (var k in extra) n[k] = extra[k]; N.push(n); return n; };
-    var link = function (a, b, w) { L.push({ s: a.id, t: b.id, w: w || 1 }); };
-
-    var root = add(SCHOOL.name, "school"); rootId = root.id;
-    var d = 0;
-    DEPTS.forEach(function (row) {
-      var dn = row[0], courses = row[1], profs = row[2];
-      var dept = add(dn, "dept", { note: (courses.length + "개 강의 · " + profs.length + "명 교수") });
-      link(root, dept, 2);
-      var cs = courses.map(function (cn) { var c = add(cn, "course", { note: dn }); link(dept, c); return c; });
-      profs.forEach(function (pn) { var p = add(pn, "prof", { note: dn }); link(dept, p, 1.5); cs.slice(0, 2).forEach(function (c) { link(p, c); }); });
-      cs.forEach(function (c, i) {
-        var doc = add(DOCS[(d * 3 + i) % DOCS.length], "doc", { note: dn + " · " + c.name });
-        link(c, doc);
-        if (i > 0) link(cs[i - 1], c, 0.6);
-      });
-      d++;
-    });
-    var depts = N.filter(function (n) { return n.type === "dept"; });
-    NOTICES.forEach(function (nt, i) { var n = add(nt, "notice", { note: "학사팀 공지" }); link(root, n, 1.4); link(depts[i % depts.length], n, 0.8); });
-    DOCS.slice(0, 4).forEach(function (dn, i) { var g = add(dn, "doc", { note: "전체 학사 공통" }); link(root, g); link(depts[(i + 2) % depts.length], g, 0.7); });
-
-    nodes = N; rawLinks = L;
-    byId = new Map(N.map(function (n) { return [n.id, n]; }));
-    adj = new Map(N.map(function (n) { return [n.id, new Set()]; }));
+  // ── 순수: 백엔드 그래프 payload → d3 구조 ──────────────────────────
+  function parseEid(id) { return parseInt(String(id).replace(/^e_/, ""), 10); }
+  function nodeRadius(n) { return Math.max(6, Math.min(18, 7 + (n.degree || 0) * 1.1)); }
+  function assignTypeColors(list) {
+    var counts = {}; list.forEach(function (n) { counts[n.type] = (counts[n.type] || 0) + 1; });
+    var types = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || (a < b ? -1 : 1); });
+    var color = {}; types.forEach(function (t, i) { color[t] = PALETTE[i % PALETTE.length]; });
+    return { color: color, counts: counts, types: types };
+  }
+  function buildGraph(payload) {
+    var N = (payload.nodes || []).map(function (n) { return { id: n.id, name: n.name, type: n.type, degree: n.degree || 0, doc_count: n.doc_count || 0 }; });
+    var byId = new Map(N.map(function (n) { return [n.id, n]; }));
+    var L = (payload.edges || []).filter(function (e) { return byId.has(e.source) && byId.has(e.target); })
+      .map(function (e) { return { s: e.source, t: e.target, relation: e.relation, w: 1 }; });
+    var adj = new Map(N.map(function (n) { return [n.id, new Set()]; }));
     L.forEach(function (l) { adj.get(l.s).add(l.t); adj.get(l.t).add(l.s); });
+    return { nodes: N, rawLinks: L, byId: byId, adj: adj };
   }
 
-  // ── d3 그래프 (DC init/fit/tick/resize/draw/style 이식) ───────────
+  // 테스트 훅: 브라우저 없이 순수 변환을 검증 (qa.selfcheck.js). DOM/d3 배선은 건너뛴다.
+  if (typeof globalThis !== "undefined" && globalThis.__QA_TEST__) {
+    globalThis.__QA__ = { parseEid: parseEid, nodeRadius: nodeRadius, assignTypeColors: assignTypeColors, buildGraph: buildGraph };
+    return;
+  }
+
+  var SCHOOL_ID = new URLSearchParams(location.search).get("school");
+
+  var state = {
+    sidebar: true, off: {}, selId: null, q: "", busy: false,
+    ans: null, ansSources: [], srcIds: [],
+    school: null, statusStage: null, notReadyMsg: "",
+    detail: null, detailLoading: false, graphErr: null
+  };
+  var nodes = [], rawLinks = [], byId = new Map(), adj = new Map();
+  var typeInfo = { color: {}, counts: {}, types: [] };
+  var detailCache = {};
+  var svg, gLayer, lLayer, nLayer, zoom, sim, drag, lSel, nSel, hover = null;
+  var _ro, _rf, _t;
+
+  var host = function () { return document.getElementById("qa-graph"); };
+  function schoolName() { return (state.school && state.school.name) || ("학교 #" + SCHOOL_ID); }
+
+  function setState(patch, cb) { for (var k in patch) state[k] = patch[k]; render(); if (cb) cb(); }
+  function meta(n) { return { color: typeInfo.color[n.type] || "#201e1d", label: n.type || "엔티티", r: nodeRadius(n) }; }
+  function visNodes() { return nodes.filter(function (n) { return !state.off[n.type]; }); }
+
+  // ── d3 그래프 ─────────────────────────────────────────────────────
   function waitD3() {
     var h = host();
     if (window.d3 && h && h.clientWidth) {
@@ -157,13 +142,13 @@
 
     zoom = d3.zoom().scaleExtent([0.3, 3]).on("zoom", function (e) { gLayer.attr("transform", e.transform); });
     svg.call(zoom).on("dblclick.zoom", null);
-    svg.on("click", function (e) { if (e.target.tagName === "svg") setState({ selId: null }); });
+    svg.on("click", function (e) { if (e.target.tagName === "svg") setState({ selId: null, detail: null }); });
 
     nodes.forEach(function (n) { n.x = w / 2 + (Math.random() - 0.5) * 260; n.y = ht / 2 + (Math.random() - 0.5) * 260; });
 
     sim = d3.forceSimulation()
-      .force("link", d3.forceLink().id(function (x) { return x.id; }).distance(function (l) { return 40 + 26 / (l.w || 1); }).strength(function (l) { return 0.35 * (l.w || 1); }))
-      .force("charge", d3.forceManyBody().strength(function (n) { return n.type === "school" ? -420 : n.type === "dept" ? -240 : -110; }).distanceMax(420))
+      .force("link", d3.forceLink().id(function (x) { return x.id; }).distance(function (l) { return 46 + 20 / (l.w || 1); }).strength(0.32))
+      .force("charge", d3.forceManyBody().strength(function (n) { return -110 - (n.degree || 0) * 14; }).distanceMax(420))
       .force("x", d3.forceX(w / 2).strength(0.06))
       .force("y", d3.forceY(ht / 2).strength(0.08))
       .force("collide", d3.forceCollide(function (n) { return meta(n).r + 11; }))
@@ -209,10 +194,10 @@
   function draw() {
     if (!sim) return;
     var vis = visNodes(), ok = new Set(vis.map(function (n) { return n.id; }));
-    var links = rawLinks.filter(function (l) { return ok.has(l.s) && ok.has(l.t); }).map(function (l) { return { source: byId.get(l.s), target: byId.get(l.t), w: l.w }; });
+    var links = rawLinks.filter(function (l) { return ok.has(l.s) && ok.has(l.t); }).map(function (l) { return { source: byId.get(l.s), target: byId.get(l.t), w: l.w, relation: l.relation }; });
 
     lSel = lLayer.selectAll("line").data(links, function (l) { return l.source.id + ">" + l.target.id; })
-      .join("line").attr("stroke-width", function (l) { return l.w > 1 ? 1.6 : 1; });
+      .join("line").attr("stroke-width", 1.2);
 
     nSel = nLayer.selectAll("g.nd").data(vis, function (n) { return n.id; })
       .join(function (enter) {
@@ -221,14 +206,14 @@
         gg.append("text").attr("text-anchor", "middle").attr("font-family", "Archivo, 'Noto Sans KR', sans-serif")
           .attr("font-weight", 700).attr("paint-order", "stroke").attr("stroke", "var(--color-bg,#f3f2f2)").attr("stroke-width", 3.5).attr("stroke-linejoin", "round");
         gg.call(drag)
-          .on("click", function (e, n) { e.stopPropagation(); setState({ selId: n.id }, style); })
+          .on("click", function (e, n) { e.stopPropagation(); selectNode(n.id); })
           .on("mouseenter", function (e, n) { hover = n.id; style(); })
           .on("mouseleave", function () { hover = null; style(); });
         return gg;
       });
 
     nSel.select("circle").attr("r", function (n) { return meta(n).r; }).attr("fill", function (n) { return meta(n).color; });
-    nSel.select("text").attr("y", function (n) { return meta(n).r + 15; }).attr("font-size", function (n) { return n.type === "school" ? 15 : n.type === "dept" ? 13 : 11; }).text(function (n) { return n.name; });
+    nSel.select("text").attr("y", function (n) { return meta(n).r + 15; }).attr("font-size", function (n) { return (n.degree || 0) >= 4 ? 13 : 11; }).text(function (n) { return n.name; });
 
     sim.nodes(vis);
     sim.force("link").links(links);
@@ -240,120 +225,136 @@
     if (!nSel) return;
     var sel = state.selId, hov = hover, focus = hov || sel;
     var src = new Set(state.srcIds);
-    var near = focus ? new Set([focus].concat(Array.from(adj.get(focus)))) : null;
-    var mode = LABEL_MODE;
+    var near = focus && adj.has(focus) ? new Set([focus].concat(Array.from(adj.get(focus)))) : null;
 
     nSel.attr("opacity", function (n) { return near ? (near.has(n.id) ? 1 : 0.18) : src.size ? (src.has(n.id) ? 1 : 0.28) : 1; });
     nSel.select("circle")
       .attr("stroke", function (n) { return n.id === sel || src.has(n.id) ? "#201e1d" : "var(--color-bg,#f3f2f2)"; })
       .attr("stroke-width", function (n) { return n.id === sel || src.has(n.id) ? 3 : 2; });
     nSel.select("text").attr("opacity", function (n) { // opacity(=stroke+fill) so 숨긴 라벨의 흰 halo 도 같이 사라짐
-      if (mode === "all") return 1;
       if (near && near.has(n.id)) return 1;
       if (src.has(n.id)) return 1;
-      if (mode === "hubs") return n.type === "school" || n.type === "dept" ? 1 : 0;
-      return n.type === "school" ? 1 : n.type === "dept" ? 0.9 : 0;
+      return (n.degree || 0) >= 4 ? 0.9 : 0; // 허브만 상시 라벨
     });
     if (lSel) lSel.attr("stroke-opacity", function (l) { return near ? (near.has(l.source.id) && near.has(l.target.id) ? 0.55 : 0.06) : 0.16; });
   }
 
-  // ── QA (DC answer/submit 이식) ────────────────────────────────────
-  function answer(q) {
-    var words = q.replace(/[?？!.,]/g, " ").split(/\s+/).filter(function (w) { return w.length > 1; });
-    var stems = [];
-    words.forEach(function (w) {
-      var set = [w];
-      if (w.length > 2) set.push(w.slice(0, -1));
-      if (w.length > 3) set.push(w.slice(0, -2));
-      stems.push(set.filter(function (x) { return x.length > 1; }));
-    });
-    var scored = nodes.filter(function (n) { return n.type !== "school"; }).map(function (n) {
-      var hay = n.name + " " + (n.note || ""), s = 0;
-      stems.forEach(function (set) { var hit = set.find(function (x) { return hay.includes(x); }); if (hit) s += 2 + hit.length * 0.2; });
-      s += adj.get(n.id).size * 0.12;
-      return { n: n, s: s };
-    }).sort(function (a, b) { return b.s - a.s; });
-    var hits = scored.filter(function (x) { return x.s >= 2; });
-    var seen = new Set();
-    var pick = (hits.length ? hits : scored).map(function (x) { return x.n; })
-      .filter(function (n) { return seen.has(n.name) ? false : (seen.add(n.name), true); }).slice(0, 3);
-    var names = pick.map(function (n) { return n.name; });
-    var rest = names.slice(1);
-    var text = hits.length
-      ? "『" + names[0] + "』 문서를 기준으로 답변드립니다. " + q.replace(/[?？]$/, "") + "에 대한 내용이 이 노드에 정리되어 있으며, "
-        + (rest.length ? "연결된 " + rest.join(", ") + " 노드에서 " : SCHOOL.name + " 학사 규정에서 ")
-        + "세부 기준과 기한을 확인할 수 있습니다."
-      : "그래프에서 정확히 일치하는 노드를 찾지 못했습니다. 대신 연결이 많은 " + names.join(", ") + " 노드를 살펴보시거나, 학과 · 강의 이름을 포함해 다시 질문해 주세요.";
-    return { text: text, ids: pick.map(function (n) { return n.id; }) };
+  // ── 노드 선택 → 엔티티 상세 조회 ──────────────────────────────────
+  function selectNode(id) {
+    setState({ selId: id }, style);
+    var cached = detailCache[id];
+    if (cached) { setState({ detail: cached, detailLoading: false }); return; }
+    setState({ detail: null, detailLoading: true });
+    ASKU.get("/schools/" + SCHOOL_ID + "/entities/" + parseEid(id))
+      .then(function (d) { detailCache[id] = d; if (state.selId === id) setState({ detail: d, detailLoading: false }); })
+      .catch(function (err) { if (state.selId === id) setState({ detail: { _error: err.message }, detailLoading: false }); });
   }
 
+  // ── 질의 → POST /query ────────────────────────────────────────────
   function submit() {
     var q = (state.q || "").trim();
-    if (!q) return;
-    setState({ busy: true, ans: null, srcIds: [] }, style);
-    clearTimeout(_a);
-    _a = setTimeout(function () { var r = answer(q); setState({ busy: false, ans: r.text, srcIds: r.ids }, style); }, 620);
+    if (!q || state.busy) return;
+    setState({ busy: true, ans: null, ansSources: [], srcIds: [] }, style);
+    ASKU.post("/schools/" + SCHOOL_ID + "/query", { question: q })
+      .then(function (r) {
+        var ids = (r.entity_ids || []).filter(function (id) { return byId.has(id); });
+        setState({ busy: false, ans: r.answer, ansSources: r.sources || [], srcIds: ids }, style);
+      })
+      .catch(function (err) {
+        setState({ busy: false, ans: err.message || "답변을 가져오지 못했습니다.", ansSources: [], srcIds: [] }, style);
+      });
   }
 
-  // ── 렌더링 (DC renderVals + 템플릿 이식) ──────────────────────────
+  // ── 렌더링 ────────────────────────────────────────────────────────
   var kicker = function (label) { return '<span style="font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 58%,transparent);">' + label + '</span>'; };
+
+  function detailHTML(d) {
+    var m = { color: typeInfo.color[d.type] || "#201e1d", label: d.type || "엔티티" };
+    var out = '<div>'
+      + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;"><span style="width:11px;height:11px;border-radius:50%;flex:0 0 auto;background:' + m.color + ';"></span>'
+      + '<span style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);">' + esc(m.label) + '</span></div>'
+      + '<div style="font-weight:800;font-size:19px;line-height:1.25;letter-spacing:-.01em;margin-bottom:14px;text-wrap:pretty;">' + esc(d.name) + '</div>';
+
+    var attrs = d.attributes || {};
+    var keys = Object.keys(attrs);
+    if (keys.length) {
+      out += '<div style="border-top:2px solid var(--color-divider,#d8d5d4);padding-top:12px;display:flex;flex-direction:column;gap:7px;">'
+        + keys.map(function (k) { return '<div style="display:flex;gap:10px;font-size:12px;line-height:1.5;"><span style="flex:0 0 88px;font-weight:700;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);">' + esc(k) + '</span><span style="flex:1 1 auto;font-weight:600;">' + esc(typeof attrs[k] === "object" ? JSON.stringify(attrs[k]) : attrs[k]) + '</span></div>'; }).join("")
+        + '</div>';
+    }
+
+    var sources = d.sources || [];
+    if (sources.length) {
+      out += '<div style="margin-top:16px;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">근거 문서 ' + sources.length + '</div>'
+        + '<div style="display:flex;flex-direction:column;gap:6px;">' + sources.map(function (s) {
+          return '<a href="' + esc(s.url) + '" target="_blank" rel="noopener" class="qa-src" style="display:block;font-size:12px;font-weight:700;line-height:1.4;padding:8px 10px;border:2px solid color-mix(in srgb,var(--color-text,#201e1d) 18%,transparent);text-wrap:pretty;">' + esc(s.title || s.url) + ' ↗</a>';
+        }).join("") + '</div>';
+    }
+
+    var nbs = d.neighbors || [];
+    if (nbs.length) {
+      out += '<div style="margin-top:16px;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">연결된 노드 ' + nbs.length + '</div>'
+        + '<div style="display:flex;flex-wrap:wrap;gap:6px;">' + nbs.map(function (nb) {
+          return '<span class="qa-nb" data-act="node" data-id="' + esc(nb.id) + '" style="cursor:pointer;font-size:11px;font-weight:700;padding:5px 8px;border:2px solid color-mix(in srgb,var(--color-text,#201e1d) 18%,transparent);" title="' + esc(nb.relation || "") + '">' + esc(nb.name) + '</span>';
+        }).join("") + '</div>';
+    }
+    return out + '</div>';
+  }
 
   function sidebarHTML() {
     var vis = visNodes(), okIds = new Set(vis.map(function (n) { return n.id; }));
     var lVis = rawLinks.filter(function (l) { return okIds.has(l.s) && okIds.has(l.t); }).length;
-    var counts = {}; nodes.forEach(function (n) { counts[n.type] = (counts[n.type] || 0) + 1; });
 
     var stat = function (label, val) { return '<div><div style="font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:5px;">' + label + '</div><div style="font-weight:800;font-size:22px;line-height:1;">' + val + '</div></div>'; };
+    var statusLine = state.statusStage ? '<div style="margin-top:9px;font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">' + esc(state.statusStage) + '</div>' : "";
     var head = '<div style="padding:26px 24px 20px;border-bottom:2px solid var(--color-divider,#d8d5d4);">'
       + '<div style="display:flex;align-items:center;gap:9px;margin-bottom:12px;"><span style="width:9px;height:9px;background:var(--color-accent,#ec3013);display:block;"></span><span style="font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 58%,transparent);">ASKU · Graph</span></div>'
-      + '<h1 style="margin:0;font-weight:800;letter-spacing:-.02em;line-height:1;font-size:30px;">' + esc(SCHOOL_NAME) + '</h1>'
-      + '<div style="margin-top:9px;font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">' + esc(SCHOOL.en) + '</div>'
+      + '<h1 style="margin:0;font-weight:800;letter-spacing:-.02em;line-height:1;font-size:30px;">' + esc(schoolName()) + '</h1>'
+      + statusLine
       + '<div style="display:flex;gap:26px;margin-top:20px;">' + stat("노드", vis.length) + stat("연결", lVis) + '</div></div>';
 
-    var rows = TYPES.map(function (t) {
-      var on = !state.off[t.key];
-      return '<div class="qa-type" data-act="type" data-key="' + t.key + '" style="display:flex;align-items:center;gap:12px;padding:9px 8px;margin:0 -8px;cursor:pointer;opacity:' + (on ? 1 : 0.42) + ';transition:opacity .18s ease,background .18s ease;">'
-        + '<span style="width:14px;height:14px;flex:0 0 auto;border:2px solid ' + t.color + ';background:' + (on ? t.color : "transparent") + ';"></span>'
-        + '<span style="flex:1 1 auto;font-size:14px;font-weight:700;letter-spacing:-.01em;">' + t.label + '</span>'
-        + '<span style="font-size:12px;font-weight:700;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">' + (counts[t.key] || 0) + '</span></div>';
+    var rows = typeInfo.types.map(function (t) {
+      var on = !state.off[t];
+      var color = typeInfo.color[t];
+      return '<div class="qa-type" data-act="type" data-key="' + esc(t) + '" style="display:flex;align-items:center;gap:12px;padding:9px 8px;margin:0 -8px;cursor:pointer;opacity:' + (on ? 1 : 0.42) + ';transition:opacity .18s ease,background .18s ease;">'
+        + '<span style="width:14px;height:14px;flex:0 0 auto;border:2px solid ' + color + ';background:' + (on ? color : "transparent") + ';"></span>'
+        + '<span style="flex:1 1 auto;font-size:14px;font-weight:700;letter-spacing:-.01em;">' + esc(t) + '</span>'
+        + '<span style="font-size:12px;font-weight:700;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">' + (typeInfo.counts[t] || 0) + '</span></div>';
     }).join("");
-    var types = '<div style="padding:22px 24px 18px;border-bottom:2px solid var(--color-divider,#d8d5d4);">'
+    var types = typeInfo.types.length ? ('<div style="padding:22px 24px 18px;border-bottom:2px solid var(--color-divider,#d8d5d4);">'
       + '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px;">' + kicker("노드 타입")
       + '<a href="#" data-act="allOn" style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--color-accent-700,#a52108);">전체 보기</a></div>'
-      + '<div style="display:flex;flex-direction:column;gap:2px;">' + rows + '</div></div>';
+      + '<div style="display:flex;flex-direction:column;gap:2px;">' + rows + '</div></div>') : "";
 
-    var s = state.selId ? byId.get(state.selId) : null, selBody;
-    if (s) {
-      var m = meta(s);
-      var metaTxt = s.note || (TYPES.find(function (t) { return t.key === s.type; }) || {}).meta || SCHOOL.en;
-      var nbs = Array.from(adj.get(s.id)).slice(0, 8).map(function (id) { return byId.get(id); });
-      selBody = '<div>'
-        + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;"><span style="width:11px;height:11px;border-radius:50%;flex:0 0 auto;background:' + m.color + ';"></span>'
-        + '<span style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);">' + esc(m.label) + '</span></div>'
-        + '<div style="font-weight:800;font-size:19px;line-height:1.25;letter-spacing:-.01em;margin-bottom:14px;text-wrap:pretty;">' + esc(s.name) + '</div>'
-        + '<div style="border-top:2px solid var(--color-divider,#d8d5d4);padding-top:12px;font-size:12px;font-weight:600;line-height:1.6;color:color-mix(in srgb,var(--color-text,#201e1d) 66%,transparent);">' + esc(metaTxt) + '</div>'
-        + '<div style="margin-top:16px;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">연결된 노드 ' + adj.get(s.id).size + '</div>'
-        + '<div style="display:flex;flex-wrap:wrap;gap:6px;">' + nbs.map(function (nb) { return '<span class="qa-nb" data-act="node" data-id="' + nb.id + '" style="cursor:pointer;font-size:11px;font-weight:700;padding:5px 8px;border:2px solid color-mix(in srgb,var(--color-text,#201e1d) 18%,transparent);">' + esc(nb.name) + '</span>'; }).join("") + '</div></div>';
-    } else {
-      selBody = '<div style="font-size:12px;font-weight:600;line-height:1.7;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">그래프의 노드를 클릭하면 상세 정보가 표시됩니다. 드래그로 노드를 옮기고, 휠로 확대·축소할 수 있습니다.</div>';
-    }
+    var selBody;
+    if (state.detailLoading) selBody = '<div style="font-size:12px;font-weight:600;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">불러오는 중…</div>';
+    else if (state.detail && state.detail._error) selBody = '<div style="font-size:12px;font-weight:600;line-height:1.7;color:var(--color-accent,#ec3013);">' + esc(state.detail._error) + '</div>';
+    else if (state.detail) selBody = detailHTML(state.detail);
+    else selBody = '<div style="font-size:12px;font-weight:600;line-height:1.7;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">그래프의 노드를 클릭하면 상세 정보가 표시됩니다. 드래그로 노드를 옮기고, 휠로 확대·축소할 수 있습니다.</div>';
     var sel = '<div style="padding:22px 24px;flex:1 1 auto;min-height:0;">' + '<div style="margin-bottom:14px;">' + kicker("선택한 노드") + '</div>' + selBody + '</div>';
 
     return head + types + sel;
   }
 
   function answerHTML() {
+    // 준비되지 않은 학교면 상태 배너를 답변 슬롯에 노출(숨기지 않는다).
+    if (!state.ans && state.notReadyMsg) {
+      return '<div style="pointer-events:auto;width:100%;border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);padding:16px 20px;font-size:13px;font-weight:600;line-height:1.6;">' + esc(state.notReadyMsg) + '</div>';
+    }
     if (!state.ans) return "";
-    var sources = state.srcIds.map(function (id) { var n = byId.get(id); return { id: id, name: n.name, color: meta(n).color }; });
+    var srcHTML = (state.ansSources || []).map(function (s) {
+      return '<a href="' + esc(s.url) + '" target="_blank" rel="noopener" class="qa-src" style="display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;padding:6px 10px;border:2px solid color-mix(in srgb,var(--color-text,#201e1d) 18%,transparent);text-wrap:pretty;">' + esc(s.title || s.url) + ' ↗</a>';
+    }).join("");
+    var srcRow = srcHTML
+      ? '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:16px;padding-top:14px;border-top:2px solid var(--color-divider,#d8d5d4);">'
+        + '<span style="font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-right:4px;">근거 문서</span>' + srcHTML + '</div>'
+      : "";
     return '<div style="pointer-events:auto;width:100%;border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);padding:20px 22px;animation:qa-up .3s cubic-bezier(.2,.7,.2,1) both;">'
       + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">'
       + '<div style="display:flex;align-items:center;gap:9px;"><span style="width:8px;height:8px;background:var(--color-accent,#ec3013);display:block;"></span><span style="font-size:10px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 58%,transparent);">ASKU 답변</span></div>'
       + '<span class="qa-x" data-act="clearAns" style="cursor:pointer;font-size:16px;font-weight:700;line-height:1;color:color-mix(in srgb,var(--color-text,#201e1d) 45%,transparent);">✕</span></div>'
       + '<div style="font-size:15px;font-weight:600;line-height:1.65;letter-spacing:-.01em;text-wrap:pretty;">' + esc(state.ans) + '</div>'
-      + '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:16px;padding-top:14px;border-top:2px solid var(--color-divider,#d8d5d4);">'
-      + '<span style="font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-right:4px;">근거 노드</span>'
-      + sources.map(function (s) { return '<span class="qa-src" data-act="node" data-id="' + s.id + '" style="cursor:pointer;display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;padding:6px 10px;border:2px solid color-mix(in srgb,var(--color-text,#201e1d) 18%,transparent);"><span style="width:8px;height:8px;border-radius:50%;background:' + s.color + ';"></span>' + esc(s.name) + '</span>'; }).join("")
-      + '</div></div>';
+      + srcRow + '</div>';
   }
 
   var input;
@@ -365,7 +366,14 @@
     var btn = document.querySelector('[data-act="toggleSb"]');
     btn.style.left = open ? "calc(320px + 20px)" : "20px";
     btn.textContent = open ? "‹" : "›";
-    input.placeholder = state.busy ? "그래프를 탐색하는 중…" : "학교에 대해 무엇이든 물어보세요";
+    if (input) input.placeholder = state.busy ? "답변을 생성하는 중…" : "학교에 대해 무엇이든 물어보세요";
+  }
+
+  // 그래프 데이터가 없을 때 호스트에 안내를 표시(숨기지 않는다).
+  function showGraphMessage(msg) {
+    var h = host(); if (!h) return;
+    h.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:0 40px;">'
+      + '<div style="max-width:34ch;font-size:14px;font-weight:600;line-height:1.7;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);">' + esc(msg) + '</div></div>';
   }
 
   // ── 이벤트 위임 ────────────────────────────────────────────────────
@@ -377,8 +385,37 @@
     else if (act === "ask") { submit(); }
     else if (act === "allOn") { setState({ off: {} }, draw); }
     else if (act === "type") { var key = el.getAttribute("data-key"); var next = {}; for (var k in state.off) next[k] = state.off[k]; next[key] = !state.off[key]; setState({ off: next }, draw); }
-    else if (act === "node") { setState({ selId: el.getAttribute("data-id") }, style); }
-    else if (act === "clearAns") { setState({ ans: null, srcIds: [] }, style); }
+    else if (act === "node") { selectNode(el.getAttribute("data-id")); }
+    else if (act === "clearAns") { setState({ ans: null, ansSources: [], srcIds: [] }, style); }
+  }
+
+  // ── 데이터 로드: 학교 헤더 + 그래프 ───────────────────────────────
+  function loadData() {
+    if (!SCHOOL_ID || isNaN(parseInt(SCHOOL_ID, 10))) {
+      showGraphMessage("학교가 지정되지 않았습니다. ‘학교 변경’에서 학교를 선택해 주세요.");
+      return;
+    }
+    ASKU.get("/schools/" + SCHOOL_ID)
+      .then(function (school) {
+        var ready = school.status === "ready" || school.status === "partial_failed";
+        setState({
+          school: school,
+          statusStage: ready ? null : school.status,
+          notReadyMsg: ready ? "" : "이 학교는 아직 인덱싱 중입니다 (" + school.status + "). 완료 후 질문할 수 있습니다."
+        });
+      })
+      .catch(function (err) { setState({ notReadyMsg: "학교 정보를 불러오지 못했습니다: " + (err.message || "") }); });
+
+    ASKU.get("/schools/" + SCHOOL_ID + "/graph")
+      .then(function (payload) {
+        var g = buildGraph(payload);
+        nodes = g.nodes; rawLinks = g.rawLinks; byId = g.byId; adj = g.adj;
+        typeInfo = assignTypeColors(nodes);
+        render();
+        if (!nodes.length) { showGraphMessage("아직 표시할 그래프가 없습니다. 크롤링·인덱싱이 끝나면 노드가 채워집니다."); return; }
+        waitD3();
+      })
+      .catch(function (err) { showGraphMessage("그래프를 불러오지 못했습니다: " + (err.message || "")); });
   }
 
   document.addEventListener("DOMContentLoaded", function () {
@@ -392,7 +429,7 @@
       var chip = e.target.closest("[data-q]");
       if (chip) { input.value = chip.getAttribute("data-q"); state.q = input.value; submit(); return; }
       var el = e.target.closest("[data-act]");
-      if (!el) return;
+      if (!el) return; // 근거 문서 링크(qa-src)는 data-act 가 없어 브라우저가 새 탭으로 연다
       if (el.tagName === "A") e.preventDefault();
       onAction(el);
     });
@@ -400,15 +437,11 @@
     input.addEventListener("input", function (e) { state.q = e.target.value; });
     input.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
 
-    build();
     render();
-    waitD3();
+    loadData();
   });
 
-  window.addEventListener("beforeunload", function () { if (_ro) _ro.disconnect(); if (sim) sim.stop(); clearTimeout(_t); clearTimeout(_a); });
-
-  // ponytail: node 자가검증용 훅. 브라우저에선 __QA_TEST__ 가 없어 무시됨.
-  if (typeof globalThis !== "undefined" && globalThis.__QA_TEST__) globalThis.__QA__ = { build: build, answer: answer, TYPES: TYPES, get: function () { return { nodes: nodes, adj: adj, byId: byId }; } };
+  window.addEventListener("beforeunload", function () { if (_ro) _ro.disconnect(); if (sim) sim.stop(); clearTimeout(_t); });
 })();
 </script>
 </body>
