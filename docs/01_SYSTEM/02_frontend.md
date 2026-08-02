@@ -6,7 +6,11 @@
 
 > 랜딩은 **이미 구현되어 있다** → [`frontend/src/`](../../frontend/src/) (Claude Design 산출물을 런타임 의존 없이 이식). 나머지 두 페이지의 디자인·모션은 랜딩의 토큰을 그대로 계승한다.
 
+> **구현 현황(2026-08)**: 네 페이지(`index`·`find`·`register`·`qa`)가 모두 정적 HTML/CSS/JS 로 구현되어 있고, 아래 §4 백엔드 인터페이스에 **실제로 연동**되어 있다. 연동 범위·목업 대비 조정·현 로직으로 불가능한 항목은 [`02_FEATURES/frontend-integration.md`](../02_FEATURES/frontend-integration.md) 참고. (§0 표의 "Next.js 제안"은 미채택 — 순수 HTML 유지.)
+
 관련 문서: [`10_data-model.md`](10_data-model.md) · [`07_graph-rag-engine.md`](07_graph-rag-engine.md) · [`01_backend-api.md`](01_backend-api.md) · [`00_BASICS/PLAN.md`](../00_BASICS/PLAN.md) §11(API 초안)
+
+실행: `cd "frontend/src" && python3 -m http.server 5500`
 
 ---
 

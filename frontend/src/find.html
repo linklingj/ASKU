@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ASKU — 학교 선택</title>
+<!-- 랜딩과 같은 디자인 시스템 토큰·폰트(Archivo)를 그대로 계승. SchoolSelect.dc.html 을 런타임 의존 없이 이식. -->
+<link rel="stylesheet" href="_ds/modernist-c94de0c9-726d-442a-9bb3-d3b24f39b8cb/styles.css">
+<script src="api.js"></script>
+<style>
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{background:var(--color-bg,#f3f2f2);color:var(--color-text,#201e1d);font-family:var(--font-body,'Archivo',sans-serif);-webkit-font-smoothing:antialiased;overflow:hidden;}
+  a{color:inherit;text-decoration:none;}
+  a:hover{color:var(--color-accent,#ec3013);}
+  ::selection{background:color-mix(in srgb,var(--color-accent,#ec3013) 22%,transparent);}
+  @keyframes ss-fadeup{from{opacity:0;transform:translateY(16px);}to{opacity:1;transform:translateY(0);}}
+  @keyframes ss-fadein{from{opacity:0;}to{opacity:1;}}
+  .ss-fu{opacity:0;animation:ss-fadeup .8s cubic-bezier(.2,.7,.2,1) forwards;}
+  .ss-fi{opacity:0;animation:ss-fadein 1s ease forwards;}
+  .ss-back:hover{background:var(--color-text,#201e1d);color:var(--color-bg,#f3f2f2);}
+  .ss-cta{transition:background .22s ease,gap .22s ease;}
+  .ss-cta:hover{background:var(--color-accent-600,#c9280f);}
+  .ss-item{transition:opacity .18s ease;}
+  .ss-wheel{touch-action:none;cursor:grab;-webkit-mask-image:linear-gradient(180deg,transparent 0,transparent 96px,#000 210px,#000 calc(100% - 60px),transparent 100%);mask-image:linear-gradient(180deg,transparent 0,transparent 96px,#000 210px,#000 calc(100% - 60px),transparent 100%);}
+  .ss-wheel:active{cursor:grabbing;}
+  /* 접근성: 휠은 시각 표현일 뿐, 실제 선택은 이 listbox 로 (문서 §3.2/§6). */
+  .ss-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;}
+  @media (prefers-reduced-motion: reduce){
+    .ss-fu,.ss-fi{animation:none;opacity:1;transform:none;}
+    .ss-item{transition:none;}
+  }
+</style>
+</head>
+<body>
+<div id="ss" style="position:relative;height:100vh;width:100%;overflow:hidden;">
+
+  <div class="ss-fu" style="position:absolute;top:clamp(22px,3.2vw,40px);left:clamp(22px,3.6vw,52px);z-index:20;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+      <span style="width:10px;height:10px;background:var(--color-accent,#ec3013);display:block;"></span>
+      <span style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 60%,transparent);">ASKU · Database</span>
+    </div>
+    <h1 style="margin:0;font-weight:800;letter-spacing:-.02em;line-height:.92;font-size:clamp(30px,4.2vw,52px);">학교 선택</h1>
+    <div style="margin-top:8px;font-size:13px;font-weight:600;letter-spacing:.02em;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);"><span id="ss-count"></span> UNIVERSITIES</div>
+  </div>
+
+  <a class="ss-back ss-fu" id="ss-back" href="index.html" style="position:absolute;top:clamp(22px,3.2vw,40px);right:clamp(22px,3.6vw,52px);z-index:30;display:inline-flex;align-items:center;gap:9px;border:2px solid var(--color-text,#201e1d);background:var(--color-bg,#f3f2f2);padding:11px 17px;font-weight:700;font-size:14px;letter-spacing:.02em;transition:background .2s ease,color .2s ease;">
+    <span style="font-size:16px;line-height:1;">←</span>뒤로가기
+  </a>
+
+  <div class="ss-fi" style="position:absolute;left:clamp(22px,3.6vw,52px);top:50%;transform:translateY(-50%);z-index:15;max-width:min(46vw,560px);animation-delay:.15s;">
+    <span id="ss-initial" aria-hidden="true" style="position:absolute;left:-6px;top:50%;transform:translateY(-58%);font-weight:900;font-size:clamp(200px,30vw,420px);line-height:.8;letter-spacing:-.05em;color:color-mix(in srgb,var(--color-text,#201e1d) 6%,transparent);z-index:-1;user-select:none;pointer-events:none;"></span>
+    <div style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);margin-bottom:clamp(14px,2vh,20px);">Preview</div>
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px;">
+      <span style="width:16px;height:16px;border-radius:50%;background:var(--color-accent,#ec3013);flex:0 0 auto;"></span>
+      <h2 id="ss-name" style="margin:0;font-weight:800;letter-spacing:-.02em;line-height:1;font-size:clamp(40px,5.6vw,78px);"></h2>
+    </div>
+    <div id="ss-en" style="font-size:clamp(13px,1.3vw,16px);font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);margin-left:32px;"></div>
+
+    <div style="display:grid;grid-template-columns:repeat(3,auto);gap:clamp(24px,3vw,52px);margin:clamp(28px,4vh,44px) 0 clamp(26px,4vh,40px);margin-left:32px;">
+      <div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">노드</div>
+        <div id="ss-nodes" style="font-family:'Archivo',sans-serif;font-weight:800;font-size:clamp(26px,3vw,40px);line-height:1;"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">상태</div>
+        <div id="ss-status" style="font-family:'Archivo',sans-serif;font-weight:800;font-size:clamp(22px,2.4vw,34px);line-height:1;"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">갱신</div>
+        <div id="ss-updated" style="font-family:'Archivo',sans-serif;font-weight:800;font-size:clamp(22px,2.4vw,34px);line-height:1;"></div>
+      </div>
+    </div>
+
+    <a class="ss-cta" id="ss-cont" href="#" style="margin-left:32px;display:inline-flex;align-items:center;gap:12px;background:var(--color-accent,#ec3013);color:var(--color-bg,#f3f2f2);font-weight:800;font-size:15px;letter-spacing:.02em;padding:14px 24px;">이 학교로 계속 <span style="font-size:16px;">→</span></a>
+  </div>
+
+  <!-- 시각 휠 (SR 은 아래 listbox 로) -->
+  <div class="ss-wheel" id="ss-wheel" aria-hidden="true" style="position:absolute;top:0;right:0;bottom:0;width:min(50vw,720px);z-index:10;"></div>
+
+  <!-- 실제 선택: 키보드/스크린리더용 listbox -->
+  <div class="ss-sr" id="ss-listbox" role="listbox" aria-label="등록된 학교" tabindex="0"></div>
+
+  <div class="ss-fu" style="position:absolute;left:clamp(22px,3.6vw,52px);bottom:clamp(22px,3vw,36px);z-index:20;display:flex;align-items:center;gap:22px;animation-delay:.3s;">
+    <span style="font-family:'Archivo',sans-serif;font-weight:800;font-size:15px;letter-spacing:.06em;"><span id="ss-num" style="color:var(--color-accent,#ec3013);"></span> / <span id="ss-count2"></span></span>
+    <span style="width:1px;height:16px;background:var(--color-divider,#d8d5d4);"></span>
+    <span style="font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">스크롤 · 드래그 · ↑↓ 로 탐색</span>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var STATUS_KR = { pending: "대기", crawling: "수집중", indexing: "인덱싱", ready: "완료", partial_failed: "부분완료", failed: "실패" };
+  var R = 780, STEP = 9 * Math.PI / 180;
+  var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var EASE = reduce ? 1 : 0.16; // reduce 모션: 관성 없이 즉시 스냅
+
+  var DATA = [], n = 0, items = [];
+  var cur = 0, target = 0, active = -1, acc = 0;
+  var dragging = false, dragY0 = 0, dragT0 = 0;
+  var wheel = $('ss-wheel'), listbox = $('ss-listbox');
+
+  function clamp(v) { return Math.max(0, Math.min(n - 1, v)); }
+  function pad(i) { return String(i + 1).padStart(2, "0"); }
+  function fmtDate(iso) { if (!iso) return "—"; var d = new Date(iso); return isNaN(d) ? "—" : d.getFullYear() + "." + String(d.getMonth() + 1).padStart(2, "0") + "." + String(d.getDate()).padStart(2, "0"); }
+
+  function setActive(a) {
+    active = a;
+    var s = DATA[a];
+    $('ss-initial').textContent = (s.name || "?").charAt(0);
+    $('ss-name').textContent = s.name;
+    $('ss-en').textContent = (s.status || "").toUpperCase();
+    $('ss-nodes').textContent = (s.entity_count || 0).toLocaleString("en-US");
+    $('ss-status').textContent = STATUS_KR[s.status] || s.status || "—";
+    $('ss-updated').textContent = fmtDate(s.updated_at);
+    $('ss-num').textContent = pad(a);
+    // 준비되지 않은 학교는 CTA 라벨로 안내(질의는 QA 페이지에서 상태 배너 처리)
+    var ready = s.status === "ready" || s.status === "partial_failed";
+    $('ss-cont').firstChild.textContent = ready ? "이 학교로 계속 " : "진행 상태 보기 ";
+    listbox.setAttribute('aria-activedescendant', 'ss-opt-' + a);
+    for (var i = 0; i < n; i++) listbox.children[i].setAttribute('aria-selected', i === a ? 'true' : 'false');
+  }
+
+  function tick() {
+    if (!n) { requestAnimationFrame(tick); return; }
+    cur += (target - cur) * EASE;
+    if (Math.abs(target - cur) < 0.0006) cur = target;
+    for (var i = 0; i < n; i++) {
+      var el = items[i];
+      var d = i - cur, a = d * STEP, ad = Math.abs(d);
+      var dx = R * (Math.cos(a) - 1), dy = R * Math.sin(a);
+      var sc = 1 - Math.min(0.4, ad * 0.09);
+      el.style.transform = "translateY(-50%) translate(" + dx.toFixed(2) + "px, " + dy.toFixed(2) + "px) rotate(" + a.toFixed(4) + "rad) scale(" + sc.toFixed(3) + ")";
+      el.style.opacity = Math.max(0, 1 - ad * 0.17).toFixed(3);
+      var near = ad < 0.5;
+      el.style.fontWeight = near ? 800 : 600;
+      el.style.color = near ? "var(--color-text,#201e1d)" : "color-mix(in srgb, var(--color-text,#201e1d) " + Math.max(24, 58 - ad * 8).toFixed(0) + "%, transparent)";
+      el.firstElementChild.style.opacity = near ? "1" : "0";
+    }
+    var idx = clamp(Math.round(cur));
+    if (idx !== active) setActive(idx);
+    requestAnimationFrame(tick);
+  }
+
+  // — 백엔드에서 학교 목록을 받아 휠·listbox 를 구성 —
+  function buildFrom(schools) {
+    DATA = schools; n = schools.length;
+    $('ss-count').textContent = n;
+    $('ss-count2').textContent = String(n).padStart(2, "0");
+    schools.forEach(function (s, i) {
+      var el = document.createElement('div');
+      el.className = 'ss-item';
+      el.style.cssText = "position:absolute;right:clamp(60px,7vw,130px);top:50%;transform-origin:100% 50%;white-space:nowrap;display:flex;align-items:center;justify-content:flex-end;gap:16px;font-size:clamp(26px,3.2vw,44px);font-weight:600;letter-spacing:-.01em;line-height:1;cursor:pointer;will-change:transform,opacity;opacity:0;";
+      var dot = document.createElement('span');
+      dot.style.cssText = "width:14px;height:14px;border-radius:50%;background:var(--color-accent,#ec3013);opacity:0;flex:0 0 auto;transition:opacity .2s ease;";
+      var label = document.createElement('span');
+      label.textContent = s.name;
+      el.appendChild(dot); el.appendChild(label);
+      el.addEventListener('click', function () { target = clamp(i); });
+      wheel.appendChild(el);
+      items.push(el);
+
+      var opt = document.createElement('div');
+      opt.id = 'ss-opt-' + i;
+      opt.setAttribute('role', 'option');
+      opt.textContent = s.name;
+      opt.addEventListener('click', function () { target = clamp(i); });
+      listbox.appendChild(opt);
+    });
+    setActive(0);
+  }
+
+  // 학교가 없거나 백엔드에 닿지 못하면 휠 대신 안내를 노출(숨기지 않는다).
+  function showMessage(title, sub) {
+    $('ss-count').textContent = "0";
+    $('ss-name').textContent = title;
+    $('ss-en').textContent = "";
+    $('ss-nodes').textContent = "—"; $('ss-status').textContent = "—"; $('ss-updated').textContent = "—";
+    var cont = $('ss-cont');
+    cont.setAttribute('href', 'register.html');
+    cont.firstChild.textContent = "학교 등록하러 가기 ";
+    cont.onclick = function () { location.href = 'register.html'; };
+    var initial = $('ss-initial'); if (initial) initial.textContent = "";
+    if (sub) { var num = $('ss-num'); if (num) num.parentElement.innerHTML = '<span style="font-size:13px;font-weight:600;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);">' + sub + '</span>'; }
+  }
+
+  // — 입력: 휠 스크롤 —
+  wheel.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    acc += e.deltaY;
+    var T = 44;
+    while (Math.abs(acc) >= T) {
+      var s = acc > 0 ? 1 : -1;
+      target = clamp(Math.round(target) + s);
+      acc -= s * T;
+    }
+  }, { passive: false });
+
+  // — 입력: 드래그 —
+  wheel.addEventListener('pointerdown', function (e) { dragging = true; dragY0 = e.clientY; dragT0 = target; try { wheel.setPointerCapture(e.pointerId); } catch (_) {} });
+  wheel.addEventListener('pointermove', function (e) { if (!dragging) return; target = clamp(dragT0 - (e.clientY - dragY0) / 46); });
+  function endDrag() { if (!dragging) return; dragging = false; target = clamp(Math.round(target)); }
+  wheel.addEventListener('pointerup', endDrag);
+  wheel.addEventListener('pointerleave', endDrag);
+
+  // — 입력: 키보드 (↑↓ / Home / End / Enter) —
+  document.addEventListener('keydown', function (e) {
+    if (!n) return;
+    if (e.key === 'ArrowUp') { e.preventDefault(); target = clamp(Math.round(target) - 1); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); target = clamp(Math.round(target) + 1); }
+    else if (e.key === 'Home') { e.preventDefault(); target = 0; }
+    else if (e.key === 'End') { e.preventDefault(); target = n - 1; }
+    else if (e.key === 'Enter' && (e.target === listbox || e.target === document.body)) { e.preventDefault(); confirmSchool(); }
+  });
+
+  // — 확정 → QA 페이지로 school_id 전달 —
+  function confirmSchool() {
+    if (!n) { location.href = 'register.html'; return; }
+    location.href = 'qa.html?school=' + encodeURIComponent(DATA[active].school_id);
+  }
+  $('ss-cont').addEventListener('click', function (e) { e.preventDefault(); confirmSchool(); });
+
+  // — 뒤로: 히스토리 있으면 back, 없으면 href(index.html) 로 —
+  $('ss-back').addEventListener('click', function (e) {
+    if (window.history.length > 1) { e.preventDefault(); window.history.back(); }
+  });
+
+  requestAnimationFrame(tick);
+
+  ASKU.get('/schools')
+    .then(function (res) {
+      var schools = (res && res.schools) || [];
+      if (!schools.length) showMessage("아직 등록된 학교가 없어요", "학교를 등록하면 여기에서 선택할 수 있어요.");
+      else buildFrom(schools);
+    })
+    .catch(function (err) {
+      showMessage("학교 목록을 불러오지 못했어요", "백엔드(" + ASKU.base + ")에 연결할 수 없습니다. " + (err.message || ""));
+    });
+})();
+</script>
+</body>
+</html>

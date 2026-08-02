@@ -1,0 +1,36 @@
+# ASKU 단일 VM 배포 (Oracle Cloud Always Free 등). 상세 절차: docs/02_FEATURES/deployment.md
+# 실행: docker compose up -d --build   /   설정값은 같은 폴더의 .env 에서 읽는다.
+services:
+  db:
+    image: pgvector/pgvector:pg16   # pgvector 확장이 미리 설치된 Postgres 16
+    environment:
+      POSTGRES_USER: asku
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-asku}
+      POSTGRES_DB: asku
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asku"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy   # DB 준비된 뒤 기동 → 스키마 자동 생성(lifespan)
+    environment:
+      DATABASE_URL: postgresql+psycopg://asku:${POSTGRES_PASSWORD:-asku}@db:5432/asku
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY 를 .env 에 설정하세요}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+    volumes:
+      - models:/models   # bge-m3 캐시 — 첫 질의 때 받은 모델을 재시작 후에도 재사용
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  models:
