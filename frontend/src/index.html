@@ -27,9 +27,13 @@ a:hover { color:var(--asku-accent,#ec3013); }
 @keyframes whyDrift{ 0%{ background-position:0% 50%; } 100%{ background-position:100% 50%; } }
 @keyframes marquee{ 0%{ transform:translateX(-50%); } 100%{ transform:translateX(0); } }
 .mq-track:hover{ animation-play-state:paused; }
-@media (prefers-reduced-motion: reduce){ [data-reveal],.rise{ transition:none; opacity:1; transform:none; } .arrow .draw{ transition:none; stroke-dashoffset:0; } .why-bg{ animation:none !important; } .mq-track{ animation:none !important; } }
+@keyframes devFloat{ 0%,100%{ transform:translateY(0); } 50%{ transform:translateY(-14px); } }
+.dev-card{ animation:devFloat 6s ease-in-out infinite; will-change:transform; }
+.dev-card:nth-child(2){ animation-delay:-2s; }
+.dev-card:nth-child(3){ animation-delay:-4s; }
+@media (prefers-reduced-motion: reduce){ [data-reveal],.rise{ transition:none; opacity:1; transform:none; } .arrow .draw{ transition:none; stroke-dashoffset:0; } .why-bg{ animation:none !important; } .mq-track{ animation:none !important; } .dev-card{ animation:none !important; } }
 @media (max-width:820px){ .flow-row{ flex-direction:column; align-items:stretch !important; } .flow-row .arrow{ align-self:flex-start; transform:rotate(90deg); margin:6px 0 6px 34px; } .feat-grid{ grid-template-columns:1fr !important; } }
-@media (max-width:680px){ .dev-row{ grid-template-columns:44px 1fr !important; } .dev-role,.dev-links{ grid-column:2; } .nav-links a.nav-find{ display:none; } }
+@media (max-width:680px){ .dev-grid{ grid-template-columns:1fr !important; } .nav-links a.nav-find{ display:none; } }
 </style>
 </head>
 <body>
@@ -43,30 +47,22 @@ a:hover { color:var(--asku-accent,#ec3013); }
     </div>
   </nav>
 
-  <section id="top" data-nav="dark" style="background:#f3f2f2; color:#201e1d; padding:clamp(60px,11vh,120px) clamp(20px,5vw,72px) clamp(70px,9vh,100px); min-height:90vh; display:flex; flex-direction:column; justify-content:center;">
-    <div data-reveal style="display:flex; align-items:center; gap:14px; margin-bottom:clamp(28px,5vh,54px);">
-      <span style="width:11px; height:11px; background:var(--asku-accent,#ec3013); display:block;"></span>
-      <span style="font-size:13px; letter-spacing:.16em; text-transform:uppercase; font-weight:700;">Graph RAG · University QA</span>
-    </div>
-    <h1 style="margin:0; font-family:'Hostero',var(--font-heading); font-weight:400; line-height:.8; letter-spacing:.005em; font-size:clamp(110px,26vw,420px);">
+  <section id="top" data-nav="dark" style="background:#f3f2f2; color:#201e1d; padding:clamp(24px,4vh,56px) clamp(20px,5vw,72px); min-height:calc(100svh - 74px); display:flex; flex-direction:column; justify-content:center;">
+    <h1 style="margin:0; font-family:'Hostero',var(--font-heading); font-weight:400; line-height:.8; letter-spacing:.005em; font-size:clamp(88px,min(24vw,30vh),340px);">
       <span class="hero-letter"><span class="rise" style="transition-delay:.04s">A</span></span><span class="hero-letter"><span class="rise" style="transition-delay:.12s">S</span></span><span class="hero-letter"><span class="rise" style="transition-delay:.2s">K</span></span><span class="hero-letter"><span class="rise" style="transition-delay:.28s">U</span></span>
     </h1>
-    <div style="margin-top:clamp(30px,5vh,58px); font-family:var(--font-heading); font-weight:800; line-height:1.02; letter-spacing:-.02em; font-size:clamp(30px,5vw,68px);">
+    <div style="margin-top:clamp(20px,3.5vh,44px); font-family:var(--font-heading); font-weight:800; line-height:1.02; letter-spacing:-.02em; font-size:clamp(26px,min(5vw,6vh),60px);">
       <span style="display:block; overflow:hidden;"><span class="rise" style="display:block; transition-delay:.34s">우리 학교 정보,</span></span>
       <span style="display:block; overflow:hidden;"><span class="rise" style="display:block; transition-delay:.42s">그만 찾고 물어보세요.</span></span>
     </div>
-    <p data-reveal style="transition-delay:.55s; max-width:54ch; margin:clamp(26px,4vh,42px) 0 0; font-size:clamp(16px,1.4vw,20px); line-height:1.6; color:color-mix(in srgb,#201e1d 72%,transparent);">대학교 웹사이트를 자동으로 크롤링해 지식 그래프를 만들고, 근거를 갖춘 답변을 제공하는 Graph RAG 기반 QA 시스템입니다.</p>
-    <div data-reveal style="transition-delay:.65s; display:flex; gap:14px; flex-wrap:wrap; margin-top:clamp(30px,4vh,40px);">
+    <p data-reveal style="transition-delay:.55s; max-width:54ch; margin:clamp(18px,3vh,34px) 0 0; font-size:clamp(16px,1.4vw,20px); line-height:1.6; color:color-mix(in srgb,#201e1d 72%,transparent);">대학교 웹사이트를 자동으로 크롤링해 지식 그래프를 만들고, 근거를 갖춘 답변을 제공하는 Graph RAG 기반 QA 시스템입니다.</p>
+    <div data-reveal style="transition-delay:.65s; display:flex; gap:14px; flex-wrap:wrap; margin-top:clamp(20px,3vh,34px);">
       <a href="find.html" style="display:inline-flex; align-items:center; gap:10px; background:var(--asku-accent,#ec3013); color:#f3f2f2; font-family:var(--font-heading); font-weight:800; font-size:15px; padding:15px 28px;" style-hover="filter:brightness(.9)">학교 찾기 <span style="font-size:18px; line-height:1;">→</span></a>
       <a href="register.html" style="display:inline-flex; align-items:center; gap:10px; border:1.5px solid #201e1d; color:#201e1d; font-family:var(--font-heading); font-weight:800; font-size:15px; padding:15px 28px;" style-hover="background:#201e1d; color:#f3f2f2">학교 등록</a>
     </div>
   </section>
 
   <section id="flow" data-nav="light" style="background:#201e1d; color:#f3f2f2; padding:clamp(90px,15vh,160px) clamp(20px,5vw,72px);">
-    <div data-reveal style="display:flex; align-items:center; gap:12px; margin-bottom:clamp(24px,4vh,40px);">
-      <span style="width:11px; height:11px; background:var(--asku-accent,#ec3013); display:block;"></span>
-      <span style="font-size:13px; letter-spacing:.16em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#f3f2f2 70%,transparent);">How it works · 사용 흐름</span>
-    </div>
     <h2 data-reveal style="transition-delay:.08s; margin:0; font-family:var(--font-heading); font-weight:800; letter-spacing:-.02em; line-height:1.02; font-size:clamp(34px,5.6vw,76px); max-width:16ch;">학교를 등록하고, 무엇이든 물어보세요.</h2>
 
     <div style="margin-top:clamp(52px,9vh,110px);">
@@ -103,10 +99,6 @@ a:hover { color:var(--asku-accent,#ec3013); }
   <section id="why" data-nav="light" style="background:var(--asku-accent,#ec3013); color:#f3f2f2; padding:clamp(90px,15vh,160px) clamp(20px,5vw,72px); position:relative; overflow:hidden;">
     <div class="why-bg" aria-hidden="true" style="position:absolute; inset:-20%; z-index:0; --wx:32%; --wy:26%; background:radial-gradient(60% 60% at var(--wx) var(--wy), var(--g1,#ff6a3d) 0%, transparent 60%), radial-gradient(78% 78% at 84% 82%, var(--g3,#8f2fb0) 0%, transparent 58%), radial-gradient(72% 72% at 12% 88%, var(--g2,#e12d78) 0%, transparent 60%), linear-gradient(140deg, var(--g1,#ff6a3d) 0%, var(--g2,#e12d78) 50%, var(--g3,#8f2fb0) 100%); background-size:160% 160%; animation:whyDrift 22s ease-in-out infinite alternate; transition:transform .3s ease-out; will-change:transform, background-position;"></div>
     <div class="why-inner" style="position:relative; z-index:1;">
-    <div data-reveal style="display:flex; align-items:center; gap:12px; margin-bottom:clamp(24px,4vh,40px);">
-      <span style="width:11px; height:11px; background:#f3f2f2; display:block;"></span>
-      <span style="font-size:13px; letter-spacing:.16em; text-transform:uppercase; font-weight:700;">Why ASKU</span>
-    </div>
     <h2 data-reveal style="transition-delay:.08s; margin:0 0 clamp(48px,7vh,90px); font-family:var(--font-heading); font-weight:800; letter-spacing:-.02em; line-height:1.0; font-size:clamp(38px,7vw,96px);">검색이 아니라,<br>답변입니다.</h2>
     <div class="feat-grid" style="display:grid; grid-template-columns:1fr 1fr; gap:clamp(28px,4vw,64px) clamp(40px,6vw,96px);">
       <div data-reveal style="border-top:2px solid color-mix(in srgb,#f3f2f2 45%,transparent); padding-top:20px;"><div style="font-family:'Hostero'; font-size:clamp(28px,3vw,40px);">01</div><h3 style="font-size:clamp(24px,2.8vw,40px); font-weight:800; letter-spacing:-.01em; margin:14px 0 12px;">지식 그래프</h3><p style="margin:0; font-size:clamp(16px,1.4vw,20px); line-height:1.5; color:#fff; max-width:32ch;">엔티티와 관계로 흩어진 학교 정보를 하나의 구조로 엮습니다.</p></div>
@@ -119,10 +111,6 @@ a:hover { color:var(--asku-accent,#ec3013); }
 
   <section id="schools" data-nav="light" style="background:#201e1d; color:#f3f2f2; padding:clamp(90px,15vh,160px) 0; overflow:hidden; display:none;">
     <div style="padding:0 clamp(20px,5vw,72px);">
-      <div data-reveal style="display:flex; align-items:center; gap:12px; margin-bottom:clamp(24px,4vh,40px);">
-        <span style="width:11px; height:11px; background:var(--asku-accent,#ec3013); display:block;"></span>
-        <span style="font-size:13px; letter-spacing:.16em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#f3f2f2 70%,transparent);">Coverage · 등록된 학교</span>
-      </div>
       <h2 data-reveal style="transition-delay:.08s; margin:0; font-family:var(--font-heading); font-weight:800; letter-spacing:-.02em; line-height:1.02; font-size:clamp(34px,5.6vw,76px); max-width:18ch;">이미 <span id="cov-count" style="color:var(--asku-accent,#ec3013);">0개</span> 대학이 등록되어 있습니다.</h2>
       <p data-reveal style="transition-delay:.16s; margin:clamp(20px,3vh,28px) 0 0; max-width:48ch; font-size:clamp(16px,1.4vw,20px); line-height:1.6; color:color-mix(in srgb,#f3f2f2 74%,transparent);">새로운 학교도 공지 URL 하나면 바로 추가됩니다.</p>
     </div>
@@ -132,32 +120,30 @@ a:hover { color:var(--asku-accent,#ec3013); }
   </section>
 
   <section id="developers" data-nav="dark" style="background:#eae9e9; color:#201e1d; padding:clamp(90px,15vh,160px) clamp(20px,5vw,72px);">
-    <div data-reveal style="display:flex; align-items:center; gap:12px; margin-bottom:clamp(24px,4vh,40px);">
-      <span style="width:11px; height:11px; background:var(--asku-accent,#ec3013); display:block;"></span>
-      <span style="font-size:13px; letter-spacing:.16em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#201e1d 60%,transparent);">Team · 만든 사람들</span>
-    </div>
-    <h2 data-reveal style="transition-delay:.08s; margin:0 0 clamp(40px,6vh,72px); font-family:var(--font-heading); font-weight:800; letter-spacing:-.02em; line-height:1.0; font-size:clamp(38px,7vw,96px);">만든 사람들</h2>
+    <h2 data-reveal style="margin:0 0 clamp(40px,6vh,72px); font-family:var(--font-heading); font-weight:800; letter-spacing:-.02em; line-height:1.0; font-size:clamp(38px,7vw,96px);">만든 사람들</h2>
 
-    <div data-reveal class="dev-row" style="display:grid; grid-template-columns:56px minmax(0,1.3fr) .8fr auto; gap:clamp(12px,2vw,32px); align-items:baseline; padding:clamp(24px,4vh,40px) 0; border-top:2px solid var(--color-divider);">
-      <span style="font-family:'Hostero'; font-size:clamp(20px,2vw,30px); color:var(--asku-accent,#ec3013);">01</span>
-      <span style="font-family:'Hostero'; font-size:clamp(30px,4.4vw,62px); line-height:.92;">최재현</span>
-      <span class="dev-role" style="font-size:13px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#201e1d 62%,transparent); align-self:center;">AI</span>
-      <span class="dev-links" style="display:flex; flex-direction:column; gap:6px; align-items:flex-start; align-self:center; font-size:15px; font-weight:500;">
-        <a href="https://github.com/linklingj" target="_blank" rel="noopener" style="color:#201e1d;" style-hover="color:var(--asku-accent,#ec3013)">github.com/linklingj ↗</a>
-        <a href="mailto:jaehyunc413@gmail.com" style="color:#201e1d;" style-hover="color:var(--asku-accent,#ec3013)">jaehyunc413@gmail.com</a>
-      </span>
-    </div>
-    <div data-reveal class="dev-row" style="transition-delay:.06s; display:grid; grid-template-columns:56px minmax(0,1.3fr) .8fr auto; gap:clamp(12px,2vw,32px); align-items:baseline; padding:clamp(24px,4vh,40px) 0; border-top:2px solid var(--color-divider);">
-      <span style="font-family:'Hostero'; font-size:clamp(20px,2vw,30px); color:var(--asku-accent,#ec3013);">02</span>
-      <span style="font-family:'Hostero'; font-size:clamp(30px,4.4vw,62px); line-height:.92;">권시헌</span>
-      <span class="dev-role" style="font-size:13px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#201e1d 40%,transparent); align-self:center;">—</span>
-      <span class="dev-links" style="align-self:center; font-size:15px; color:color-mix(in srgb,#201e1d 40%,transparent);">준비 중</span>
-    </div>
-    <div data-reveal class="dev-row" style="transition-delay:.12s; display:grid; grid-template-columns:56px minmax(0,1.3fr) .8fr auto; gap:clamp(12px,2vw,32px); align-items:baseline; padding:clamp(24px,4vh,40px) 0; border-top:2px solid var(--color-divider); border-bottom:2px solid var(--color-divider);">
-      <span style="font-family:'Hostero'; font-size:clamp(20px,2vw,30px); color:var(--asku-accent,#ec3013);">03</span>
-      <span style="font-family:'Hostero'; font-size:clamp(30px,4.4vw,62px); line-height:.92;">김건민</span>
-      <span class="dev-role" style="font-size:13px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#201e1d 40%,transparent); align-self:center;">—</span>
-      <span class="dev-links" style="align-self:center; font-size:15px; color:color-mix(in srgb,#201e1d 40%,transparent);">준비 중</span>
+    <div data-reveal class="dev-grid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:clamp(20px,3vw,40px); align-items:stretch;">
+      <div class="dev-card" style="display:flex; flex-direction:column; gap:14px; background:#f7f6f6; border:2px solid var(--color-divider); padding:clamp(24px,3vw,38px); box-shadow:0 18px 42px color-mix(in srgb,#201e1d 12%,transparent);">
+        <span style="font-family:'Hostero'; font-size:clamp(20px,2vw,30px); color:var(--asku-accent,#ec3013);">01</span>
+        <span style="font-family:'Hostero'; font-size:clamp(34px,3.4vw,52px); line-height:.92;">최재현</span>
+        <span style="font-size:12px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#201e1d 62%,transparent);">AI</span>
+        <span style="display:flex; flex-direction:column; gap:6px; align-items:flex-start; font-size:14px; font-weight:500; margin-top:auto;">
+          <a href="https://github.com/linklingj" target="_blank" rel="noopener" style="color:#201e1d;" style-hover="color:var(--asku-accent,#ec3013)">github.com/linklingj ↗</a>
+          <a href="mailto:jaehyunc413@gmail.com" style="color:#201e1d;" style-hover="color:var(--asku-accent,#ec3013)">jaehyunc413@gmail.com</a>
+        </span>
+      </div>
+      <div class="dev-card" style="display:flex; flex-direction:column; gap:14px; background:#f7f6f6; border:2px solid var(--color-divider); padding:clamp(24px,3vw,38px); box-shadow:0 18px 42px color-mix(in srgb,#201e1d 12%,transparent);">
+        <span style="font-family:'Hostero'; font-size:clamp(20px,2vw,30px); color:var(--asku-accent,#ec3013);">02</span>
+        <span style="font-family:'Hostero'; font-size:clamp(34px,3.4vw,52px); line-height:.92;">권시헌</span>
+        <span style="font-size:12px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#201e1d 40%,transparent);">—</span>
+        <span style="font-size:14px; margin-top:auto; color:color-mix(in srgb,#201e1d 40%,transparent);">준비 중</span>
+      </div>
+      <div class="dev-card" style="display:flex; flex-direction:column; gap:14px; background:#f7f6f6; border:2px solid var(--color-divider); padding:clamp(24px,3vw,38px); box-shadow:0 18px 42px color-mix(in srgb,#201e1d 12%,transparent);">
+        <span style="font-family:'Hostero'; font-size:clamp(20px,2vw,30px); color:var(--asku-accent,#ec3013);">03</span>
+        <span style="font-family:'Hostero'; font-size:clamp(34px,3.4vw,52px); line-height:.92;">김건민</span>
+        <span style="font-size:12px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; color:color-mix(in srgb,#201e1d 40%,transparent);">—</span>
+        <span style="font-size:14px; margin-top:auto; color:color-mix(in srgb,#201e1d 40%,transparent);">준비 중</span>
+      </div>
     </div>
   </section>
 
