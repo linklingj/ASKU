@@ -499,3 +499,29 @@ class TestRunCrawlPipeline:
 
         # 추출 실패 → partial_failed
         mock_storage.update_school_status.assert_any_call(1, "partial_failed")
+
+    def test_empty_crawl_without_failures_triggers_failed(self, mock_storage):
+        """수집 페이지가 0건이고 실패 기록도 없으면 (URL 오입력·리다이렉트·빈 목록) failed 로 전이한다."""
+        mock_crawler = MagicMock()
+        mock_run = MagicMock()
+        mock_run.failures = []  # 실패 기록 없음
+        mock_run.pages = []
+        mock_crawler.crawl.return_value = mock_run
+        mock_crawler.pages_for_extractor.return_value = []  # 추출할 페이지 0건
+
+        with (
+            patch("app.api._get_storage", return_value=mock_storage),
+            patch("app.crawler.Crawler") as MockCrawlerModule,
+            patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
+            patch("app.extractor.DocumentExtractor", return_value=MagicMock()),
+            patch("app.graph_builder.GraphBuilder", return_value=MagicMock()),
+            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.LocalEmbedder", return_value=MagicMock()),
+        ):
+            MockCrawlerModule.from_storage.return_value = mock_crawler
+
+            from app.api import _run_crawl
+            _run_crawl(1, "https://example.com", "initial")
+
+        # 0페이지 → failed (ready·indexing 로 새면 안 됨)
+        mock_storage.update_school_status.assert_called_once_with(1, "failed")

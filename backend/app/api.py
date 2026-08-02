@@ -154,11 +154,16 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
             except Exception:
                 logger.exception("미관측 카운트 갱신 실패: school_id=%d", school_id)
 
-        if not pages and run.failures:
+        # 추출할 페이지가 하나도 없으면 인덱싱할 것이 없다 → 전체 실패로 처리한다.
+        # 실패 기록이 있으면 크롤링 오류, 없으면 URL 오입력·리다이렉트·빈 목록 등으로
+        # 수집이 0건인 경우다(둘 다 'ready'로 새면 안 됨).
+        if not pages:
             storage.update_school_status(school_id, "failed")
             _PROGRESS_MAP[school_id]["stage"] = "failed"
             _PROGRESS_MAP[school_id]["progress"] = 0.0
-            _PROGRESS_MAP[school_id]["message"] = "크롤링 실패"
+            _PROGRESS_MAP[school_id]["message"] = (
+                "크롤링 실패" if run.failures else "수집된 페이지가 없습니다 (공지 URL을 확인해 주세요)"
+            )
             return
 
         # 2. 인덱싱 (추출 → 그래프 빌드)
