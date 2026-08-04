@@ -311,6 +311,62 @@ class CrawlerTests(unittest.TestCase):
 
         self.assertEqual(session.calls, ["https://example.edu/robots.txt"])
 
+    def _delay_probe(self, robots_body: str, *, base_delay: float = 1.0):
+        """robots.txt 를 읽은 뒤 페이지 1건을 받아, 그 사이 sleep 된 값들을 돌려준다."""
+        page_url = "https://example.edu/notice"
+        session = FakeSession(
+            {
+                "https://example.edu/robots.txt": FakeResponse(200, robots_body),
+                page_url: FakeResponse(200, "<main>본문</main>"),
+            }
+        )
+        slept: list[float] = []
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=base_delay, max_retries=0),
+            session=session,
+            sleeper=slept.append,
+        )
+        crawler._robots_allowed(page_url)  # robots.txt 선반영(정상 수집 흐름과 동일)
+        slept.clear()
+        crawler._fetch(self.request(), page_url, CrawlRun())
+        return slept
+
+    def test_crawl_delay_from_robots_is_honoured(self) -> None:
+        """robots.txt 가 더 긴 간격을 요구하면 그 값을 따른다(세종대는 Crawl-delay: 10)."""
+        slept = self._delay_probe("User-agent: *\nCrawl-delay: 10\n", base_delay=1.0)
+
+        self.assertEqual(slept, [10.0])
+
+    def test_configured_delay_wins_when_robots_asks_for_less(self) -> None:
+        """robots.txt 가 더 짧게 허용해도 설정값보다 빨라지지는 않는다."""
+        slept = self._delay_probe("User-agent: *\nCrawl-delay: 0.2\n", base_delay=1.0)
+
+        self.assertEqual(slept, [1.0])
+
+    def test_default_delay_is_used_without_crawl_delay_directive(self) -> None:
+        slept = self._delay_probe("User-agent: *\nDisallow: /private/\n", base_delay=1.0)
+
+        self.assertEqual(slept, [1.0])
+
+    def test_injected_robots_callback_does_not_trigger_a_robots_fetch(self) -> None:
+        """robots_allowed 를 주입하면 참고할 robots.txt 가 없으므로 설정값을 쓴다."""
+        page_url = "https://example.edu/notice"
+        session = FakeSession({page_url: FakeResponse(200, "<main>본문</main>")})
+        slept: list[float] = []
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=2.0, max_retries=0),
+            session=session,
+            sleeper=slept.append,
+            robots_allowed=lambda _url: True,
+        )
+
+        crawler._fetch(self.request(), page_url, CrawlRun())
+
+        self.assertEqual(slept, [2.0])
+        self.assertEqual(session.calls, [page_url])  # robots.txt 를 새로 가져오지 않는다
+
     def test_unreachable_robots_denies_collection(self) -> None:
         """정책을 확인할 수 없으면 수집하지 않는다(보수적 기본값)."""
         session = FakeSession({"https://example.edu/robots.txt": FakeResponse(403)})

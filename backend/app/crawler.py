@@ -452,7 +452,7 @@ class Crawler:
                     url, timeout=self.settings.timeout_seconds, headers=headers, stream=stream
                 )
                 if response.status_code == 200:
-                    self.sleeper(self.settings.request_delay_seconds)
+                    self.sleeper(self._crawl_delay(url))
                     return response
                 retryable = response.status_code in RETRYABLE_STATUS_CODES
                 error_code = f"HTTP_{response.status_code}"
@@ -489,6 +489,21 @@ class Crawler:
         parser = self._robots_parser(url)
         # 정책을 확인할 수 없으면 수집하지 않는다(보수적 기본값).
         return False if parser is None else parser.can_fetch(url, ROBOTS_USER_AGENT)
+
+    def _crawl_delay(self, url: str) -> float:
+        """요청 간 대기 시간. robots.txt 의 ``Crawl-delay`` 와 설정값 중 긴 쪽을 쓴다.
+
+        이미 받아둔 파서만 참고하고 여기서 robots.txt 를 새로 가져오지는 않는다.
+        정상 흐름에서는 수집 전에 robots 검사를 거쳐 캐시가 채워져 있고, 호출자가
+        ``robots_allowed`` 를 직접 주입한 경우에는 참고할 robots.txt 자체가 없다.
+        """
+
+        split = urlsplit(url)
+        parser = self._robots_by_origin.get(f"{split.scheme}://{split.netloc}")
+        declared = parser.crawl_delay(ROBOTS_USER_AGENT) if parser is not None else None
+        if declared is None:
+            return self.settings.request_delay_seconds
+        return max(self.settings.request_delay_seconds, float(declared))
 
     def _robots_parser(self, url: str) -> Protego | None:
         """오리진의 robots.txt 파서를 얻는다. 가져올 수 없으면 ``None``."""
