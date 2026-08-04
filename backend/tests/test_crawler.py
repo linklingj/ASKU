@@ -333,14 +333,53 @@ class CrawlerTests(unittest.TestCase):
         defaults.update(overrides)
         return CrawledPage(**defaults)
 
-    def _attachment_crawler(self, session: FakeSession, **settings) -> Crawler:
+    def _attachment_crawler(self, session: FakeSession, *, robots_allowed=None, **settings) -> Crawler:
         return Crawler(
             hash_exists=lambda *_args: False,
             settings=CrawlSettings(request_delay_seconds=0, max_retries=0, **settings),
             session=session,
             sleeper=lambda _seconds: None,
-            robots_allowed=lambda _url: True,
+            robots_allowed=robots_allowed or (lambda _url: True),
         )
+
+    def test_attachment_disallowed_by_robots_is_not_downloaded(self) -> None:
+        """첨부도 페이지와 동일하게 robots.txt를 지켜야 한다(대학 사이트는 다운로드 경로를 자주 막는다)."""
+        pdf_url = "https://example.edu/download.do/guide.pdf"
+        session = FakeSession({pdf_url: FakeResponse(200, content=b"%PDF-1.4")})
+        crawler = self._attachment_crawler(session, robots_allowed=lambda url: "/download.do" not in url)
+        page = self._page(attachments=[Attachment(url=pdf_url, name_hint="수강편람")])
+        run = CrawlRun()
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
+
+        self.assertEqual(downloaded, [])
+        self.assertEqual(session.calls, [])  # 요청 자체를 보내지 않는다
+        self.assertEqual(run.failures[0].error_code, "ROBOTS_DISALLOWED")
+        self.assertEqual(run.failures[0].stage, "policy")
+
+    def test_attachment_outside_allowed_hosts_is_skipped(self) -> None:
+        external_url = "https://cdn.other-site.com/files/guide.pdf"
+        session = FakeSession({external_url: FakeResponse(200, content=b"%PDF-1.4")})
+        crawler = self._attachment_crawler(session)
+        page = self._page(attachments=[Attachment(url=external_url, name_hint="외부파일")])
+        run = CrawlRun()
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
+
+        self.assertEqual(downloaded, [])
+        self.assertEqual(session.calls, [])
+
+    def test_attachment_outside_path_prefixes_is_still_downloaded(self) -> None:
+        """첨부는 게시판(/notice)과 다른 경로에서 서빙되는 게 일반적이라 path_prefixes를 적용하지 않는다."""
+        pdf_url = "https://example.edu/files/guide.pdf"  # scope의 path_prefixes는 ["/notice"]
+        session = FakeSession({pdf_url: FakeResponse(200, content=b"%PDF-1.4")})
+        crawler = self._attachment_crawler(session)
+        page = self._page(attachments=[Attachment(url=pdf_url, name_hint="수강편람")])
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, CrawlRun())
+
+        self.assertEqual(len(downloaded), 1)
+        self.assertEqual(downloaded[0].url, pdf_url)
 
     def test_fetch_pdf_attachments_downloads_only_pdf_links(self) -> None:
         pdf_url = "https://example.edu/files/guide.pdf"

@@ -376,6 +376,10 @@ class Crawler:
         여러 공지에 걸려 있을 때 중복 다운로드·임베딩을 막는다. 다운로드 실패와 크기
         초과는 ``CrawlFailure``로 기록하고 나머지 첨부·페이지 처리는 계속한다
         (03_crawler.md §6).
+
+        첨부도 페이지와 똑같이 정책 검사를 거친다: 허용 호스트 밖이면 건너뛰고,
+        ``robots.txt``가 막으면 정책 거부로 기록한다. 경로 제한(``path_prefixes``)은
+        적용하지 않는다 — ``is_allowed_host`` 참고.
         """
 
         downloaded: list[DownloadedAttachment] = []
@@ -385,6 +389,11 @@ class Crawler:
             if attachment.url in run.attempted_attachment_urls:
                 continue
             run.attempted_attachment_urls.add(attachment.url)
+            if not is_allowed_host(attachment.url, request):
+                continue
+            if not self.robots_allowed(attachment.url):
+                self._policy_failure(request, attachment.url, run)
+                continue
             content = self._download_attachment(request, attachment.url, run, referer=page.canonical_url)
             if content is None:
                 continue
@@ -540,15 +549,27 @@ def normalize_detail_url(url: str) -> str:
     return normalize_url(urlunsplit((split.scheme, split.netloc, split.path, urlencode(query), split.fragment)))
 
 
+def is_allowed_host(url: str, request: CrawlRequest) -> bool:
+    """요청 스코프의 호스트 제한만 적용한다.
+
+    첨부파일 다운로드용이다. 첨부는 목록·상세와 다른 경로(`/files`, `/download` 등)에서
+    서빙되는 것이 일반적이므로 `path_prefixes`는 적용하지 않는다. 그 제한은 크롤러가
+    순회할 페이지 범위를 묶기 위한 것이지, 특정 공지의 첨부 위치를 정하는 것이 아니다.
+    """
+    if not request.scope:
+        return True
+    hosts = {host.lower() for host in request.scope.allowed_hosts}
+    return not hosts or urlsplit(url).netloc.lower() in hosts
+
+
 def is_allowed(url: str, request: CrawlRequest) -> bool:
     """요청 스코프의 호스트·경로 제한을 적용한다."""
     if not request.scope:
         return True
-    split = urlsplit(url)
-    hosts = {host.lower() for host in request.scope.allowed_hosts}
-    if hosts and split.netloc.lower() not in hosts:
+    if not is_allowed_host(url, request):
         return False
-    return not request.scope.path_prefixes or any(split.path.startswith(prefix) for prefix in request.scope.path_prefixes)
+    path = urlsplit(url).path
+    return not request.scope.path_prefixes or any(path.startswith(prefix) for prefix in request.scope.path_prefixes)
 
 
 def _looks_like_pdf(url: str) -> bool:

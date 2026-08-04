@@ -89,6 +89,14 @@ Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_ur
 
 - `url`은 첨부의 실제 링크이며 그대로 `documents.source_url`이 된다(근거 인용 링크이자
   재크롤 미관측 판정의 키, [`06_storage.md`](06_storage.md)).
+- **정책 검사**: 첨부도 페이지와 똑같이 `robots.txt`를 지킨다. 허용하지 않는 URL은
+  요청 자체를 보내지 않고 `ROBOTS_DISALLOWED` 정책 거부로 기록한다. 대학 사이트는
+  다운로드 경로를 `robots.txt`로 막아두는 경우가 흔하다.
+- **범위 제한은 호스트만**: 첨부는 `scope.allowed_hosts` 밖이면 건너뛰지만
+  `scope.path_prefixes`는 적용하지 않는다(`is_allowed_host`). 첨부는 게시판(`/notice`)과
+  다른 경로(`/files`, `/download` 등)에서 서빙되는 것이 일반적이라, 경로 제한을 걸면
+  정상 첨부가 모두 막힌다. 경로 제한은 크롤러가 **순회할 페이지** 범위를 묶기 위한
+  장치이지 첨부의 위치를 정하는 규칙이 아니다.
 - **크기 상한**: `CrawlSettings.max_attachment_bytes`(기본 50MB)까지만 스트리밍으로
   읽는다. `Content-Length`가 있으면 본문을 읽기 전에 거르고, 없거나 값이 거짓이면
   누적 크기로 다시 막는다. 초과분은 `ATTACHMENT_TOO_LARGE` 실패로 기록하고 건너뛴다.
@@ -136,7 +144,7 @@ frontier URL -> 정책 검사 -> 목록/상세 수집 -> URL 정규화 + 해시 
 
 ## 6. 오류 처리
 
-- `robots.txt` 거부·허용 범위 밖 URL은 재시도하지 않고 정책 거부로 기록한다.
+- `robots.txt` 거부·허용 범위 밖 URL은 재시도하지 않고 정책 거부로 기록한다. **첨부파일 다운로드에도 같은 규칙을 적용한다**(§3 참고 — 단 첨부의 범위 제한은 호스트만 본다).
 - 네트워크 오류, 429, 5xx는 최대 3회, 기본 1초 간격의 지수 백오프 재시도 대상이다. 요청 간 기본 간격은 1초이며 `robots.txt`가 더 엄격하면 그 값을 우선한다.
 - 4xx, 파싱 불가 콘텐츠, 렌더링 실패는 해당 페이지의 실패로 남기고 다른 URL 수집은 계속한다.
 - `school_id + canonical_url + content_hash`와 `crawl_id`를 멱등 키로 사용해 재시도 중복을 막는다.
