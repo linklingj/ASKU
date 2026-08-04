@@ -14,10 +14,10 @@ import re
 from time import sleep
 from typing import Callable, Iterable, Protocol
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
-from urllib.robotparser import RobotFileParser
 
 import requests
 from bs4 import BeautifulSoup
+from protego import Protego
 
 from app.schemas import Attachment, CrawledPage, CrawlFailure, CrawlRequest
 
@@ -26,6 +26,8 @@ TRACKING_QUERY_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
 DETAIL_CONTEXT_QUERY_KEYS = {"article.offset", "articlelimit"}
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 USER_AGENT = "ASKU-Crawler/0.1 (+https://github.com/linklingj/ASKU)"
+# robots.txt 의 User-agent 매칭에 쓰는 제품 토큰(버전·URL 없는 이름 부분).
+ROBOTS_USER_AGENT = "ASKU-Crawler"
 
 
 @dataclass(frozen=True)
@@ -278,7 +280,7 @@ class Crawler:
             self.session.headers.update({"User-Agent": USER_AGENT})
         self.sleeper = sleeper
         self.robots_allowed = robots_allowed or self._robots_allowed
-        self._robots_by_origin: dict[str, RobotFileParser] = {}
+        self._robots_by_origin: dict[str, Protego] = {}
 
     @classmethod
     def from_storage(cls, storage: CrawlStorage, **kwargs: object) -> "Crawler":
@@ -475,22 +477,36 @@ class Crawler:
         return None
 
     def _robots_allowed(self, url: str) -> bool:
+        """robots.txt 판정. 파서는 오리진별로 한 번만 만들어 재사용한다.
+
+        표준 ``urllib.robotparser`` 대신 ``protego``를 쓴다. 표준 파서는 와일드카드
+        (``Disallow: /*?mode=download``)를 경로 문자열로 URL 인코딩해 규칙을 무력화하고,
+        더 구체적인 ``Allow``가 상위 ``Disallow``를 덮어쓰는 우선순위도 처리하지 못한다.
+        실제 대학 사이트(세종대)에서 두 오판이 모두 재현됐다 — 전자는 금지된 첨부
+        다운로드를 허용으로, 후자는 허용된 경로를 금지로 잘못 판정한다.
+        """
+
+        parser = self._robots_parser(url)
+        # 정책을 확인할 수 없으면 수집하지 않는다(보수적 기본값).
+        return False if parser is None else parser.can_fetch(url, ROBOTS_USER_AGENT)
+
+    def _robots_parser(self, url: str) -> Protego | None:
+        """오리진의 robots.txt 파서를 얻는다. 가져올 수 없으면 ``None``."""
+
         split = urlsplit(url)
         origin = f"{split.scheme}://{split.netloc}"
-        parser = self._robots_by_origin.get(origin)
-        if parser is None:
-            try:
-                response = self.session.get(f"{origin}/robots.txt", timeout=self.settings.timeout_seconds)
-            except requests.RequestException:
-                return False  # 정책을 확인할 수 없으면 수집하지 않는다.
-            self.sleeper(self.settings.request_delay_seconds)
-            if response.status_code in {401, 403}:
-                return False
-            parser = RobotFileParser()
-            parser.set_url(f"{origin}/robots.txt")
-            parser.parse(response.text.splitlines() if response.status_code == 200 else [])
-            self._robots_by_origin[origin] = parser
-        return parser.can_fetch("ASKU-Crawler", url)
+        if origin in self._robots_by_origin:
+            return self._robots_by_origin[origin]
+        try:
+            response = self.session.get(f"{origin}/robots.txt", timeout=self.settings.timeout_seconds)
+        except requests.RequestException:
+            return None  # 정책을 확인할 수 없으면 수집하지 않는다(호출자가 거부 처리).
+        self.sleeper(self.settings.request_delay_seconds)
+        if response.status_code in {401, 403}:
+            return None
+        parser = Protego.parse(response.text if response.status_code == 200 else "")
+        self._robots_by_origin[origin] = parser
+        return parser
 
     @staticmethod
     def _attachment_too_large(request: CrawlRequest, url: str, run: CrawlRun) -> None:

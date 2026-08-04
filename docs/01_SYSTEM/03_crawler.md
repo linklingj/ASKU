@@ -12,6 +12,7 @@ Crawler는 학교의 `base_url`에서 공지·학사 정보를 수집해 Extract
 
 - 학교별 기준 URL에서 목록·상세 페이지를 발견하고, 허용된 호스트와 경로 안에서 순회한다.
 - `robots.txt`, 이용약관, 요청 간격을 적용하고 수집 이력을 기록한다. `robots.txt`를 확인할 수 없거나 허용하지 않는 URL은 수집하지 않는다.
+  - 파서는 **`protego`**를 쓴다. 표준 `urllib.robotparser`는 와일드카드 규칙(`Disallow: /*?mode=download`)의 `*`·`?`를 URL 인코딩해 규칙을 통째로 무력화하고, 상위 `Disallow` 아래의 구체적인 `Allow`가 우선하는 규칙도 처리하지 못한다. 실제 세종대 `robots.txt`에서 두 오판(금지된 첨부 다운로드를 허용으로, 허용된 경로를 금지로)이 모두 재현돼 교체했다.
 - MVP는 `requests + BeautifulSoup`으로 정적 HTML을 수집한다. 응답 HTML에 목록 링크나 본문이 없을 때만 렌더링 수집기(Playwright) 전환 후보로 기록한다.
 - 목록의 제목·작성 부서·등록일·분류 등 이미 제공되는 메타데이터와 상세 HTML·첨부파일 URL을 `CrawledPage`로 전달한다.
 - 정규 URL과 본문 해시로 중복과 변경을 판정한다.

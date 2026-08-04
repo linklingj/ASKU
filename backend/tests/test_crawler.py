@@ -269,6 +269,60 @@ class CrawlerTests(unittest.TestCase):
 
         self.assertEqual(crawler.session.headers["User-Agent"], "ASKU-Crawler/0.1 (+https://github.com/linklingj/ASKU)")
 
+    def _robots_crawler(self, robots_body: str) -> tuple[Crawler, FakeSession]:
+        """robots.txt 만 응답하는 세션으로 실제 _robots_allowed 를 검증한다."""
+        session = FakeSession({"https://example.edu/robots.txt": FakeResponse(200, robots_body)})
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+        )
+        return crawler, session
+
+    def test_robots_wildcard_disallow_is_honoured(self) -> None:
+        """`Disallow: /*?mode=download` 같은 와일드카드 규칙을 지켜야 한다.
+
+        표준 urllib.robotparser 는 '*'·'?' 를 URL 인코딩해 규칙을 무력화한다
+        (세종대 robots.txt 에서 실제로 재현된 오판).
+        """
+        crawler, _ = self._robots_crawler(
+            "User-agent: *\nDisallow: /_attach/\nDisallow: /*?mode=download\n"
+        )
+
+        self.assertFalse(crawler._robots_allowed("https://example.edu/notice.do?mode=download&articleNo=1"))
+        self.assertFalse(crawler._robots_allowed("https://example.edu/_attach/guide.pdf"))
+        self.assertTrue(crawler._robots_allowed("https://example.edu/notice.do?mode=view&articleNo=1"))
+
+    def test_more_specific_allow_overrides_broader_disallow(self) -> None:
+        """상위 Disallow 아래의 구체적인 Allow 가 우선해야 한다(과잉 차단 방지)."""
+        crawler, _ = self._robots_crawler(
+            "User-agent: *\nDisallow: /_res/\nAllow: /_res/img/favicon.png\n"
+        )
+
+        self.assertFalse(crawler._robots_allowed("https://example.edu/_res/style.css"))
+        self.assertTrue(crawler._robots_allowed("https://example.edu/_res/img/favicon.png"))
+
+    def test_robots_is_fetched_once_per_origin(self) -> None:
+        crawler, session = self._robots_crawler("User-agent: *\nDisallow: /private/\n")
+
+        crawler._robots_allowed("https://example.edu/a")
+        crawler._robots_allowed("https://example.edu/b")
+
+        self.assertEqual(session.calls, ["https://example.edu/robots.txt"])
+
+    def test_unreachable_robots_denies_collection(self) -> None:
+        """정책을 확인할 수 없으면 수집하지 않는다(보수적 기본값)."""
+        session = FakeSession({"https://example.edu/robots.txt": FakeResponse(403)})
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+        )
+
+        self.assertFalse(crawler._robots_allowed("https://example.edu/notice"))
+
     def test_yonsei_override_reads_card_list_metadata(self) -> None:
         html = """
         <div class='boardWrap'><ul><li><a href='/bbs/sc/58/1/artclView.do'>
