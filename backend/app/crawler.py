@@ -347,13 +347,39 @@ class Crawler:
         return [page for page in run.pages if page.crawl_status in {"new", "changed"}]
 
     def _fetch(self, request: CrawlRequest, url: str, run: CrawlRun, *, referer: str | None = None) -> str | None:
+        response = self._request(request, url, run, referer=referer)
+        return response.text if response is not None else None
+
+    def fetch_pdf_attachments(
+        self, request: CrawlRequest, page: CrawledPage, run: CrawlRun
+    ) -> list[tuple[str, bytes]]:
+        """공지 페이지의 첨부파일 중 PDF만 실제로 내려받는다.
+
+        HWP/DOC 등 다른 첨부 타입은 여전히 URL 힌트만 남기고 받지 않는다(PdfIngestor가
+        PDF 전용이기 때문). 다운로드 실패는 ``CrawlFailure``로 기록하고 나머지 첨부·
+        페이지 처리는 계속한다(03_crawler.md).
+        """
+
+        downloaded: list[tuple[str, bytes]] = []
+        for attachment in page.attachments:
+            if not _looks_like_pdf(attachment.url):
+                continue
+            response = self._request(request, attachment.url, run, referer=page.canonical_url)
+            if response is None:
+                continue
+            downloaded.append((_attachment_filename(attachment), response.content))
+        return downloaded
+
+    def _request(
+        self, request: CrawlRequest, url: str, run: CrawlRun, *, referer: str | None = None
+    ) -> requests.Response | None:
         for attempt in range(self.settings.max_retries + 1):
             try:
                 headers = {"Referer": referer} if referer else None
                 response = self.session.get(url, timeout=self.settings.timeout_seconds, headers=headers)
                 if response.status_code == 200:
                     self.sleeper(self.settings.request_delay_seconds)
-                    return response.text
+                    return response
                 retryable = response.status_code in RETRYABLE_STATUS_CODES
                 error_code = f"HTTP_{response.status_code}"
             except requests.RequestException as error:
@@ -446,6 +472,20 @@ def is_allowed(url: str, request: CrawlRequest) -> bool:
     if hosts and split.netloc.lower() not in hosts:
         return False
     return not request.scope.path_prefixes or any(split.path.startswith(prefix) for prefix in request.scope.path_prefixes)
+
+
+def _looks_like_pdf(url: str) -> bool:
+    return url.split("?", 1)[0].lower().endswith(".pdf")
+
+
+def _attachment_filename(attachment: Attachment) -> str:
+    """다운로드 파일명을 정한다. 힌트가 있으면 우선 쓰고, 없으면 URL 마지막 조각을 쓴다."""
+    name = (attachment.name_hint or "").strip()
+    if not name:
+        name = attachment.url.split("?", 1)[0].rsplit("/", 1)[-1] or "attachment.pdf"
+    if not name.lower().endswith(".pdf"):
+        name = f"{name}.pdf"
+    return name
 
 
 def html_hash(html: str) -> str:

@@ -5,6 +5,7 @@ import unittest
 from app.crawler import (
     CommonNoticeAdapter,
     Crawler,
+    CrawlRun,
     CrawlSettings,
     HongikNoticeAdapter,
     SejongNoticeAdapter,
@@ -14,7 +15,7 @@ from app.crawler import (
     normalize_detail_url,
     normalize_url,
 )
-from app.schemas import CrawlRequest, CrawlScope
+from app.schemas import Attachment, CrawledPage, CrawlRequest, CrawlScope
 
 
 LISTING_HTML = """
@@ -27,9 +28,10 @@ LISTING_HTML = """
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, text: str = "") -> None:
+    def __init__(self, status_code: int, text: str = "", content: bytes | None = None) -> None:
         self.status_code = status_code
         self.text = text
+        self.content = content if content is not None else text.encode("utf-8")
 
 
 class FakeSession:
@@ -294,6 +296,85 @@ class CrawlerTests(unittest.TestCase):
 
         self.assertIsNone(item.category_hint)
         self.assertEqual(item.author_hint, "교무팀")
+
+    def _page(self, **overrides) -> CrawledPage:
+        defaults = dict(
+            crawl_id=uuid4(),
+            school_id=1,
+            source_url="https://example.edu/notice/view.do?id=1",
+            canonical_url="https://example.edu/notice/view.do?id=1",
+            raw_html="<main>본문</main>",
+            attachments=[],
+            content_hash="hash",
+            fetched_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            crawl_status="new",
+        )
+        defaults.update(overrides)
+        return CrawledPage(**defaults)
+
+    def test_fetch_pdf_attachments_downloads_only_pdf_links(self) -> None:
+        pdf_url = "https://example.edu/files/guide.pdf"
+        hwp_url = "https://example.edu/files/form.hwp"
+        session = FakeSession(
+            {
+                pdf_url: FakeResponse(200, content=b"%PDF-1.4 fake"),
+            }
+        )
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+        page = self._page(
+            attachments=[
+                Attachment(url=pdf_url, name_hint="수강편람"),
+                Attachment(url=hwp_url, name_hint="신청서"),
+            ]
+        )
+        run = CrawlRun()
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
+
+        self.assertEqual(downloaded, [("수강편람.pdf", b"%PDF-1.4 fake")])
+        self.assertEqual(session.calls, [pdf_url])  # hwp는 다운로드하지 않음
+
+    def test_fetch_pdf_attachments_falls_back_to_url_tail_for_filename(self) -> None:
+        pdf_url = "https://example.edu/files/2026-guide.pdf?v=2"
+        session = FakeSession({pdf_url: FakeResponse(200, content=b"%PDF-1.4")})
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+        page = self._page(attachments=[Attachment(url=pdf_url, name_hint=None)])
+        run = CrawlRun()
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
+
+        self.assertEqual(downloaded, [("2026-guide.pdf", b"%PDF-1.4")])
+
+    def test_fetch_pdf_attachments_records_failure_and_skips_on_error(self) -> None:
+        pdf_url = "https://example.edu/files/broken.pdf"
+        session = FakeSession({pdf_url: FakeResponse(500)})
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+        page = self._page(attachments=[Attachment(url=pdf_url, name_hint="깨진파일")])
+        run = CrawlRun()
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
+
+        self.assertEqual(downloaded, [])
+        self.assertEqual(run.failures[0].error_code, "HTTP_500")
+        self.assertEqual(run.failures[0].source_url, pdf_url)
 
 
 if __name__ == "__main__":

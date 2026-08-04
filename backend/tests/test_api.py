@@ -224,6 +224,7 @@ class TestQuerySchool:
             answer="성적우수 장학금 마감일은 2026년 3월 15일입니다.",
             sources=[Source(title="장학금 안내", url="https://example.com/notice")],
             entity_ids=["e_123"],
+            source_type="graph",
         )
         with patch("app.api._get_rag_engine") as mock_rag:
             mock_rag.return_value.answer.return_value = rag_answer
@@ -234,6 +235,20 @@ class TestQuerySchool:
         assert "마감일" in body["answer"]
         assert len(body["sources"]) == 1
         assert body["entity_ids"] == ["e_123"]
+        assert body["source_type"] == "graph"
+
+    def test_200_answer_from_document_fallback(self, client, mock_storage):
+        rag_answer = RagAnswer(
+            answer="수강편람 12페이지 참고.",
+            sources=[Source(title="수강편람 - 12페이지", url="attachment:guide:abc123")],
+            source_type="document",
+        )
+        with patch("app.api._get_rag_engine") as mock_rag:
+            mock_rag.return_value.answer.return_value = rag_answer
+            resp = client.post("/schools/1/query", json={"question": "졸업 요건?"})
+
+        assert resp.status_code == 200
+        assert resp.json()["source_type"] == "document"
 
     def test_503_not_ready(self, client, mock_storage):
         mock_storage.get_school.return_value = _make_school(status="crawling")
@@ -390,6 +405,7 @@ class TestRunCrawlPipeline:
         mock_page.source_url = "https://example.com/notice"
         mock_crawler.crawl.return_value = mock_run
         mock_crawler.pages_for_extractor.return_value = [mock_page]
+        mock_crawler.fetch_pdf_attachments.return_value = []
 
         with (
             patch("app.api._get_storage", return_value=mock_storage),
@@ -411,6 +427,67 @@ class TestRunCrawlPipeline:
         # build(school_id, chunk) 시그니처
         mock_builder.build.assert_called_once_with(1, chunk)
         # 성공 시 ready
+        mock_storage.update_school_status.assert_any_call(1, "ready")
+
+    def test_pdf_attachment_found_during_crawl_is_ingested(self, mock_storage) -> None:
+        """페이지에서 발견된 PDF 첨부는 PdfIngestor.ingest(school_id, filename, bytes)로 전달된다."""
+        from app.pdf_ingest import PdfIngestResult
+        from app.schemas import ExtractedChunk
+
+        chunk = ExtractedChunk(
+            school_id=1,
+            source_url="https://example.com/notice",
+            content="본문",
+            chunk_index=0,
+            content_hash="hash123",
+            entities=[],
+            relations=[],
+            extraction_status="complete",
+        )
+        build_result = BuildResult(
+            school_id=1,
+            source_url="https://example.com/notice",
+            content_hash="hash123",
+            doc_id=1,
+            status="complete",
+        )
+
+        mock_extractor = MagicMock()
+        mock_extractor.process.return_value = [chunk]
+
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = build_result
+
+        mock_pdf_ingestor = MagicMock()
+        mock_pdf_ingestor.ingest.return_value = PdfIngestResult(
+            filename="수강편람.pdf", source_url="attachment:guide:abc", page_count=3, chunk_count=3, doc_ids=[1, 2, 3]
+        )
+
+        mock_page = MagicMock(source_url="https://example.com/notice")
+        mock_crawler = MagicMock()
+        mock_run = MagicMock()
+        mock_run.failures = []
+        mock_crawler.crawl.return_value = mock_run
+        mock_crawler.pages_for_extractor.return_value = [mock_page]
+        mock_crawler.fetch_pdf_attachments.return_value = [("수강편람.pdf", b"%PDF-1.4 fake")]
+
+        with (
+            patch("app.api._get_storage", return_value=mock_storage),
+            patch("app.crawler.Crawler") as MockCrawlerModule,
+            patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
+            patch("app.extractor.DocumentExtractor", return_value=mock_extractor),
+            patch("app.graph_builder.GraphBuilder", return_value=mock_builder),
+            patch("app.pdf_ingest.PdfIngestor", return_value=mock_pdf_ingestor),
+            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.LocalEmbedder", return_value=MagicMock()),
+        ):
+            MockCrawlerModule.from_storage.return_value = mock_crawler
+
+            from app.api import _run_crawl
+            _run_crawl(1, "https://example.com", "initial")
+
+        mock_crawler.fetch_pdf_attachments.assert_called_once()
+        mock_pdf_ingestor.ingest.assert_called_once_with(1, "수강편람.pdf", b"%PDF-1.4 fake")
         mock_storage.update_school_status.assert_any_call(1, "ready")
 
     def test_build_failure_triggers_partial_failed(self, mock_storage):
@@ -446,6 +523,7 @@ class TestRunCrawlPipeline:
         mock_run.failures = []
         mock_crawler.crawl.return_value = mock_run
         mock_crawler.pages_for_extractor.return_value = [MagicMock(source_url="url")]
+        mock_crawler.fetch_pdf_attachments.return_value = []
 
         with (
             patch("app.api._get_storage", return_value=mock_storage),
@@ -482,6 +560,7 @@ class TestRunCrawlPipeline:
         mock_run.failures = []
         mock_crawler.crawl.return_value = mock_run
         mock_crawler.pages_for_extractor.return_value = [MagicMock(source_url="url")]
+        mock_crawler.fetch_pdf_attachments.return_value = []
 
         with (
             patch("app.api._get_storage", return_value=mock_storage),

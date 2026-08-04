@@ -1,10 +1,12 @@
-"""Graph RAG 엔진 — 벡터 top-k 검색과 질문 엔티티 1-hop 그래프 확장으로 근거
-컨텍스트를 만들고, 근거에만 기반한 답변을 생성한다. 설계 단일 기준은
-docs/01_SYSTEM/07_graph-rag-engine.md.
+"""RAG 검색 — 그래프 RAG(1단계) → 문서 RAG(2단계) → 실패 순의 2단 fallback.
+설계 단일 기준은 docs/01_SYSTEM/07_graph-rag-engine.md.
 
-hybrid 단일 전략(벡터 top-k + 1-hop 이웃)만 쓴다. Local/Global 라우팅, 커뮤니티
-요약, multi-hop 순회, 재랭킹은 하지 않는다(07 §5). 근거 청크가 없거나 최고 유사도가
-임계 미만이면 LLM 생성 없이 보류 문구를 반환한다(07 §3, 환각 방지).
+``GraphRAG``는 벡터 top-k(웹 문서, ``source_type='web'``) + 1-hop 그래프 확장으로
+근거를 만든다. Local/Global 라우팅, 커뮤니티 요약, multi-hop 순회, 재랭킹은 하지
+않는다(07 §5). ``DocumentRAG``는 PDF 업로드 문서(``source_type='pdf'``)만 벡터
+top-k로 검색한다(그래프 확장 없음). 두 엔진 모두 근거 청크가 없거나 최고 유사도가
+임계 미만이면 LLM 생성 없이 보류 문구를 반환한다(환각 방지). ``HybridRAG``가
+그래프 → 문서 순으로 위임하는 오케스트레이션을 담당한다.
 
 저장소 접근은 06_storage.md, LLM 호출은 08_llm-provider.md 인터페이스만 사용한다.
 """
@@ -32,14 +34,19 @@ _ANSWER_INSTRUCTION = rag_answer_instruction(NO_EVIDENCE_ANSWER)
 
 
 class RagStorage(Protocol):
-    """Graph RAG 엔진이 쓰는 Storage 공개 메서드의 최소 계약(06_storage.md).
+    """RAG 엔진이 쓰는 Storage 공개 메서드의 최소 계약(06_storage.md).
 
     구현은 SQL 세부를 노출하지 않는 ``app.storage.Storage`` 다. 엔진은 이 구조적
     계약에만 의존해 저장소 구현·pgvector 의존과 분리된다.
     """
 
     def vector_search(
-        self, school_id: int, query_embedding: Sequence[float], k: int
+        self,
+        school_id: int,
+        query_embedding: Sequence[float],
+        k: int,
+        *,
+        source_type: str | None = None,
     ) -> list[tuple[Document, float]]: ...
 
     def entities_by_norm_keys(self, school_id: int, norm_keys: Sequence[str]) -> list[Entity]: ...
@@ -78,16 +85,19 @@ class GraphRAG:
         self.min_similarity = min_similarity
 
     def answer(self, school_id: int, question: str) -> RagAnswer:
-        """질문에 근거 기반으로 답한다. 근거가 없으면 생성 없이 보류한다."""
+        """질문에 근거 기반으로 답한다. 근거가 없으면 생성 없이 보류한다(source_type=None).
+
+        보류 응답은 ``HybridRAG``가 문서 RAG로 fallback할지 판단하는 신호로도 쓰인다.
+        """
 
         query_vector = self.embedder.embed(question)
         hits = [
             (doc, score)
-            for doc, score in self.storage.vector_search(school_id, query_vector, self.top_k)
+            for doc, score in self.storage.vector_search(school_id, query_vector, self.top_k, source_type="web")
             if score >= self.min_similarity
         ]
         if not hits:
-            return RagAnswer(answer=NO_EVIDENCE_ANSWER, sources=[])
+            return RagAnswer(answer=NO_EVIDENCE_ANSWER, sources=[], source_type=None)
 
         neighbors = self._expand_neighbors(school_id, question)
         context, sources = self._assemble_context(school_id, hits, neighbors)
@@ -108,6 +118,7 @@ class GraphRAG:
             answer=answer,
             sources=sources,
             entity_ids=sorted(used_entity_ids),
+            source_type="graph",
         )
 
     def _expand_neighbors(self, school_id: int, question: str) -> list["Neighbor"]:
@@ -190,3 +201,85 @@ class GraphRAG:
                 if doc is not None:
                     add(doc.title, doc.source_url)
         return list(sources.values())
+
+
+class DocumentRAG:
+    """질문 → PDF 업로드 문서(``source_type='pdf'``) 벡터 top-k → 근거 기반 답변.
+
+    그래프 확장은 하지 않는다(07 §5 — "문서 RAG는 벡터 top-k만으로 동작"). 그래프
+    RAG가 근거를 찾지 못했을 때 ``HybridRAG``가 두 번째로 호출하는 fallback 단계다.
+    """
+
+    def __init__(
+        self,
+        storage: RagStorage,
+        embedder: Embedder,
+        generator: Generator,
+        *,
+        top_k: int = 5,
+        min_similarity: float = 0.3,
+    ) -> None:
+        self.storage = storage
+        self.embedder = embedder
+        self.generator = generator
+        self.top_k = top_k
+        self.min_similarity = min_similarity
+
+    def answer(self, school_id: int, question: str) -> RagAnswer:
+        """PDF 문서에서만 근거를 찾는다. 근거가 없으면 생성 없이 보류한다(source_type=None)."""
+
+        query_vector = self.embedder.embed(question)
+        hits = [
+            (doc, score)
+            for doc, score in self.storage.vector_search(school_id, query_vector, self.top_k, source_type="pdf")
+            if score >= self.min_similarity
+        ]
+        if not hits:
+            return RagAnswer(answer=NO_EVIDENCE_ANSWER, sources=[], source_type=None)
+
+        context = "\n\n".join(
+            f"[근거 {rank}] {self._citation(doc)}\n{doc.content}" for rank, (doc, _score) in enumerate(hits, start=1)
+        )
+        prompt = f"{_ANSWER_INSTRUCTION}\n\n[질문]\n{question}"
+        answer = self.generator.generate(prompt, context).strip()
+        sources = self._collect_sources(hits)
+
+        return RagAnswer(answer=answer, sources=sources, source_type="document")
+
+    @staticmethod
+    def _citation(doc: Document) -> str:
+        title = doc.title or "(제목 없음)"
+        return f"{title} - {doc.page}페이지" if doc.page is not None else title
+
+    @classmethod
+    def _collect_sources(cls, hits: Sequence[tuple[Document, float]]) -> list[Source]:
+        """근거 출처를 URL 기준 중복 없이, 벡터 top-k 순서를 우선해 모은다."""
+
+        sources: dict[str, Source] = {}
+        for doc, _score in hits:
+            if doc.source_url not in sources:
+                sources[doc.source_url] = Source(title=cls._citation(doc), url=doc.source_url)
+        return list(sources.values())
+
+
+class HybridRAG:
+    """그래프 RAG → (근거 없음) → 문서 RAG → (근거 없음) → 실패의 2단 검색 오케스트레이션.
+
+    각 단계는 자신의 ``RagAnswer.source_type``으로 성공 여부를 신호한다(None이면
+    보류). API 계층은 이 클래스의 ``answer()``만 호출한다(07_graph-rag-engine.md).
+    """
+
+    def __init__(self, graph_rag: GraphRAG, document_rag: DocumentRAG) -> None:
+        self.graph_rag = graph_rag
+        self.document_rag = document_rag
+
+    def answer(self, school_id: int, question: str) -> RagAnswer:
+        graph_result = self.graph_rag.answer(school_id, question)
+        if graph_result.source_type == "graph":
+            return graph_result
+
+        document_result = self.document_rag.answer(school_id, question)
+        if document_result.source_type == "document":
+            return document_result
+
+        return RagAnswer(answer=NO_EVIDENCE_ANSWER, sources=[], source_type=None)

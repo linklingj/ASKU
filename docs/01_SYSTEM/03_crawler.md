@@ -15,11 +15,18 @@ Crawler는 학교의 `base_url`에서 공지·학사 정보를 수집해 Extract
 - MVP는 `requests + BeautifulSoup`으로 정적 HTML을 수집한다. 응답 HTML에 목록 링크나 본문이 없을 때만 렌더링 수집기(Playwright) 전환 후보로 기록한다.
 - 목록의 제목·작성 부서·등록일·분류 등 이미 제공되는 메타데이터와 상세 HTML·첨부파일 URL을 `CrawledPage`로 전달한다.
 - 정규 URL과 본문 해시로 중복과 변경을 판정한다.
+- 공지 상세에서 발견한 첨부파일 중 **PDF만** `fetch_pdf_attachments()`로 실제로
+  내려받아 (파일명, 바이트) 목록으로 반환한다(#29). 이 바이트는 Crawler를 거쳐
+  Backend API의 인덱싱 파이프라인이 `PdfIngestor`에 넘겨 문서 RAG 청크로 저장한다
+  ([`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
 
 ### 하지 않는 일
 
 - 청킹, 텍스트 정제, 문서 유형 확정, 엔티티·관계 추출
-- 첨부파일의 PDF/HWP/OCR 본문 파싱
+- **PDF 본문 파싱** — Crawler는 PDF 바이트를 받아오기만 하고, 텍스트 추출·청킹·임베딩은
+  `PdfIngestor`의 책임이다([`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
+- **HWP/DOC/OCR 등 PDF 이외 첨부파일의 다운로드·본문 파싱** — 여전히 URL·파일명
+  힌트만 `attachments`에 남기고 받지 않는다. PDF만 자동 수집 대상이다.
 - 임베딩 생성, 그래프 구성, 데이터베이스 직접 쓰기
 - 재크롤링 주기 결정(이는 Scheduler의 책임)
 
@@ -66,13 +73,20 @@ Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_ur
 }
 ```
 
-`school_id`, `source_url`, `canonical_url`, `raw_html`, `content_hash`, `fetched_at`, `crawl_status`가 성공 출력의 필수 필드다. `raw_html`은 Extractor에 전달할 일시 입력이며 장기 보관하지 않는다. 첨부파일은 URL·파일명 힌트만 수집하고 바이너리 다운로드·본문 파싱은 하지 않는다.
+`school_id`, `source_url`, `canonical_url`, `raw_html`, `content_hash`, `fetched_at`, `crawl_status`가 성공 출력의 필수 필드다. `raw_html`은 Extractor에 전달할 일시 입력이며 장기 보관하지 않는다. `CrawledPage.attachments`는 여전히 URL·파일명 힌트만 담는다(스키마 변경 없음) — 실제 바이너리 다운로드는 아래 `fetch_pdf_attachments()` 호출로 별도로 이뤄진다.
 
 실패 시에는 다음 `CrawlFailure`를 실행 이력에 남긴다.
 
 ```json
 {"crawl_id":"uuid","school_id":1,"source_url":"https://...","stage":"policy | fetch | render","error_code":"...","retryable":true,"occurred_at":"ISO-8601"}
 ```
+
+### 출력: `fetch_pdf_attachments(request, page, run) -> [(filename, pdf_bytes)]`
+
+인덱싱 단계에서 `new`·`changed` 페이지마다 호출한다. `page.attachments` 중 URL이
+`.pdf`로 끝나는 것만 실제로 내려받아 (파일명, 바이트) 튜플 목록을 반환한다.
+HWP/DOC 등은 이 호출에서도 다운로드하지 않는다. 다운로드 실패는 `CrawlFailure`
+(`stage="fetch"`)로 같은 `run`에 기록되고, 나머지 첨부·페이지 처리는 계속된다.
 
 ## 4. 처리 흐름
 
@@ -83,7 +97,10 @@ Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_ur
 5. 상세 HTML을 수집하고 본문 해시를 계산한다. 목록에서 상세로 이동하는 요청에는 현재 목록 URL을 `Referer`로 전달해 브라우저 클릭 흐름을 요구하는 사이트를 지원한다. 정적 수집이 불완전한 경우에만 렌더링 수집기로 전환한다.
 6. `doc_hash_exists(school_id, source_url, content_hash)`와 `doc_url_exists(school_id, source_url)`로 이전 처리본과 비교한다.
 7. `new`·`changed`인 `CrawledPage`만 Extractor에 전달한다. `unchanged`는 실행 상태만 기록한다.
-8. 실행 완료 시 성공·변경·실패·미관측 URL 통계를 저장한다.
+8. Backend API의 인덱싱 단계가 `new`·`changed` 페이지마다 `fetch_pdf_attachments()`를
+   호출해 PDF 첨부를 내려받고, `PdfIngestor`로 넘겨 문서 RAG 청크로 저장한다(#29,
+   [`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
+9. 실행 완료 시 성공·변경·실패·미관측 URL 통계를 저장한다.
 
 ```text
 frontier URL -> 정책 검사 -> 목록/상세 수집 -> URL 정규화 + 해시 계산
@@ -99,6 +116,7 @@ frontier URL -> 정책 검사 -> 목록/상세 수집 -> URL 정규화 + 해시 
 | Scheduler | 이전 | 학교별 주기에 따른 `CrawlRequest`를 받는다. |
 | Storage | 양방향 | 기존 본문 해시 조회와 실행 상태 기록을 공개 인터페이스로 요청한다. |
 | Extractor | 다음 | `new`·`changed`의 `CrawledPage`를 전달한다. |
+| PdfIngestor | 다음(간접) | Backend API가 `fetch_pdf_attachments()` 결과(파일명·바이트)를 받아 전달한다([`07_graph-rag-engine.md`](07_graph-rag-engine.md)). |
 
 호출을 동기 API로 할지 작업 큐로 할지는 **미정**이다. 어느 방식이든 `crawl_id`와 `school_id`를 포함해 실행을 추적한다.
 

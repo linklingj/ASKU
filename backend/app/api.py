@@ -63,21 +63,27 @@ def _get_storage():
 
 
 def _get_rag_engine():
-    """GraphRAG 엔진 싱글턴을 반환한다. 최초 호출 시 초기화."""
+    """HybridRAG 엔진 싱글턴을 반환한다(그래프 RAG → 문서 RAG fallback). 최초 호출 시 초기화."""
     global _rag_engine
     if _rag_engine is None:
         from app.llm import GeminiProvider, LocalEmbedder
-        from app.rag import GraphRAG
+        from app.rag import DocumentRAG, GraphRAG, HybridRAG
 
         storage = _get_storage()
         embedder = LocalEmbedder()
         provider = GeminiProvider()
-        _rag_engine = GraphRAG(
+        graph_rag = GraphRAG(
             storage=storage,
             embedder=embedder,
             extractor=provider,
             generator=provider,
         )
+        document_rag = DocumentRAG(
+            storage=storage,
+            embedder=embedder,
+            generator=provider,
+        )
+        _rag_engine = HybridRAG(graph_rag=graph_rag, document_rag=document_rag)
     return _rag_engine
 
 
@@ -123,6 +129,7 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         from app.crawler import CommonNoticeAdapter, Crawler
         from app.extractor import DocumentExtractor
         from app.graph_builder import GraphBuilder
+        from app.pdf_ingest import PdfIngestor
         from app.schemas import ExtractionFailure
 
         # 1. 크롤링
@@ -178,6 +185,7 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         provider = GeminiProvider()
         extractor = DocumentExtractor(llm_extractor=provider)
         builder = GraphBuilder(storage=storage, embedder=embedder)
+        pdf_ingestor = PdfIngestor(storage=storage, embedder=embedder)
 
         has_failures = len(run.failures) > 0
         total_pages = max(len(pages), 1)
@@ -205,6 +213,23 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
                         _PROGRESS_MAP[school_id]["edges"] += len(build_result.edge_ids)
                         if build_result.status == "partial":
                             has_failures = True
+
+                # PDF 첨부파일(수강편람 등)은 그래프에 반영하지 않고 문서 RAG 청크로만 저장한다
+                # (07_graph-rag-engine.md — 문서 RAG는 벡터 top-k 전용, 그래프 확장 없음).
+                for filename, pdf_bytes in crawler.fetch_pdf_attachments(crawl_request, page, run):
+                    try:
+                        pdf_result = pdf_ingestor.ingest(school_id, filename, pdf_bytes)
+                        _PROGRESS_MAP[school_id]["chunks"] += pdf_result.chunk_count
+                        logger.info(
+                            "PDF 첨부 인덱싱 완료: school_id=%d, file=%s, pages=%d, chunks=%d",
+                            school_id, filename, pdf_result.page_count, pdf_result.chunk_count,
+                        )
+                    except Exception:
+                        has_failures = True
+                        logger.exception(
+                            "PDF 첨부 인덱싱 실패: school_id=%d, file=%s, url=%s",
+                            school_id, filename, page.source_url,
+                        )
 
                 # 진행률 계산 (0.4 ~ 0.9)
                 curr_p = 0.4 + (0.5 * (i + 1) / total_pages)
@@ -428,6 +453,7 @@ def query_school(school_id: int, body: QueryRequest):
         answer=result.answer,
         sources=result.sources,
         entity_ids=result.entity_ids,
+        source_type=result.source_type,
     )
 
 

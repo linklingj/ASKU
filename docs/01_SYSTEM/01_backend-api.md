@@ -156,13 +156,22 @@ POST /schools/{school_id}/query
       "title": "2026학년도 2학기 성적우수 장학금 안내",
       "url": "https://www.yonsei.ac.kr/..."
     }
-  ]
+  ],
+  "entity_ids": ["e_123"],
+  "source_type": "graph"
 }
 ```
 
-내부적으로 Graph RAG Engine의 `answer(school_id, question)`을 호출한다
-([`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
-근거 청크가 없거나 유사도가 임계 미만이면 `answer`에 정보 부재 메시지를 반환한다.
+내부적으로 RAG 엔진의 `HybridRAG.answer(school_id, question)`을 호출해 **그래프
+RAG → 문서(PDF) RAG** 순으로 근거를 찾는다([`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
+`source_type`은 어느 단계가 답했는지 나타낸다(`"graph"` | `"document"` | `null`).
+두 단계 모두 근거 청크가 없거나 유사도가 임계 미만이면 `answer`에 정보 부재 메시지,
+`source_type`은 `null`을 반환한다.
+
+문서 RAG가 검색하는 PDF는 별도 업로드 엔드포인트로 받지 않는다. `POST /schools`
+(최초 등록)와 `POST /schools/{id}/recrawl`(재크롤링)의 크롤링 파이프라인이 공지
+상세에서 발견한 PDF 첨부파일을 자동으로 내려받아 인덱싱한다(§6,
+[`03_crawler.md`](03_crawler.md), [`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
 
 ---
 
@@ -312,7 +321,8 @@ GET /schools/{school_id}/entities/{entity_id}
 |---|---|---|
 | Frontend | 이전 | REST 요청을 받는다. |
 | Crawler | 다음 | 학교 등록·수동 재크롤링 시 `CrawlRequest`를 생성·전달한다 ([`03_crawler.md`](03_crawler.md)). |
-| Graph RAG Engine | 다음 | 질의 시 `answer(school_id, question)`을 호출한다 ([`07_graph-rag-engine.md`](07_graph-rag-engine.md)). |
+| RAG 엔진 | 다음 | 질의 시 `HybridRAG.answer(school_id, question)`을 호출한다 ([`07_graph-rag-engine.md`](07_graph-rag-engine.md)). |
+| PdfIngestor | 다음 | 인덱싱 단계에서 Crawler가 내려받은 PDF 첨부 바이트를 파싱·청킹·임베딩을 위임한다 ([`07_graph-rag-engine.md`](07_graph-rag-engine.md)). |
 | Storage | 양방향 | 학교 CRUD, 상태 조회·갱신을 공개 인터페이스로 요청한다 ([`06_storage.md`](06_storage.md)). |
 | Scheduler | 간접 | Scheduler가 주기적으로 재크롤링 `CrawlRequest`를 만들 때 같은 경로를 탄다 ([`09_scheduler.md`](09_scheduler.md)). |
 
@@ -331,6 +341,9 @@ GET /schools/{school_id}/entities/{entity_id}
 > - 작업 중 실시간 세부 진행도(`pages`, `chunks`, `entities`, `edges`, `stage`, `progress`)는 메모리 진행도 맵(`_PROGRESS_MAP`)에서 추적되며, `GET /schools/{id}/status`에서 반환된다.
 > - 서버 재시작 시에는 Storage의 DB 영속 상태(`status`, `crawl_started_at`) 및 집계 수치로 안전하게 폴백한다.
 > - 추후 다중 워커/분산 처리 전환 시 Celery / Redis / DB 작업 큐 기반 저장소로 이관한다 ([`03_crawler.md`](03_crawler.md) §5).
+> - 인덱싱 단계(`extracting`/`building`)에서 페이지별로 HTML 청크·그래프 구축과 함께
+>   PDF 첨부 다운로드·인덱싱(`PdfIngestor`)도 처리한다. 별도 엔드포인트나 단계는 없다
+>   ([`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
 
 ## 7. 미정 사항
 

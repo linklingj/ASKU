@@ -66,6 +66,8 @@ documents = Table(
     Column("crawled_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     Column("miss_count", INTEGER, nullable=False, server_default=text("0")),
     Column("expired_at", TIMESTAMP(timezone=True)),
+    Column("source_type", TEXT, nullable=False, server_default=text("'web'")),  # 'web' | 'pdf'
+    Column("page", INTEGER),  # PDF 페이지 번호. 'web' 청크는 NULL
     UniqueConstraint(
         "school_id",
         "source_url",
@@ -81,6 +83,7 @@ Index(
     postgresql_ops={"embedding": "vector_cosine_ops"},
 )
 Index("ix_documents_school_id", documents.c.school_id)
+Index("ix_documents_school_source_type", documents.c.school_id, documents.c.source_type)
 
 entities = Table(
     "entities",
@@ -159,6 +162,8 @@ def _document(row: RowMapping) -> Document:
         crawled_at=row["crawled_at"],
         miss_count=int(row["miss_count"]) if row.get("miss_count") is not None else 0,
         expired_at=row.get("expired_at"),
+        source_type=row.get("source_type") or "web",
+        page=row.get("page"),
     )
 
 
@@ -225,6 +230,8 @@ class Storage:
             connection.execute(text("ALTER TABLE schools ADD COLUMN IF NOT EXISTS crawl_started_at TIMESTAMPTZ"))
             connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS miss_count INT NOT NULL DEFAULT 0"))
             connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ"))
+            connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT 'web'"))
+            connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS page INT"))
 
     def create_school(self, school: School) -> School:
         values = {
@@ -404,6 +411,8 @@ class Storage:
         embedding: Sequence[float] | None,
         *,
         crawled_at: datetime | None = None,
+        source_type: str = "web",
+        page: int | None = None,
     ) -> int:
         """청크를 해시 기준으로 멱등 저장하고 ``doc_id``를 반환한다."""
 
@@ -416,6 +425,8 @@ class Storage:
             "chunk_index": chunk_index,
             "content_hash": content_hash,
             "embedding": list(embedding) if embedding is not None else None,
+            "source_type": source_type,
+            "page": page,
         }
         if crawled_at is not None:
             values["crawled_at"] = crawled_at
@@ -428,6 +439,8 @@ class Storage:
                 "content": statement.excluded.content,
                 "embedding": statement.excluded.embedding,
                 "crawled_at": statement.excluded.crawled_at,
+                "source_type": statement.excluded.source_type,
+                "page": statement.excluded.page,
                 "miss_count": 0,
                 "expired_at": None,
             },
@@ -555,23 +568,34 @@ class Storage:
             return connection.execute(statement).scalar_one_or_none() is not None
 
     def vector_search(
-        self, school_id: int, query_embedding: Sequence[float], k: int
+        self,
+        school_id: int,
+        query_embedding: Sequence[float],
+        k: int,
+        *,
+        source_type: str | None = None,
     ) -> list[tuple[Document, float]]:
-        """같은 학교 안에서 코사인 유사도 기준 상위 ``k`` 청크를 찾는다."""
+        """같은 학교 안에서 코사인 유사도 기준 상위 ``k`` 청크를 찾는다.
+
+        ``source_type``을 주면 그 타입('web'|'pdf')의 청크만 검색한다(그래프 RAG는
+        'web', 문서 RAG는 'pdf'로 검색 풀을 분리한다 — 07_graph-rag-engine.md).
+        생략하면(``None``) 타입 구분 없이 전체를 검색한다.
+        """
 
         _validate_embedding(query_embedding)
         if k <= 0:
             return []
         distance = documents.c.embedding.cosine_distance(list(query_embedding))
+        conditions = [
+            documents.c.school_id == school_id,
+            documents.c.embedding.is_not(None),
+            documents.c.expired_at.is_(None),
+        ]
+        if source_type is not None:
+            conditions.append(documents.c.source_type == source_type)
         statement = (
             select(*documents.c, (1 - distance).label("score"))
-            .where(
-                and_(
-                    documents.c.school_id == school_id,
-                    documents.c.embedding.is_not(None),
-                    documents.c.expired_at.is_(None),
-                )
-            )
+            .where(and_(*conditions))
             .order_by(distance)
             .limit(k)
         )

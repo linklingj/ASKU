@@ -49,6 +49,13 @@ class StorageContractTests(unittest.TestCase):
         self.assertIn("uq_entities_school_norm_key", entity_constraints)
         self.assertIn("uq_edges_school_source_target_relation", edge_constraints)
 
+    def test_documents_schema_has_source_type_and_page_columns(self) -> None:
+        column_names = {column.name for column in documents.columns}
+
+        self.assertIn("source_type", column_names)
+        self.assertIn("page", column_names)
+        self.assertEqual(documents.c.source_type.server_default.arg.text, "'web'")
+
     def test_school_scoped_queries_handle_empty_or_invalid_input_without_a_database(self) -> None:
         storage = Storage("postgresql+psycopg://asku:asku@localhost:5432/asku")
         try:

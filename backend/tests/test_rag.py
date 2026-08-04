@@ -1,4 +1,4 @@
-"""Graph RAG 엔진의 DB·모델 독립 계약 테스트.
+"""RAG 엔진(그래프 → 문서 2단 검색)의 DB·모델 독립 계약 테스트.
 
 저장소(RagStorage)와 LLM(Embedder·Extractor·Generator)을 가짜로 주입해 pgvector·
 bge-m3·Gemini 없이 질의 흐름과 환각 방지 분기를 검증한다.
@@ -10,7 +10,7 @@ import unittest
 from app.graph_builder import normalize_entity_key
 from app.llm import Embedder, Extraction, Extractor, Generator
 from app.models import EMBEDDING_DIM, Document
-from app.rag import NO_EVIDENCE_ANSWER, GraphRAG
+from app.rag import NO_EVIDENCE_ANSWER, DocumentRAG, GraphRAG, HybridRAG
 from app.schemas import ExtractedEntity
 
 
@@ -50,9 +50,12 @@ class FakeStorage:
         self._docs = {doc.doc_id: doc for doc in documents}
         self.calls: list[tuple] = []
 
-    def vector_search(self, school_id, query_embedding, k):
-        self.calls.append(("vector_search", school_id))
-        return self._hits[:k]
+    def vector_search(self, school_id, query_embedding, k, *, source_type=None):
+        self.calls.append(("vector_search", school_id, source_type))
+        hits = self._hits
+        if source_type is not None:
+            hits = [(d, s) for d, s in hits if getattr(d, "source_type", "web") == source_type]
+        return hits[:k]
 
     def entities_by_norm_keys(self, school_id, norm_keys):
         self.calls.append(("entities_by_norm_keys", school_id, tuple(norm_keys)))
@@ -74,10 +77,11 @@ class FakeStorage:
         return {call[1] for call in self.calls}
 
 
-def doc(doc_id: int, *, title="제목", url=None, content="본문") -> Document:
+def doc(doc_id: int, *, title="제목", url=None, content="본문", source_type="web", page=None) -> Document:
     return Document(
         doc_id=doc_id, school_id=1, source_url=url or f"https://ex.edu/{doc_id}",
         title=title, content=content, content_hash="h",
+        source_type=source_type, page=page,
     )
 
 
@@ -187,6 +191,13 @@ class GraphRagTests(unittest.TestCase):
         self.assertNotIn("neighbors", storage.method_names())
         self.assertEqual(result.answer, "생성된 답변")
 
+    def test_vector_search_is_scoped_to_web_source_type(self) -> None:
+        storage = FakeStorage(hits=[(doc(1), 0.9)])
+
+        engine(storage).answer(1, "q")
+
+        self.assertIn(("vector_search", 1, "web"), storage.calls)
+
     def test_all_storage_queries_are_scoped_to_the_given_school(self) -> None:
         neighbor_doc = doc(2, url="https://ex.edu/2")
         norm_key = normalize_entity_key("장학금", "ASKU")
@@ -221,6 +232,87 @@ class GraphRagTests(unittest.TestCase):
         self.assertIn(("get_documents", 1, ()), storage.calls)  # 이웃 근거가 이미 top-k 에 있어 추가 조회 없음
         _, context = generator.calls[0]
         self.assertIn("ASKU —담당→ 팀 (출처: https://ex.edu/1)", context)
+
+
+class DocumentRagTests(unittest.TestCase):
+    def test_answer_uses_pdf_only_vector_hits_with_page_citation(self) -> None:
+        pdf_chunk = doc(1, title="수강편람", url="attachment:guide:abc123", content="졸업 요건 본문", source_type="pdf", page=12)
+        storage = FakeStorage(hits=[(pdf_chunk, 0.9)])
+        generator = FakeGenerator()
+
+        result = DocumentRAG(storage, FakeEmbedder(), generator).answer(1, "졸업 요건이 뭐야?")
+
+        self.assertEqual(result.answer, "생성된 답변")
+        self.assertEqual(result.source_type, "document")
+        self.assertEqual(result.entity_ids, [])
+        _, context = generator.calls[0]
+        self.assertIn("졸업 요건 본문", context)
+        self.assertNotIn("[관계]", context)  # 그래프 확장 없음
+        self.assertEqual(
+            [(source.title, source.url) for source in result.sources],
+            [("수강편람 - 12페이지", "attachment:guide:abc123")],
+        )
+        self.assertIn(("vector_search", 1, "pdf"), storage.calls)
+        self.assertNotIn("entities_by_norm_keys", storage.method_names())
+        self.assertNotIn("neighbors", storage.method_names())
+
+    def test_no_pdf_hits_returns_no_evidence_without_generate(self) -> None:
+        storage = FakeStorage(hits=[])
+        generator = FakeGenerator()
+
+        result = DocumentRAG(storage, FakeEmbedder(), generator).answer(1, "질문")
+
+        self.assertEqual(result.answer, NO_EVIDENCE_ANSWER)
+        self.assertIsNone(result.source_type)
+        self.assertEqual(generator.calls, [])
+
+    def test_hits_below_threshold_are_excluded(self) -> None:
+        weak = doc(1, source_type="pdf", content="약한 근거")
+        storage = FakeStorage(hits=[(weak, 0.1)])
+        generator = FakeGenerator()
+
+        result = DocumentRAG(storage, FakeEmbedder(), generator, min_similarity=0.3).answer(1, "q")
+
+        self.assertIsNone(result.source_type)
+        self.assertEqual(generator.calls, [])
+
+
+class HybridRagTests(unittest.TestCase):
+    def test_returns_graph_answer_when_graph_stage_succeeds(self) -> None:
+        web_chunk = doc(1, source_type="web", content="웹 근거")
+        pdf_chunk = doc(2, source_type="pdf", content="PDF 근거")
+        storage = FakeStorage(hits=[(web_chunk, 0.9), (pdf_chunk, 0.9)])
+        graph_rag = engine(storage)
+        document_rag = DocumentRAG(storage, FakeEmbedder(), FakeGenerator())
+
+        result = HybridRAG(graph_rag, document_rag).answer(1, "q")
+
+        self.assertEqual(result.source_type, "graph")
+        # 그래프 단계가 이미 답했으므로 문서 단계 vector_search(source_type="pdf")는 호출되지 않아야 한다
+        self.assertNotIn(("vector_search", 1, "pdf"), storage.calls)
+
+    def test_falls_back_to_document_stage_when_graph_stage_has_no_evidence(self) -> None:
+        pdf_chunk = doc(1, title="수강편람", source_type="pdf", content="PDF 근거")
+        storage = FakeStorage(hits=[(pdf_chunk, 0.9)])  # 웹 문서 없음 → 그래프 단계는 보류
+        graph_rag = engine(storage)
+        document_rag = DocumentRAG(storage, FakeEmbedder(), FakeGenerator())
+
+        result = HybridRAG(graph_rag, document_rag).answer(1, "q")
+
+        self.assertEqual(result.source_type, "document")
+        self.assertIn(("vector_search", 1, "web"), storage.calls)
+        self.assertIn(("vector_search", 1, "pdf"), storage.calls)
+
+    def test_returns_final_failure_when_both_stages_have_no_evidence(self) -> None:
+        storage = FakeStorage(hits=[])
+        graph_rag = engine(storage)
+        document_rag = DocumentRAG(storage, FakeEmbedder(), FakeGenerator())
+
+        result = HybridRAG(graph_rag, document_rag).answer(1, "q")
+
+        self.assertEqual(result.answer, NO_EVIDENCE_ANSWER)
+        self.assertIsNone(result.source_type)
+        self.assertEqual(result.sources, [])
 
 
 if __name__ == "__main__":

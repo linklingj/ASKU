@@ -168,14 +168,17 @@ class Source(BaseModel):
 
 
 class RagAnswer(BaseModel):
-    """Graph RAG 엔진 출력 = API POST /schools/{id}/query 응답 본문.
+    """RAG 엔진 출력 = API POST /schools/{id}/query 응답 본문.
 
-    근거가 없거나 유사도 임계 미만이면 answer 는 보류 문구, sources 는 빈 목록이다.
+    근거가 없거나 유사도 임계 미만이면 answer 는 보류 문구, sources 는 빈 목록,
+    source_type 은 None 이다. 그래프 RAG가 답하면 "graph", 문서(PDF) RAG로
+    fallback해 답하면 "document" (07_graph-rag-engine.md).
     """
 
     answer: str
     sources: list[Source] = Field(default_factory=list)
     entity_ids: list[str] = Field(default_factory=list)
+    source_type: Literal["graph", "document"] | None = None
 
 
 # ── Backend API 요청·응답 스키마 (01_backend-api.md) ─────────────────
@@ -253,6 +256,7 @@ class QueryResponse(BaseModel):
     answer: str
     sources: list[Source] = Field(default_factory=list)
     entity_ids: list[str] = Field(default_factory=list)
+    source_type: Literal["graph", "document"] | None = None
 
 
 class RecrawlResponse(BaseModel):

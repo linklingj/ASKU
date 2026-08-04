@@ -53,6 +53,8 @@ class Document(BaseModel):
     crawled_at: datetime | None = None
     miss_count: int = 0  # 연속 미관측 횟수 (스케줄러 만료 판정)
     expired_at: datetime | None = None  # 만료 확정 시각 (None이면 유효)
+    source_type: str = "web"  # 'web'(크롤링) | 'pdf'(업로드). Graph RAG/문서 RAG의 검색 풀 구분
+    page: int | None = None  # PDF 페이지 번호(1부터). 'web' 청크는 None
 
     @field_validator("embedding")
     @classmethod
