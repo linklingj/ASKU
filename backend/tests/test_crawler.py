@@ -11,6 +11,7 @@ from app.crawler import (
     SejongNoticeAdapter,
     SkkuNoticeAdapter,
     YonseiNoticeAdapter,
+    _attachment_filename,
     html_hash,
     normalize_detail_url,
     normalize_url,
@@ -596,8 +597,9 @@ class CrawlerTests(unittest.TestCase):
 
     def test_attachment_within_size_limit_is_downloaded(self) -> None:
         pdf_url = "https://example.edu/files/ok.pdf"
+        body = b"%PDF-1.4" + b"x" * 82  # 90 bytes
         session = FakeSession(
-            {pdf_url: FakeResponse(200, content=b"x" * 90, headers={"Content-Length": "90"})}
+            {pdf_url: FakeResponse(200, content=body, headers={"Content-Length": "90"})}
         )
         crawler = self._attachment_crawler(session, max_attachment_bytes=100, attachment_chunk_bytes=32)
         page = self._page(attachments=[Attachment(url=pdf_url, name_hint="정상파일")])
@@ -605,8 +607,62 @@ class CrawlerTests(unittest.TestCase):
 
         downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
 
-        self.assertEqual(downloaded[0].content, b"x" * 90)  # 청크 경계를 넘어 온전히 조립된다
+        self.assertEqual(downloaded[0].content, body)  # 청크 경계를 넘어 온전히 조립된다
         self.assertEqual(run.failures, [])
+
+    def test_download_servlet_attachments_are_detected_by_name_hint(self) -> None:
+        """세종대 실제 마크업: URL에 확장자가 없고 파일명은 링크 텍스트에만 있다."""
+        base = "https://example.edu/kor/intro/notice1.do"
+        pdf_url = f"{base}?mode=download&articleNo=891310&attachNo=236572"
+        hwp_url = f"{base}?mode=download&articleNo=891310&attachNo=236573"
+        html = (
+            f"<div class='b-file-box'>"
+            f"<a href=\"?mode=download&articleNo=891310&attachNo=236572\">2026학년도 등록금 납부 안내.pdf</a>"
+            f"<a href=\"?mode=download&articleNo=891310&attachNo=236573\">입사신청서(양식).hwp</a>"
+            f"</div>"
+        )
+
+        attachments = CommonNoticeAdapter().parse_attachments(html, base)
+        self.assertEqual([a.url for a in attachments], [pdf_url, hwp_url])  # 둘 다 첨부로 인식
+
+        session = FakeSession({pdf_url: FakeResponse(200, content=b"%PDF-1.4 real")})
+        crawler = self._attachment_crawler(session)
+        page = self._page(canonical_url=base, attachments=attachments)
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, CrawlRun())
+
+        self.assertEqual(len(downloaded), 1)  # PDF 만 내려받는다
+        self.assertEqual(downloaded[0].url, pdf_url)
+        self.assertEqual(downloaded[0].filename, "2026학년도 등록금 납부 안내.pdf")
+        self.assertEqual(session.calls, [pdf_url])  # hwp 는 요청조차 하지 않는다
+
+    def test_filename_keeps_existing_extension(self) -> None:
+        """확장자가 이미 있으면 .pdf 를 덧붙이지 않는다(신청서.hwp → 신청서.hwp.pdf 방지)."""
+        self.assertEqual(
+            _attachment_filename(Attachment(url="https://e.edu/d.do?x=1", name_hint="신청서.hwp")),
+            "신청서.hwp",
+        )
+        self.assertEqual(
+            _attachment_filename(Attachment(url="https://e.edu/d.do?x=1", name_hint="붙임 1. 계획")),
+            "붙임 1. 계획.pdf",
+        )
+        self.assertEqual(
+            _attachment_filename(Attachment(url="https://e.edu/files/guide.pdf", name_hint=None)),
+            "guide.pdf",
+        )
+
+    def test_non_pdf_content_is_rejected_after_download(self) -> None:
+        """다운로드 서블릿이 오류 HTML 을 200 으로 주는 경우를 실제 내용으로 걸러낸다."""
+        url = "https://example.edu/notice.do?mode=download&attachNo=1"
+        session = FakeSession({url: FakeResponse(200, content=b"<html>error page</html>")})
+        crawler = self._attachment_crawler(session)
+        page = self._page(attachments=[Attachment(url=url, name_hint="안내문.pdf")])
+        run = CrawlRun()
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
+
+        self.assertEqual(downloaded, [])
+        self.assertEqual(run.failures[0].error_code, "NOT_A_PDF")
 
 
 if __name__ == "__main__":

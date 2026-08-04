@@ -28,6 +28,11 @@ RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 USER_AGENT = "ASKU-Crawler/0.1 (+https://github.com/linklingj/ASKU)"
 # robots.txt 의 User-agent 매칭에 쓰는 제품 토큰(버전·URL 없는 이름 부분).
 ROBOTS_USER_AGENT = "ASKU-Crawler"
+_FILE_EXTENSION = re.compile(r"\.([A-Za-z0-9]{1,5})$")
+# PDF 서명. 다운로드 서블릿은 URL만으로 유형을 알 수 없어 받은 뒤 실제 내용으로 확인한다.
+# 일부 파일은 앞에 잡바이트가 붙으므로 선두 1KB 안에서 찾는다.
+PDF_MAGIC = b"%PDF"
+PDF_MAGIC_SEARCH_BYTES = 1024
 
 
 @dataclass(frozen=True)
@@ -76,7 +81,13 @@ class CommonNoticeAdapter:
         *,
         row_selector: str = "table tbody tr",
         detail_link_selector: str = "a[href]",
-        attachment_selector: str = "a[href$='.pdf'], a[href$='.hwp'], a[href$='.hwpx'], a[href$='.doc'], a[href$='.docx']",
+        # 확장자가 URL에 드러나는 정적 링크와, K2Web 계열의 다운로드 서블릿을 함께 잡는다.
+        # 국내 대학 게시판은 첨부를 `?mode=download&articleNo=..&attachNo=..` 로 서빙해
+        # URL에는 확장자가 전혀 없고 파일명은 링크 텍스트에만 남는다(세종대에서 확인).
+        attachment_selector: str = (
+            "a[href$='.pdf'], a[href$='.hwp'], a[href$='.hwpx'], a[href$='.doc'], a[href$='.docx'], "
+            "a[href*='mode=download']"
+        ),
     ) -> None:
         self.row_selector = row_selector
         self.detail_link_selector = detail_link_selector
@@ -386,7 +397,7 @@ class Crawler:
 
         downloaded: list[DownloadedAttachment] = []
         for attachment in page.attachments:
-            if not _looks_like_pdf(attachment.url):
+            if not _looks_like_pdf(attachment):
                 continue
             if attachment.url in run.attempted_attachment_urls:
                 continue
@@ -398,6 +409,11 @@ class Crawler:
                 continue
             content = self._download_attachment(request, attachment.url, run, referer=page.canonical_url)
             if content is None:
+                continue
+            # 다운로드 서블릿은 URL로 유형을 확정할 수 없다. 오류 HTML 페이지나 다른
+            # 형식을 PDF로 오인해 파서에 넘기지 않도록 실제 내용으로 확인한다.
+            if PDF_MAGIC not in content[:PDF_MAGIC_SEARCH_BYTES]:
+                self._attachment_failure(request, attachment.url, run, "NOT_A_PDF")
                 continue
             downloaded.append(
                 DownloadedAttachment(
@@ -425,7 +441,7 @@ class Crawler:
         try:
             declared = str(response.headers.get("Content-Length") or "")
             if declared.isdigit() and int(declared) > limit:
-                self._attachment_too_large(request, url, run)
+                self._attachment_failure(request, url, run, "ATTACHMENT_TOO_LARGE")
                 return None
 
             buffered = bytearray()
@@ -434,7 +450,7 @@ class Crawler:
                     continue
                 buffered.extend(block)
                 if len(buffered) > limit:
-                    self._attachment_too_large(request, url, run)
+                    self._attachment_failure(request, url, run, "ATTACHMENT_TOO_LARGE")
                     return None
             return bytes(buffered)
         finally:
@@ -524,14 +540,15 @@ class Crawler:
         return parser
 
     @staticmethod
-    def _attachment_too_large(request: CrawlRequest, url: str, run: CrawlRun) -> None:
+    def _attachment_failure(request: CrawlRequest, url: str, run: CrawlRun, error_code: str) -> None:
+        """첨부 처리 중 재시도해도 달라지지 않는 실패를 기록한다(크기 초과·비PDF 등)."""
         run.failures.append(
             CrawlFailure(
                 crawl_id=request.crawl_id,
                 school_id=request.school_id,
                 source_url=url,
                 stage="fetch",
-                error_code="ATTACHMENT_TOO_LARGE",
+                error_code=error_code,
                 retryable=False,
                 occurred_at=datetime.now(timezone.utc),
             )
@@ -603,18 +620,36 @@ def is_allowed(url: str, request: CrawlRequest) -> bool:
     return not request.scope.path_prefixes or any(path.startswith(prefix) for prefix in request.scope.path_prefixes)
 
 
-def _looks_like_pdf(url: str) -> bool:
-    return url.split("?", 1)[0].lower().endswith(".pdf")
+def _attachment_extension(attachment: Attachment) -> str | None:
+    """첨부의 확장자를 파일명 힌트 → URL 경로 순으로 찾는다.
+
+    다운로드 서블릿(`?mode=download&attachNo=..`)은 URL에 확장자가 없고 파일명이
+    링크 텍스트에만 남으므로, 힌트를 먼저 본다. 사이트가 사용자에게 보여주는 이름이
+    실제 파일 유형에 더 가깝기도 하다.
+    """
+    for candidate in ((attachment.name_hint or "").strip(), attachment.url.split("?", 1)[0]):
+        match = _FILE_EXTENSION.search(candidate)
+        if match is not None:
+            return match.group(1).lower()
+    return None
+
+
+def _looks_like_pdf(attachment: Attachment) -> bool:
+    return _attachment_extension(attachment) == "pdf"
 
 
 def _attachment_filename(attachment: Attachment) -> str:
-    """다운로드 파일명을 정한다. 힌트가 있으면 우선 쓰고, 없으면 URL 마지막 조각을 쓴다."""
+    """다운로드 파일명을 정한다. 힌트가 있으면 우선 쓰고, 없으면 URL 마지막 조각을 쓴다.
+
+    이미 확장자가 있으면 그대로 둔다. 예전에는 무조건 ``.pdf`` 를 덧붙여
+    ``신청서.hwp`` 가 ``신청서.hwp.pdf`` 가 됐다.
+    """
     name = (attachment.name_hint or "").strip()
     if not name:
-        name = attachment.url.split("?", 1)[0].rsplit("/", 1)[-1] or "attachment.pdf"
-    if not name.lower().endswith(".pdf"):
-        name = f"{name}.pdf"
-    return name
+        name = attachment.url.split("?", 1)[0].rsplit("/", 1)[-1]
+    if not name:
+        return "attachment.pdf"
+    return name if _FILE_EXTENSION.search(name) else f"{name}.pdf"
 
 
 def html_hash(html: str) -> str:

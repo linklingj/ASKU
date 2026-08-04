@@ -14,7 +14,7 @@ Crawler는 학교의 `base_url`에서 공지·학사 정보를 수집해 Extract
 - `robots.txt`, 이용약관, 요청 간격을 적용하고 수집 이력을 기록한다. `robots.txt`를 확인할 수 없거나 허용하지 않는 URL은 수집하지 않는다.
   - 파서는 **`protego`**를 쓴다. 표준 `urllib.robotparser`는 와일드카드 규칙(`Disallow: /*?mode=download`)의 `*`·`?`를 URL 인코딩해 규칙을 통째로 무력화하고, 상위 `Disallow` 아래의 구체적인 `Allow`가 우선하는 규칙도 처리하지 못한다. 실제 세종대 `robots.txt`에서 두 오판(금지된 첨부 다운로드를 허용으로, 허용된 경로를 금지로)이 모두 재현돼 교체했다.
 - MVP는 `requests + BeautifulSoup`으로 정적 HTML을 수집한다. 응답 HTML에 목록 링크나 본문이 없을 때만 렌더링 수집기(Playwright) 전환 후보로 기록한다.
-- 목록의 제목·작성 부서·등록일·분류 등 이미 제공되는 메타데이터와 상세 HTML·첨부파일 URL을 `CrawledPage`로 전달한다.
+- 목록의 제목·작성 부서·등록일·분류 등 이미 제공되는 메타데이터와 상세 HTML·첨부파일 URL을 `CrawledPage`로 전달한다. 첨부 링크는 확장자가 URL에 드러나는 정적 링크와 `?mode=download` 형태의 다운로드 서블릿을 함께 인식한다.
 - 정규 URL과 본문 해시로 중복과 변경을 판정한다.
 - 공지 상세에서 발견한 첨부파일 중 **PDF만** `fetch_pdf_attachments()`로 실제로
   내려받아 (파일명, 바이트) 목록으로 반환한다(#29). 이 바이트는 Crawler를 거쳐
@@ -90,9 +90,17 @@ Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_ur
 
 - `url`은 첨부의 실제 링크이며 그대로 `documents.source_url`이 된다(근거 인용 링크이자
   재크롤 미관측 판정의 키, [`06_storage.md`](06_storage.md)).
+- **PDF 판정**: 파일명 힌트 → URL 경로 순으로 확장자를 찾아 `pdf`인 것만 받는다.
+  국내 대학 게시판은 첨부를 `?mode=download&articleNo=..&attachNo=..` 서블릿으로
+  서빙해 **URL에는 확장자가 없고 파일명은 링크 텍스트에만** 남기 때문이다(세종대에서
+  확인). 확장자를 어디서도 찾지 못하면 받지 않는다.
+- **내용 검증**: 다운로드 서블릿은 URL만으로 유형을 확정할 수 없으므로, 받은 뒤 선두
+  1KB에서 `%PDF` 서명을 확인한다. 오류 HTML 페이지를 200으로 돌려주는 경우 등을
+  `NOT_A_PDF` 실패로 걸러 파서에 넘기지 않는다.
 - **정책 검사**: 첨부도 페이지와 똑같이 `robots.txt`를 지킨다. 허용하지 않는 URL은
   요청 자체를 보내지 않고 `ROBOTS_DISALLOWED` 정책 거부로 기록한다. 대학 사이트는
-  다운로드 경로를 `robots.txt`로 막아두는 경우가 흔하다.
+  다운로드 경로를 `robots.txt`로 막아두는 경우가 흔하다 — 세종대는 `/_attach/`와
+  `/*?mode=download`를 모두 막으므로 **첨부를 탐지해도 수집하지 않는 것이 정상**이다.
 - **범위 제한은 호스트만**: 첨부는 `scope.allowed_hosts` 밖이면 건너뛰지만
   `scope.path_prefixes`는 적용하지 않는다(`is_allowed_host`). 첨부는 게시판(`/notice`)과
   다른 경로(`/files`, `/download` 등)에서 서빙되는 것이 일반적이라, 경로 제한을 걸면
