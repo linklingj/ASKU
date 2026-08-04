@@ -12,8 +12,6 @@ Crawler가 공지 상세에서 찾은 PDF 첨부를 ``Crawler.fetch_pdf_attachme
 
 from __future__ import annotations
 
-import re
-import unicodedata
 from dataclasses import dataclass
 from hashlib import sha256
 from io import BytesIO
@@ -21,8 +19,6 @@ from typing import Callable, Protocol, Sequence
 
 from app.extractor import DEFAULT_CHUNK_CHARS, DEFAULT_OVERLAP_CHARS, chunk_document
 from app.llm import Embedder
-
-_NON_SLUG_CHARACTERS = re.compile(r"[\W_]+", re.UNICODE)
 
 
 class PdfIngestStorage(Protocol):
@@ -54,20 +50,6 @@ class PdfIngestResult:
     doc_ids: list[int]
 
 
-def source_url_for_pdf_attachment(filename: str, pdf_bytes: bytes) -> str:
-    """PDF 첨부의 합성 ``source_url``을 만든다.
-
-    첨부 원본 URL은 원문 근거로 그대로 쓰기엔 파일명 충돌(같은 이름 다른 학교/시기)
-    위험이 있어, 파일명 슬러그 + 파일 내용 해시(12자)로 안정적인 의사 URI를 만든다.
-    재크롤링에서 같은 파일을 다시 받으면 같은 ``source_url``이라 멱등 upsert되고,
-    파일명이 같아도 내용이 다르면 다른 문서로 취급된다.
-    """
-
-    slug = _NON_SLUG_CHARACTERS.sub("-", unicodedata.normalize("NFKC", filename)).strip("-").lower()
-    file_hash = sha256(pdf_bytes).hexdigest()[:12]
-    return f"attachment:{slug or 'file'}:{file_hash}"
-
-
 def extract_pages(pdf_bytes: bytes) -> list[str]:
     """PDF 바이트에서 페이지별 텍스트를 뽑는다. 빈 페이지는 빈 문자열로 남는다."""
 
@@ -95,11 +77,15 @@ class PdfIngestor:
         self.overlap_chars = overlap_chars
         self.page_extractor = page_extractor
 
-    def ingest(self, school_id: int, filename: str, pdf_bytes: bytes) -> PdfIngestResult:
-        """PDF 한 건을 파싱·청킹·임베딩해 ``documents``에 저장한다."""
+    def ingest(self, school_id: int, source_url: str, filename: str, pdf_bytes: bytes) -> PdfIngestResult:
+        """PDF 한 건을 파싱·청킹·임베딩해 ``documents``에 저장한다.
+
+        ``source_url``은 첨부파일의 실제 링크다. 근거 인용에 그대로 쓰이고, 재크롤링
+        미관측 판정(``record_url_observations``)의 키가 되며, 같은 첨부를 다시 받았을
+        때 멱등 upsert되게 하는 기준이기도 하다(06_storage.md).
+        """
 
         pages = self.page_extractor(pdf_bytes)
-        source_url = source_url_for_pdf_attachment(filename, pdf_bytes)
 
         doc_ids: list[int] = []
         chunk_index = 0

@@ -33,7 +33,7 @@
 | page | PDF 페이지 번호(1부터). `'web'` 청크는 `NULL` |
 
 > 공지 1건 = 기본 Document 1행. 긴 문서만 `source_url`을 공유하는 여러 행으로 분할.
-> PDF는 페이지 단위로 분할되며 `source_url`이 합성 URI(`attachment:파일명:해시`)다.
+> PDF는 페이지 단위로 분할되며, `source_url`은 첨부파일의 실제 링크이고 `title`은 파일명이다.
 > PDF 청크는 엔티티·엣지를 생성하지 않는다([`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
 
 ### Entity (그래프 노드)

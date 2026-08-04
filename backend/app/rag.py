@@ -251,15 +251,32 @@ class DocumentRAG:
         title = doc.title or "(제목 없음)"
         return f"{title} - {doc.page}페이지" if doc.page is not None else title
 
-    @classmethod
-    def _collect_sources(cls, hits: Sequence[tuple[Document, float]]) -> list[Source]:
-        """근거 출처를 URL 기준 중복 없이, 벡터 top-k 순서를 우선해 모은다."""
+    @staticmethod
+    def _collect_sources(hits: Sequence[tuple[Document, float]]) -> list[Source]:
+        """근거 출처를 문서(URL)당 한 줄로 모으되, 근거로 쓴 페이지는 모두 병합한다.
 
-        sources: dict[str, Source] = {}
+        같은 PDF의 여러 페이지가 함께 히트하면 ``"수강편람.pdf - 3, 15페이지"``처럼
+        한 출처에 페이지를 모아 적는다. URL 기준으로만 중복을 제거하면 뒤쪽 페이지
+        인용이 통째로 사라지기 때문이다. 문서 순서는 벡터 top-k 순서를 따르고,
+        페이지 번호는 읽기 순서로 정렬한다.
+        """
+
+        titles: dict[str, str] = {}
+        pages_by_url: dict[str, set[int]] = {}
         for doc, _score in hits:
-            if doc.source_url not in sources:
-                sources[doc.source_url] = Source(title=cls._citation(doc), url=doc.source_url)
-        return list(sources.values())
+            url = doc.source_url
+            if url not in titles:
+                titles[url] = doc.title or "(제목 없음)"
+                pages_by_url[url] = set()
+            if doc.page is not None:
+                pages_by_url[url].add(doc.page)
+
+        sources: list[Source] = []
+        for url, title in titles.items():
+            pages = sorted(pages_by_url[url])
+            label = f"{title} - {', '.join(str(page) for page in pages)}페이지" if pages else title
+            sources.append(Source(title=label, url=url))
+        return sources
 
 
 class HybridRAG:

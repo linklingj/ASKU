@@ -28,10 +28,25 @@ LISTING_HTML = """
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, text: str = "", content: bytes | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        text: str = "",
+        content: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.status_code = status_code
         self.text = text
         self.content = content if content is not None else text.encode("utf-8")
+        self.headers = headers or {}
+        self.closed = False
+
+    def iter_content(self, chunk_size: int):
+        for start in range(0, len(self.content), chunk_size):
+            yield self.content[start : start + chunk_size]
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeSession:
@@ -40,7 +55,13 @@ class FakeSession:
         self.calls: list[str] = []
         self.request_headers: list[dict[str, str] | None] = []
 
-    def get(self, url: str, timeout: float, headers: dict[str, str] | None = None) -> FakeResponse:
+    def get(
+        self,
+        url: str,
+        timeout: float,
+        headers: dict[str, str] | None = None,
+        stream: bool = False,
+    ) -> FakeResponse:
         self.calls.append(url)
         self.request_headers.append(headers)
         return self.pages[url]
@@ -312,21 +333,20 @@ class CrawlerTests(unittest.TestCase):
         defaults.update(overrides)
         return CrawledPage(**defaults)
 
-    def test_fetch_pdf_attachments_downloads_only_pdf_links(self) -> None:
-        pdf_url = "https://example.edu/files/guide.pdf"
-        hwp_url = "https://example.edu/files/form.hwp"
-        session = FakeSession(
-            {
-                pdf_url: FakeResponse(200, content=b"%PDF-1.4 fake"),
-            }
-        )
-        crawler = Crawler(
+    def _attachment_crawler(self, session: FakeSession, **settings) -> Crawler:
+        return Crawler(
             hash_exists=lambda *_args: False,
-            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0, **settings),
             session=session,
             sleeper=lambda _seconds: None,
             robots_allowed=lambda _url: True,
         )
+
+    def test_fetch_pdf_attachments_downloads_only_pdf_links(self) -> None:
+        pdf_url = "https://example.edu/files/guide.pdf"
+        hwp_url = "https://example.edu/files/form.hwp"
+        session = FakeSession({pdf_url: FakeResponse(200, content=b"%PDF-1.4 fake")})
+        crawler = self._attachment_crawler(session)
         page = self._page(
             attachments=[
                 Attachment(url=pdf_url, name_hint="수강편람"),
@@ -337,36 +357,27 @@ class CrawlerTests(unittest.TestCase):
 
         downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
 
-        self.assertEqual(downloaded, [("수강편람.pdf", b"%PDF-1.4 fake")])
+        self.assertEqual(len(downloaded), 1)
+        self.assertEqual(downloaded[0].url, pdf_url)  # 실제 첨부 URL이 근거·저장 키가 된다
+        self.assertEqual(downloaded[0].filename, "수강편람.pdf")
+        self.assertEqual(downloaded[0].content, b"%PDF-1.4 fake")
         self.assertEqual(session.calls, [pdf_url])  # hwp는 다운로드하지 않음
 
     def test_fetch_pdf_attachments_falls_back_to_url_tail_for_filename(self) -> None:
         pdf_url = "https://example.edu/files/2026-guide.pdf?v=2"
         session = FakeSession({pdf_url: FakeResponse(200, content=b"%PDF-1.4")})
-        crawler = Crawler(
-            hash_exists=lambda *_args: False,
-            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
-            session=session,
-            sleeper=lambda _seconds: None,
-            robots_allowed=lambda _url: True,
-        )
+        crawler = self._attachment_crawler(session)
         page = self._page(attachments=[Attachment(url=pdf_url, name_hint=None)])
-        run = CrawlRun()
 
-        downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, CrawlRun())
 
-        self.assertEqual(downloaded, [("2026-guide.pdf", b"%PDF-1.4")])
+        self.assertEqual(downloaded[0].filename, "2026-guide.pdf")
+        self.assertEqual(downloaded[0].url, pdf_url)
 
     def test_fetch_pdf_attachments_records_failure_and_skips_on_error(self) -> None:
         pdf_url = "https://example.edu/files/broken.pdf"
         session = FakeSession({pdf_url: FakeResponse(500)})
-        crawler = Crawler(
-            hash_exists=lambda *_args: False,
-            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
-            session=session,
-            sleeper=lambda _seconds: None,
-            robots_allowed=lambda _url: True,
-        )
+        crawler = self._attachment_crawler(session)
         page = self._page(attachments=[Attachment(url=pdf_url, name_hint="깨진파일")])
         run = CrawlRun()
 
@@ -375,6 +386,78 @@ class CrawlerTests(unittest.TestCase):
         self.assertEqual(downloaded, [])
         self.assertEqual(run.failures[0].error_code, "HTTP_500")
         self.assertEqual(run.failures[0].source_url, pdf_url)
+
+    def test_same_attachment_is_downloaded_once_per_run(self) -> None:
+        """같은 첨부가 여러 공지에 걸려 있어도 실행당 한 번만 받는다(중복 임베딩 방지)."""
+        pdf_url = "https://example.edu/files/shared.pdf"
+        session = FakeSession({pdf_url: FakeResponse(200, content=b"%PDF-1.4")})
+        crawler = self._attachment_crawler(session)
+        run = CrawlRun()
+        first_page = self._page(attachments=[Attachment(url=pdf_url, name_hint="공유파일")])
+        second_page = self._page(
+            canonical_url="https://example.edu/notice/view.do?id=2",
+            attachments=[Attachment(url=pdf_url, name_hint="공유파일")],
+        )
+
+        first = crawler.fetch_pdf_attachments(self.request(), first_page, run)
+        second = crawler.fetch_pdf_attachments(self.request(), second_page, run)
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])  # 두 번째 공지에서는 다시 받지 않는다
+        self.assertEqual(session.calls, [pdf_url])
+
+    def test_failed_attachment_is_not_retried_within_the_same_run(self) -> None:
+        pdf_url = "https://example.edu/files/broken.pdf"
+        session = FakeSession({pdf_url: FakeResponse(404)})
+        crawler = self._attachment_crawler(session)
+        run = CrawlRun()
+        page = self._page(attachments=[Attachment(url=pdf_url, name_hint="깨진파일")])
+
+        crawler.fetch_pdf_attachments(self.request(), page, run)
+        crawler.fetch_pdf_attachments(self.request(), page, run)
+
+        self.assertEqual(session.calls, [pdf_url])  # 실패한 URL도 재시도하지 않는다
+
+    def test_attachment_over_size_limit_is_skipped_by_declared_length(self) -> None:
+        pdf_url = "https://example.edu/files/huge.pdf"
+        session = FakeSession(
+            {pdf_url: FakeResponse(200, content=b"x" * 10, headers={"Content-Length": "999999"})}
+        )
+        crawler = self._attachment_crawler(session, max_attachment_bytes=100)
+        page = self._page(attachments=[Attachment(url=pdf_url, name_hint="큰파일")])
+        run = CrawlRun()
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
+
+        self.assertEqual(downloaded, [])
+        self.assertEqual(run.failures[0].error_code, "ATTACHMENT_TOO_LARGE")
+
+    def test_attachment_over_size_limit_is_skipped_while_streaming(self) -> None:
+        """Content-Length가 없거나 거짓이면 읽는 도중 누적 크기로 막는다."""
+        pdf_url = "https://example.edu/files/huge.pdf"
+        session = FakeSession({pdf_url: FakeResponse(200, content=b"x" * 500)})
+        crawler = self._attachment_crawler(session, max_attachment_bytes=100, attachment_chunk_bytes=32)
+        page = self._page(attachments=[Attachment(url=pdf_url, name_hint="큰파일")])
+        run = CrawlRun()
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
+
+        self.assertEqual(downloaded, [])
+        self.assertEqual(run.failures[0].error_code, "ATTACHMENT_TOO_LARGE")
+
+    def test_attachment_within_size_limit_is_downloaded(self) -> None:
+        pdf_url = "https://example.edu/files/ok.pdf"
+        session = FakeSession(
+            {pdf_url: FakeResponse(200, content=b"x" * 90, headers={"Content-Length": "90"})}
+        )
+        crawler = self._attachment_crawler(session, max_attachment_bytes=100, attachment_chunk_bytes=32)
+        page = self._page(attachments=[Attachment(url=pdf_url, name_hint="정상파일")])
+        run = CrawlRun()
+
+        downloaded = crawler.fetch_pdf_attachments(self.request(), page, run)
+
+        self.assertEqual(downloaded[0].content, b"x" * 90)  # 청크 경계를 넘어 온전히 조립된다
+        self.assertEqual(run.failures, [])
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ import unittest
 
 from app.llm import Embedder
 from app.models import EMBEDDING_DIM
-from app.pdf_ingest import PdfIngestor, source_url_for_pdf_attachment
+from app.pdf_ingest import PdfIngestor
 
 
 class FakeEmbedder(Embedder):
@@ -61,13 +61,16 @@ def pages_of(*texts: str):
     return lambda pdf_bytes: list(texts)
 
 
+ATTACHMENT_URL = "https://example.edu/files/guide.pdf"
+
+
 class PdfIngestorTests(unittest.TestCase):
     def test_ingests_one_chunk_per_page_with_page_number_and_pdf_source_type(self) -> None:
         storage = FakeStorage()
         embedder = FakeEmbedder()
         ingestor = PdfIngestor(storage, embedder, page_extractor=pages_of("1페이지 본문", "2페이지 본문"))
 
-        result = ingestor.ingest(1, "수강편람.pdf", b"%PDF-1.4 ...")
+        result = ingestor.ingest(1, ATTACHMENT_URL, "수강편람.pdf", b"%PDF-1.4 ...")
 
         self.assertEqual(result.page_count, 2)
         self.assertEqual(result.chunk_count, 2)
@@ -76,13 +79,22 @@ class PdfIngestorTests(unittest.TestCase):
         self.assertEqual([u["chunk_index"] for u in storage.upserts], [0, 1])
         self.assertEqual([u["content"] for u in storage.upserts], ["1페이지 본문", "2페이지 본문"])
         self.assertTrue(all(u["title"] == "수강편람.pdf" for u in storage.upserts))
-        self.assertEqual(len(set(u["source_url"] for u in storage.upserts)), 1)  # 같은 파일 = 같은 source_url
+
+    def test_source_url_is_the_real_attachment_link(self) -> None:
+        """근거 인용과 재크롤 미관측 판정이 모두 실제 첨부 URL을 기준으로 동작해야 한다."""
+        storage = FakeStorage()
+        ingestor = PdfIngestor(storage, FakeEmbedder(), page_extractor=pages_of("본문", "본문2"))
+
+        result = ingestor.ingest(1, ATTACHMENT_URL, "수강편람.pdf", b"...")
+
+        self.assertEqual(result.source_url, ATTACHMENT_URL)
+        self.assertTrue(all(u["source_url"] == ATTACHMENT_URL for u in storage.upserts))
 
     def test_empty_page_produces_no_chunk(self) -> None:
         storage = FakeStorage()
         ingestor = PdfIngestor(storage, FakeEmbedder(), page_extractor=pages_of("본문 있음", ""))
 
-        result = ingestor.ingest(1, "파일.pdf", b"...")
+        result = ingestor.ingest(1, ATTACHMENT_URL, "파일.pdf", b"...")
 
         self.assertEqual(result.page_count, 2)
         self.assertEqual(result.chunk_count, 1)  # 빈 페이지는 청크를 만들지 않음
@@ -94,27 +106,25 @@ class PdfIngestorTests(unittest.TestCase):
             storage, FakeEmbedder(), chunk_chars=200, overlap_chars=20, page_extractor=pages_of(long_text)
         )
 
-        result = ingestor.ingest(1, "긴파일.pdf", b"...")
+        result = ingestor.ingest(1, ATTACHMENT_URL, "긴파일.pdf", b"...")
 
         self.assertGreater(result.chunk_count, 1)
         self.assertTrue(all(u["page"] == 1 for u in storage.upserts))  # 같은 페이지에서 나온 여러 청크
         self.assertEqual([u["chunk_index"] for u in storage.upserts], list(range(result.chunk_count)))
 
-    def test_reingesting_the_same_file_reuses_the_same_source_url(self) -> None:
+    def test_reingesting_the_same_attachment_is_idempotent_on_the_unique_key(self) -> None:
+        """재크롤에서 같은 첨부를 다시 받아도 같은 (source_url, content_hash, chunk_index)라 멱등하다."""
         storage = FakeStorage()
-        pdf_bytes = b"%PDF-1.4 same-file"
         ingestor = PdfIngestor(storage, FakeEmbedder(), page_extractor=pages_of("본문"))
 
-        first = ingestor.ingest(1, "동일파일.pdf", pdf_bytes)
-        second = ingestor.ingest(1, "동일파일.pdf", pdf_bytes)
+        ingestor.ingest(1, ATTACHMENT_URL, "동일파일.pdf", b"%PDF-1.4 same-file")
+        ingestor.ingest(1, ATTACHMENT_URL, "동일파일.pdf", b"%PDF-1.4 same-file")
 
-        self.assertEqual(first.source_url, second.source_url)
-
-    def test_source_url_differs_for_same_filename_with_different_content(self) -> None:
-        url_a = source_url_for_pdf_attachment("guide.pdf", b"content-a")
-        url_b = source_url_for_pdf_attachment("guide.pdf", b"content-b")
-
-        self.assertNotEqual(url_a, url_b)
+        first, second = storage.upserts
+        self.assertEqual(
+            (first["source_url"], first["content_hash"], first["chunk_index"]),
+            (second["source_url"], second["content_hash"], second["chunk_index"]),
+        )
 
 
 if __name__ == "__main__":

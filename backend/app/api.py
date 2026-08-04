@@ -149,6 +149,8 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         _PROGRESS_MAP[school_id]["progress"] = 0.3
 
         # 재크롤 시 관측 URL로 연속 미관측 카운트를 갱신 (목록이 비면 전량 bump 방지로 스킵)
+        # 첨부 URL까지 함께 관측해야 PDF 청크가 미관측으로 오인돼 만료되지 않는다.
+        # 첨부 목록은 unchanged 페이지에도 채워지므로 재다운로드 없이 관측만으로 충분하다.
         if mode == "recrawl" and run.pages:
             observed_urls: list[str] = []
             for page in run.pages:
@@ -156,6 +158,9 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
                     observed_urls.append(page.source_url)
                 if page.canonical_url:
                     observed_urls.append(page.canonical_url)
+                for attachment in page.attachments:
+                    if attachment.url:
+                        observed_urls.append(attachment.url)
             try:
                 storage.record_url_observations(school_id, observed_urls)
             except Exception:
@@ -216,19 +221,21 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
 
                 # PDF 첨부파일(수강편람 등)은 그래프에 반영하지 않고 문서 RAG 청크로만 저장한다
                 # (07_graph-rag-engine.md — 문서 RAG는 벡터 top-k 전용, 그래프 확장 없음).
-                for filename, pdf_bytes in crawler.fetch_pdf_attachments(crawl_request, page, run):
+                for attachment in crawler.fetch_pdf_attachments(crawl_request, page, run):
                     try:
-                        pdf_result = pdf_ingestor.ingest(school_id, filename, pdf_bytes)
+                        pdf_result = pdf_ingestor.ingest(
+                            school_id, attachment.url, attachment.filename, attachment.content
+                        )
                         _PROGRESS_MAP[school_id]["chunks"] += pdf_result.chunk_count
                         logger.info(
                             "PDF 첨부 인덱싱 완료: school_id=%d, file=%s, pages=%d, chunks=%d",
-                            school_id, filename, pdf_result.page_count, pdf_result.chunk_count,
+                            school_id, attachment.filename, pdf_result.page_count, pdf_result.chunk_count,
                         )
                     except Exception:
                         has_failures = True
                         logger.exception(
                             "PDF 첨부 인덱싱 실패: school_id=%d, file=%s, url=%s",
-                            school_id, filename, page.source_url,
+                            school_id, attachment.filename, attachment.url,
                         )
 
                 # 진행률 계산 (0.4 ~ 0.9)

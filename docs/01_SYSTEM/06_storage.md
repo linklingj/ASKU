@@ -42,7 +42,7 @@ CREATE TABLE schools (
 CREATE TABLE documents (
   doc_id        BIGSERIAL PRIMARY KEY,
   school_id     BIGINT NOT NULL REFERENCES schools(school_id),
-  source_url    TEXT NOT NULL,          -- 원문 링크(근거 제공용). PDF는 합성 URI(attachment:파일명:해시)
+  source_url    TEXT NOT NULL,          -- 원문 링크(근거 제공용). PDF 청크는 첨부파일의 실제 링크
   title         TEXT,
   content       TEXT NOT NULL,          -- 청크 본문
   chunk_index   INT DEFAULT 0,          -- 같은 원문 내 순번
@@ -144,6 +144,8 @@ Storage는 URL 수집·HTML 파싱·LLM 호출·엔티티 의미 판단·스케�
 - MVP는 문서·엔티티·엣지의 유니크 키를 멱등 키로 사용해 중복 반영을 막는다. 실행 이력 테이블과 요청 ID 추적은 Crawler·Scheduler 도입 시 별도로 추가한다.
 - pgvector 임베딩과 관계 테이블 반영이 일부만 성공하면 MVP에서는 오류를 호출자에게 전파한다. 자동 실행 이력, 보상·재처리 큐는 후속 작업으로 유보한다.
 - Crawler의 단일 미관측만으로 삭제하지 않는다. Scheduler가 연속 미관측 N회(`documents.miss_count`) 뒤에 `expired_at`을 기록해 만료를 확정한다. 벡터 검색은 `expired_at IS NULL`인 문서만 반환한다. 만료 문서의 그래프 기여분 물리 삭제 여부는 **미정**이다.
+- `record_url_observations`의 관측 목록에는 **공지 URL과 첨부 URL을 모두** 넣어야 한다. PDF 청크의 `source_url`은 첨부파일의 실제 링크이므로, 공지 URL만 넘기면 살아 있는 PDF가 매 재크롤마다 미관측으로 집계돼 임계 회차 뒤 전량 만료된다. 첨부 목록은 `unchanged` 페이지에도 채워지므로 재다운로드 없이 관측만으로 충분하다([`03_crawler.md`](03_crawler.md) §4).
+- 같은 `source_url`의 내용이 바뀌면 새 `content_hash`로 **새 행이 생기고 이전 행은 남는다**(웹·PDF 공통). URL이 계속 관측되는 한 옛 청크는 만료되지 않으므로 검색 결과에 옛 내용이 섞일 수 있다. 이 정리는 **미정**이며 웹 문서에도 똑같이 해당한다.
 
 ## 7. 조회·백업·확장
 

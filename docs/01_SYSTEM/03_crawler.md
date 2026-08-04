@@ -81,12 +81,22 @@ Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_ur
 {"crawl_id":"uuid","school_id":1,"source_url":"https://...","stage":"policy | fetch | render","error_code":"...","retryable":true,"occurred_at":"ISO-8601"}
 ```
 
-### 출력: `fetch_pdf_attachments(request, page, run) -> [(filename, pdf_bytes)]`
+### 출력: `fetch_pdf_attachments(request, page, run) -> [DownloadedAttachment]`
 
 인덱싱 단계에서 `new`·`changed` 페이지마다 호출한다. `page.attachments` 중 URL이
-`.pdf`로 끝나는 것만 실제로 내려받아 (파일명, 바이트) 튜플 목록을 반환한다.
-HWP/DOC 등은 이 호출에서도 다운로드하지 않는다. 다운로드 실패는 `CrawlFailure`
-(`stage="fetch"`)로 같은 `run`에 기록되고, 나머지 첨부·페이지 처리는 계속된다.
+`.pdf`로 끝나는 것만 실제로 내려받아 `DownloadedAttachment(url, filename, content)`
+목록을 반환한다. HWP/DOC 등은 이 호출에서도 다운로드하지 않는다.
+
+- `url`은 첨부의 실제 링크이며 그대로 `documents.source_url`이 된다(근거 인용 링크이자
+  재크롤 미관측 판정의 키, [`06_storage.md`](06_storage.md)).
+- **크기 상한**: `CrawlSettings.max_attachment_bytes`(기본 50MB)까지만 스트리밍으로
+  읽는다. `Content-Length`가 있으면 본문을 읽기 전에 거르고, 없거나 값이 거짓이면
+  누적 크기로 다시 막는다. 초과분은 `ATTACHMENT_TOO_LARGE` 실패로 기록하고 건너뛴다.
+- **실행당 1회**: 같은 첨부 URL이 여러 공지에 걸려 있어도 `run`당 한 번만 시도한다
+  (`CrawlRun.attempted_attachment_urls`). 중복 다운로드와 중복 임베딩을 막기 위한
+  것으로, 실패한 URL도 시도한 것으로 기록해 재시도 폭주를 함께 막는다.
+- 다운로드 실패는 `CrawlFailure`(`stage="fetch"`)로 같은 `run`에 기록되고, 나머지
+  첨부·페이지 처리는 계속된다.
 
 ## 4. 처리 흐름
 
@@ -100,7 +110,11 @@ HWP/DOC 등은 이 호출에서도 다운로드하지 않는다. 다운로드 �
 8. Backend API의 인덱싱 단계가 `new`·`changed` 페이지마다 `fetch_pdf_attachments()`를
    호출해 PDF 첨부를 내려받고, `PdfIngestor`로 넘겨 문서 RAG 청크로 저장한다(#29,
    [`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
-9. 실행 완료 시 성공·변경·실패·미관측 URL 통계를 저장한다.
+9. 재크롤이면 관측 URL을 `record_url_observations`에 넘긴다. 이때 공지 URL뿐 아니라
+   **모든 `run.pages`의 첨부 URL도 함께 넘긴다** — 첨부 목록은 `unchanged` 페이지에도
+   채워지므로, 재다운로드 없이 관측만으로 PDF 청크가 미관측으로 오인돼 만료되는 것을
+   막을 수 있다([`06_storage.md`](06_storage.md) §6).
+10. 실행 완료 시 성공·변경·실패·미관측 URL 통계를 저장한다.
 
 ```text
 frontier URL -> 정책 검사 -> 목록/상세 수집 -> URL 정규화 + 해시 계산
@@ -116,7 +130,7 @@ frontier URL -> 정책 검사 -> 목록/상세 수집 -> URL 정규화 + 해시 
 | Scheduler | 이전 | 학교별 주기에 따른 `CrawlRequest`를 받는다. |
 | Storage | 양방향 | 기존 본문 해시 조회와 실행 상태 기록을 공개 인터페이스로 요청한다. |
 | Extractor | 다음 | `new`·`changed`의 `CrawledPage`를 전달한다. |
-| PdfIngestor | 다음(간접) | Backend API가 `fetch_pdf_attachments()` 결과(파일명·바이트)를 받아 전달한다([`07_graph-rag-engine.md`](07_graph-rag-engine.md)). |
+| PdfIngestor | 다음(간접) | Backend API가 `fetch_pdf_attachments()` 결과(URL·파일명·바이트)를 받아 전달한다([`07_graph-rag-engine.md`](07_graph-rag-engine.md)). |
 
 호출을 동기 API로 할지 작업 큐로 할지는 **미정**이다. 어느 방식이든 `crawl_id`와 `school_id`를 포함해 실행을 추적한다.
 

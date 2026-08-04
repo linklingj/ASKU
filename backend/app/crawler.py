@@ -45,6 +45,10 @@ class CrawlSettings:
     max_retries: int = 3
     backoff_seconds: float = 1.0
     timeout_seconds: float = 15.0
+    # 첨부파일 1건의 다운로드 상한. 대형 첨부 하나가 워커 메모리를 잠식하고
+    # 청킹·임베딩까지 오래 붙잡는 것을 막는다(03_crawler.md §6).
+    max_attachment_bytes: int = 50 * 1024 * 1024
+    attachment_chunk_bytes: int = 64 * 1024
 
 
 class NoticeAdapter(Protocol):
@@ -226,10 +230,22 @@ class CrawlStorage(Protocol):
     def doc_url_exists(self, school_id: int, source_url: str) -> bool: ...
 
 
+@dataclass(frozen=True)
+class DownloadedAttachment:
+    """실제로 내려받은 첨부파일. ``url``은 근거 링크이자 저장소의 ``source_url``이 된다."""
+
+    url: str
+    filename: str
+    content: bytes
+
+
 @dataclass
 class CrawlRun:
     pages: list[CrawledPage] = field(default_factory=list)
     failures: list[CrawlFailure] = field(default_factory=list)
+    # 같은 첨부가 여러 공지에 걸려 있어도 실행당 한 번만 받는다(중복 다운로드·임베딩 방지).
+    # 성공·실패와 무관하게 시도한 URL을 담아 재시도 폭주도 함께 막는다.
+    attempted_attachment_urls: set[str] = field(default_factory=set)
 
 
 class Crawler:
@@ -352,31 +368,78 @@ class Crawler:
 
     def fetch_pdf_attachments(
         self, request: CrawlRequest, page: CrawledPage, run: CrawlRun
-    ) -> list[tuple[str, bytes]]:
+    ) -> list[DownloadedAttachment]:
         """공지 페이지의 첨부파일 중 PDF만 실제로 내려받는다.
 
         HWP/DOC 등 다른 첨부 타입은 여전히 URL 힌트만 남기고 받지 않는다(PdfIngestor가
-        PDF 전용이기 때문). 다운로드 실패는 ``CrawlFailure``로 기록하고 나머지 첨부·
-        페이지 처리는 계속한다(03_crawler.md).
+        PDF 전용이기 때문). 같은 URL은 실행(``run``)당 한 번만 시도한다 — 같은 첨부가
+        여러 공지에 걸려 있을 때 중복 다운로드·임베딩을 막는다. 다운로드 실패와 크기
+        초과는 ``CrawlFailure``로 기록하고 나머지 첨부·페이지 처리는 계속한다
+        (03_crawler.md §6).
         """
 
-        downloaded: list[tuple[str, bytes]] = []
+        downloaded: list[DownloadedAttachment] = []
         for attachment in page.attachments:
             if not _looks_like_pdf(attachment.url):
                 continue
-            response = self._request(request, attachment.url, run, referer=page.canonical_url)
-            if response is None:
+            if attachment.url in run.attempted_attachment_urls:
                 continue
-            downloaded.append((_attachment_filename(attachment), response.content))
+            run.attempted_attachment_urls.add(attachment.url)
+            content = self._download_attachment(request, attachment.url, run, referer=page.canonical_url)
+            if content is None:
+                continue
+            downloaded.append(
+                DownloadedAttachment(
+                    url=attachment.url,
+                    filename=_attachment_filename(attachment),
+                    content=content,
+                )
+            )
         return downloaded
 
-    def _request(
+    def _download_attachment(
         self, request: CrawlRequest, url: str, run: CrawlRun, *, referer: str | None = None
+    ) -> bytes | None:
+        """첨부 본문을 상한(``max_attachment_bytes``)까지만 스트리밍으로 읽는다.
+
+        ``Content-Length``가 있으면 본문을 읽기 전에 먼저 거르고, 없거나 거짓이면
+        읽는 도중 누적 크기로 다시 막는다.
+        """
+
+        response = self._request(request, url, run, referer=referer, stream=True)
+        if response is None:
+            return None
+
+        limit = self.settings.max_attachment_bytes
+        try:
+            declared = str(response.headers.get("Content-Length") or "")
+            if declared.isdigit() and int(declared) > limit:
+                self._attachment_too_large(request, url, run)
+                return None
+
+            buffered = bytearray()
+            for block in response.iter_content(self.settings.attachment_chunk_bytes):
+                if not block:
+                    continue
+                buffered.extend(block)
+                if len(buffered) > limit:
+                    self._attachment_too_large(request, url, run)
+                    return None
+            return bytes(buffered)
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
+    def _request(
+        self, request: CrawlRequest, url: str, run: CrawlRun, *, referer: str | None = None, stream: bool = False
     ) -> requests.Response | None:
         for attempt in range(self.settings.max_retries + 1):
             try:
                 headers = {"Referer": referer} if referer else None
-                response = self.session.get(url, timeout=self.settings.timeout_seconds, headers=headers)
+                response = self.session.get(
+                    url, timeout=self.settings.timeout_seconds, headers=headers, stream=stream
+                )
                 if response.status_code == 200:
                     self.sleeper(self.settings.request_delay_seconds)
                     return response
@@ -419,6 +482,20 @@ class Crawler:
             parser.parse(response.text.splitlines() if response.status_code == 200 else [])
             self._robots_by_origin[origin] = parser
         return parser.can_fetch("ASKU-Crawler", url)
+
+    @staticmethod
+    def _attachment_too_large(request: CrawlRequest, url: str, run: CrawlRun) -> None:
+        run.failures.append(
+            CrawlFailure(
+                crawl_id=request.crawl_id,
+                school_id=request.school_id,
+                source_url=url,
+                stage="fetch",
+                error_code="ATTACHMENT_TOO_LARGE",
+                retryable=False,
+                occurred_at=datetime.now(timezone.utc),
+            )
+        )
 
     @staticmethod
     def _policy_failure(request: CrawlRequest, url: str, run: CrawlRun) -> None:

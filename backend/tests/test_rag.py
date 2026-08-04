@@ -234,9 +234,12 @@ class GraphRagTests(unittest.TestCase):
         self.assertIn("ASKU —담당→ 팀 (출처: https://ex.edu/1)", context)
 
 
+PDF_URL = "https://ex.edu/files/guide.pdf"
+
+
 class DocumentRagTests(unittest.TestCase):
     def test_answer_uses_pdf_only_vector_hits_with_page_citation(self) -> None:
-        pdf_chunk = doc(1, title="수강편람", url="attachment:guide:abc123", content="졸업 요건 본문", source_type="pdf", page=12)
+        pdf_chunk = doc(1, title="수강편람", url=PDF_URL, content="졸업 요건 본문", source_type="pdf", page=12)
         storage = FakeStorage(hits=[(pdf_chunk, 0.9)])
         generator = FakeGenerator()
 
@@ -250,11 +253,44 @@ class DocumentRagTests(unittest.TestCase):
         self.assertNotIn("[관계]", context)  # 그래프 확장 없음
         self.assertEqual(
             [(source.title, source.url) for source in result.sources],
-            [("수강편람 - 12페이지", "attachment:guide:abc123")],
+            [("수강편람 - 12페이지", PDF_URL)],
         )
         self.assertIn(("vector_search", 1, "pdf"), storage.calls)
         self.assertNotIn("entities_by_norm_keys", storage.method_names())
         self.assertNotIn("neighbors", storage.method_names())
+
+    def test_multiple_pages_of_one_document_merge_into_a_single_source(self) -> None:
+        """같은 PDF의 여러 페이지가 히트하면 한 출처로 합치되 페이지는 모두 남긴다."""
+        page15 = doc(1, title="수강편람", url=PDF_URL, content="15페이지 본문", source_type="pdf", page=15)
+        page3 = doc(2, title="수강편람", url=PDF_URL, content="3페이지 본문", source_type="pdf", page=3)
+        storage = FakeStorage(hits=[(page15, 0.9), (page3, 0.8)])
+
+        result = DocumentRAG(storage, FakeEmbedder(), FakeGenerator()).answer(1, "q")
+
+        self.assertEqual(
+            [(source.title, source.url) for source in result.sources],
+            [("수강편람 - 3, 15페이지", PDF_URL)],  # 문서당 1행, 페이지는 읽기 순서로 정렬
+        )
+
+    def test_sources_keep_top_k_document_order_across_different_files(self) -> None:
+        first = doc(1, title="수강편람", url=PDF_URL, content="본문", source_type="pdf", page=2)
+        second = doc(2, title="학사요람", url="https://ex.edu/files/rules.pdf", content="본문", source_type="pdf", page=7)
+        storage = FakeStorage(hits=[(first, 0.9), (second, 0.8)])
+
+        result = DocumentRAG(storage, FakeEmbedder(), FakeGenerator()).answer(1, "q")
+
+        self.assertEqual(
+            [source.title for source in result.sources],
+            ["수강편람 - 2페이지", "학사요람 - 7페이지"],
+        )
+
+    def test_document_without_page_falls_back_to_title_only(self) -> None:
+        chunk = doc(1, title="첨부문서", url=PDF_URL, content="본문", source_type="pdf", page=None)
+        storage = FakeStorage(hits=[(chunk, 0.9)])
+
+        result = DocumentRAG(storage, FakeEmbedder(), FakeGenerator()).answer(1, "q")
+
+        self.assertEqual(result.sources[0].title, "첨부문서")
 
     def test_no_pdf_hits_returns_no_evidence_without_generate(self) -> None:
         storage = FakeStorage(hits=[])
