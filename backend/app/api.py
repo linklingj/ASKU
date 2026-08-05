@@ -139,7 +139,7 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         "message": "공지 페이지 수집 중...",
     }
     try:
-        from app.crawler import Crawler, adapter_for
+        from app.crawler import Crawler, adapter_for, boards_for
         from app.extractor import DocumentExtractor
         from app.graph_builder import GraphBuilder
         from app.schemas import ExtractionFailure
@@ -156,7 +156,8 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         )
         crawler = Crawler.from_storage(storage)
         adapter = adapter_for(base_url)
-        run = crawler.crawl(crawl_request, adapter)
+        # 세종대처럼 공지가 여러 탭으로 쪼개진 학교는 등록된 게시판을 모두 돈다.
+        run = crawler.crawl_boards(crawl_request, boards_for(base_url), adapter)
         pages = crawler.pages_for_extractor(run)
 
         # 전체 방문/수집된 페이지 수

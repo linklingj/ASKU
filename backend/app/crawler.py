@@ -241,6 +241,41 @@ def adapter_for(base_url: str) -> CommonNoticeAdapter:
     return ADAPTER_REGISTRY.get(host.lower(), CommonNoticeAdapter)()
 
 
+@dataclass(frozen=True)
+class Board:
+    """수집할 게시판 하나. `label` 은 공지의 분류 힌트로 전달된다."""
+
+    url: str
+    label: str | None = None
+
+
+# 호스트별 하위 게시판(탭). 한 학교의 공지가 탭으로 쪼개져 있으면 여기에 적는다.
+# 미등록 호스트는 등록 URL 하나만 수집한다.
+#
+# 자동 탐색은 하지 않는다. 세종대는 같은 메뉴에 `qna1~8.do`(Q&A)가 섞여 있어
+# URL 패턴만으로는 공지 게시판을 가려낼 수 없다.
+BOARD_REGISTRY: dict[str, tuple[Board, ...]] = {
+    "www.sejong.ac.kr": (
+        Board("https://www.sejong.ac.kr/kor/intro/notice1.do", "일반공지"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice2.do", "입학공지"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice3.do", "학사공지"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice4.do", "국제교류"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice6.do", "취업"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice7.do", "장학"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice8.do", "채용·모집"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice9.do", "법무감사"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice10.do", "입찰공고"),
+    ),
+}
+
+
+def boards_for(base_url: str) -> tuple[Board, ...]:
+    """`base_url` 호스트가 등록돼 있으면 하위 게시판 전체를, 아니면 그 URL 하나를 준다."""
+
+    host = (urlsplit(base_url).hostname or "").lower()
+    return BOARD_REGISTRY.get(host) or (Board(base_url),)
+
+
 HashExists = Callable[[int, str, str], bool]
 UrlExists = Callable[[int, str], bool]
 RobotsAllowed = Callable[[str], bool]
@@ -364,18 +399,49 @@ class Crawler:
         )
 
     def crawl(self, request: CrawlRequest, adapter: NoticeAdapter) -> CrawlRun:
+        """`base_url` 게시판 하나를 수집한다."""
+
+        return self.crawl_boards(request, (Board(request.base_url),), adapter)
+
+    def crawl_boards(self, request: CrawlRequest, boards: Iterable[Board], adapter: NoticeAdapter) -> CrawlRun:
+        """하위 게시판(탭) 여러 개를 한 번의 크롤로 수집한다.
+
+        예산과 중복 URL 집합은 게시판 사이에서 공유한다. 게시판마다 새로 잡으면
+        탭이 늘어난 만큼 총 요청량이 그대로 늘어나고, 여러 탭에 함께 걸린 공지를
+        중복 수집하게 된다.
+        """
+
         run = CrawlRun()
         scope = request.scope
-        max_listing_pages = scope.max_listing_pages if scope else 10
-        max_items = scope.max_items if scope else 300
         budget = _CrawlBudget(
             max_requests=scope.max_requests if scope else 500,
             deadline=self.clock() + (scope.max_duration_seconds if scope else 600.0),
             clock=self.clock,
         )
-        listing_url = request.base_url
-        visited_listing_urls: set[str] = set()
         visited_detail_urls: set[str] = set()
+        for board in boards:
+            self._crawl_board(request, board, adapter, run, budget, visited_detail_urls)
+            if budget.exhausted:
+                break
+        return run
+
+    def _crawl_board(
+        self,
+        request: CrawlRequest,
+        board: Board,
+        adapter: NoticeAdapter,
+        run: CrawlRun,
+        budget: _CrawlBudget,
+        visited_detail_urls: set[str],
+    ) -> None:
+        scope = request.scope
+        max_listing_pages = scope.max_listing_pages if scope else 10
+        max_items = scope.max_items if scope else 300
+        listing_url = board.url
+        visited_listing_urls: set[str] = set()
+        # 건수 상한은 게시판마다 따로 센다. 공유하면 공지가 많은 첫 탭이 상한을 다 써
+        # 뒤쪽 탭이 한 건도 수집되지 않는다. 총량은 예산(`max_requests`)이 막는다.
+        collected = 0
 
         for _ in range(max_listing_pages):
             canonical_listing_url = normalize_url(listing_url)
@@ -399,8 +465,8 @@ class Crawler:
             page_had_updates = False
 
             for item in adapter.parse_listing(listing_html, listing_url):
-                if len(visited_detail_urls) >= max_items:
-                    return run
+                if collected >= max_items:
+                    return
                 canonical_url = normalize_detail_url(item.url)
                 if canonical_url in visited_detail_urls or not is_allowed(canonical_url, request):
                     continue
@@ -414,7 +480,7 @@ class Crawler:
                 if html is None:
                     if budget.exhausted:
                         self._budget_failure(request, canonical_url, run, budget)
-                        return run
+                        return
                     continue
                 content_hash = html_hash(html)
                 if self.hash_exists(request.school_id, canonical_url, content_hash):
@@ -423,6 +489,7 @@ class Crawler:
                     status = "changed"
                 else:
                     status = "new"
+                collected += 1
                 page_had_items = True
                 page_had_updates = page_had_updates or status != "unchanged"
 
@@ -433,7 +500,9 @@ class Crawler:
                         source_url=item.url,
                         canonical_url=canonical_url,
                         title_hint=item.title_hint,
-                        category_hint=item.category_hint,
+                        # 게시판 라벨은 목록이 분류를 주지 않을 때만 쓴다. 홍익대처럼
+                        # 행마다 분류가 붙는 학교의 값을 탭 이름으로 덮으면 안 된다.
+                        category_hint=item.category_hint or board.label,
                         author_hint=item.author_hint,
                         published_at_hint=item.published_at_hint,
                         raw_html=html,
@@ -452,7 +521,6 @@ class Crawler:
             if next_url is None or not is_allowed(normalize_url(next_url), request):
                 break
             listing_url = next_url
-        return run
 
     def pages_for_extractor(self, run: CrawlRun) -> list[CrawledPage]:
         """신규·변경 페이지만 다음 단계로 전달한다."""

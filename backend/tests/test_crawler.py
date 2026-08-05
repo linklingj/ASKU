@@ -5,6 +5,7 @@ import unittest
 import requests
 
 from app.crawler import (
+    Board,
     CommonNoticeAdapter,
     Crawler,
     CrawlSettings,
@@ -13,6 +14,7 @@ from app.crawler import (
     SkkuNoticeAdapter,
     YonseiNoticeAdapter,
     adapter_for,
+    boards_for,
     html_hash,
     normalize_detail_url,
     normalize_url,
@@ -556,6 +558,120 @@ class ListingPolicyTests(unittest.TestCase):
         self.assertEqual(run.pages, [])
         self.assertEqual(run.failures[0].error_code, "ROBOTS_UNREACHABLE")
         self.assertTrue(run.failures[0].retryable)
+
+
+class MultiBoardTests(unittest.TestCase):
+    """공지가 여러 탭으로 쪼개진 학교(세종대) 수집."""
+
+    FIRST = "https://example.edu/notice/list.do"
+    SECOND = "https://example.edu/notice/list2.do"
+
+    def board_html(self, ids: list[int]) -> str:
+        """분류 칸이 없는 목록. 이런 학교에서만 탭 이름이 분류로 쓰인다."""
+
+        rows = "".join(
+            f"<tr><td>{i}</td><td><a href='/notice/view.do?id={i}'>공지 {i}</a></td>"
+            f"<td>학사팀</td><td>2026-07-0{i}</td></tr>"
+            for i in ids
+        )
+        return f"<table><tbody>{rows}</tbody></table>"
+
+    def crawler(self, session: FakeSession) -> Crawler:
+        return Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+
+    def request(self, **overrides) -> CrawlRequest:
+        return CrawlRequest(
+            crawl_id=uuid4(),
+            school_id=1,
+            base_url=self.FIRST,
+            mode="initial",
+            scope=CrawlScope(allowed_hosts=["example.edu"], **overrides),
+        )
+
+    def test_every_board_is_crawled_and_label_fills_empty_category(self) -> None:
+        session = FakeSession(
+            {
+                self.FIRST: FakeResponse(200, self.board_html([1, 2])),
+                self.SECOND: FakeResponse(200, self.board_html([3])),
+                "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+                "https://example.edu/notice/view.do?id=2": FakeResponse(200, "<main>2</main>"),
+                "https://example.edu/notice/view.do?id=3": FakeResponse(200, "<main>3</main>"),
+            }
+        )
+        boards = (Board(self.FIRST, "일반공지"), Board(self.SECOND, "장학"))
+
+        run = self.crawler(session).crawl_boards(self.request(), boards, CommonNoticeAdapter())
+
+        self.assertEqual(len(run.pages), 3)
+        self.assertIn(self.SECOND, session.calls)
+        # 목록이 분류를 주지 않으므로 탭 이름이 채워진다
+        self.assertEqual([page.category_hint for page in run.pages], ["일반공지", "일반공지", "장학"])
+
+    def test_board_label_does_not_overwrite_listing_category(self) -> None:
+        """홍익대처럼 행마다 분류가 붙는 학교의 값을 탭 이름으로 덮으면 안 된다."""
+
+        listing = "<table><tbody><tr><td>1</td><td>입시</td><td><a href='/notice/view.do?id=1'>공지</a></td><td>입학팀</td><td>2026-07-01</td></tr></tbody></table>"
+        session = FakeSession(
+            {
+                self.FIRST: FakeResponse(200, listing),
+                "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+            }
+        )
+
+        run = self.crawler(session).crawl_boards(self.request(), (Board(self.FIRST, "장학"),), CommonNoticeAdapter())
+
+        self.assertEqual(run.pages[0].category_hint, "입시")
+
+    def test_notice_listed_in_two_boards_is_collected_once(self) -> None:
+        """탭 사이에서도 중복 URL 을 걸러야 같은 공지를 두 번 받지 않는다."""
+
+        session = FakeSession(
+            {
+                self.FIRST: FakeResponse(200, self.board_html([1])),
+                self.SECOND: FakeResponse(200, self.board_html([1])),
+                "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+            }
+        )
+        boards = (Board(self.FIRST, "일반공지"), Board(self.SECOND, "장학"))
+
+        run = self.crawler(session).crawl_boards(self.request(), boards, CommonNoticeAdapter())
+
+        self.assertEqual(len(run.pages), 1)
+        self.assertEqual(session.calls.count("https://example.edu/notice/view.do?id=1"), 1)
+
+    def test_budget_is_shared_across_boards(self) -> None:
+        """게시판마다 예산을 새로 잡으면 탭이 늘어난 만큼 총 요청량이 늘어난다."""
+
+        session = FakeSession(
+            {
+                self.FIRST: FakeResponse(200, self.board_html([1, 2])),
+                self.SECOND: FakeResponse(200, self.board_html([3])),
+                "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+                "https://example.edu/notice/view.do?id=2": FakeResponse(200, "<main>2</main>"),
+                "https://example.edu/notice/view.do?id=3": FakeResponse(200, "<main>3</main>"),
+            }
+        )
+        boards = (Board(self.FIRST, "일반공지"), Board(self.SECOND, "장학"))
+
+        run = self.crawler(session).crawl_boards(self.request(max_requests=3), boards, CommonNoticeAdapter())
+
+        self.assertEqual(len(session.calls), 3)
+        self.assertNotIn(self.SECOND, session.calls)  # 예산이 바닥나면 다음 탭으로 넘어가지 않는다
+        self.assertEqual([f.error_code for f in run.failures], ["REQUEST_BUDGET_EXCEEDED"])
+
+    def test_boards_for_returns_registered_tabs_or_the_url_itself(self) -> None:
+        sejong = boards_for("https://www.sejong.ac.kr/kor/intro/notice1.do")
+        self.assertGreater(len(sejong), 1)
+        self.assertIn("장학", [board.label for board in sejong])
+
+        other = boards_for("https://example.edu/notice/list.do")
+        self.assertEqual(other, (Board("https://example.edu/notice/list.do"),))
 
 
 class CrawlBudgetTests(unittest.TestCase):
