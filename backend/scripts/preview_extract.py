@@ -13,7 +13,7 @@ import json
 from uuid import uuid4
 
 from app.crawler import Crawler
-from app.extractor import DocumentExtractor, SejongContentParser
+from app.extractor import DocumentExtractor
 from app.llm import GeminiProvider
 from app.schemas import CrawlRequest, CrawlScope, ExtractedChunk, ExtractionFailure
 from preview_crawl import SCHOOLS
@@ -34,10 +34,8 @@ def main() -> None:
         raise SystemExit("--max-items는 실제 API 비용을 위해 1~5 사이여야 합니다.")
 
     try:
-        # 이 개발용 미리보기는 모든 학교에 임시 school_id=0을 쓴다. 운영에서는
-        # 실제 세종대 school_id를 key로 같은 파서를 등록한다.
-        parsers = {0: SejongContentParser()} if args.school == "sejong" else None
-        extractor = DocumentExtractor(GeminiProvider(), parsers=parsers)
+        # 본문 파서는 상세 URL의 호스트로 자동 선택된다(`content_parser_for`).
+        extractor = DocumentExtractor(GeminiProvider())
     except (ImportError, ValueError) as error:
         raise SystemExit(
             "Gemini 설정이 필요합니다. GEMINI_API_KEY와 GEMINI_MODEL을 설정하고 "

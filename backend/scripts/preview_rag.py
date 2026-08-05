@@ -26,7 +26,7 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 from app.crawler import Crawler
-from app.extractor import DocumentExtractor, SejongContentParser
+from app.extractor import DocumentExtractor
 from app.graph_builder import GraphBuilder
 from app.llm import GeminiProvider, LocalEmbedder
 from app.models import Document, Edge, Entity
@@ -198,8 +198,8 @@ def main() -> None:
     )
     crawler = Crawler(hash_exists=lambda *_args: False)
     pages = crawler.pages_for_extractor(crawler.crawl(request, school.adapter_factory()))
-    parsers = {0: SejongContentParser()} if args.school == "sejong" else None
-    extractor = DocumentExtractor(gemini, parsers=parsers)
+    # 본문 파서는 상세 URL의 호스트로 자동 선택된다(`content_parser_for`).
+    extractor = DocumentExtractor(gemini)
     builder = GraphBuilder(storage, embedder)
 
     print(f"\n=== 색인: {school.base_url} (최대 {args.max_items}건) ===")

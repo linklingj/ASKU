@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 import re
-from time import sleep
+from time import monotonic, sleep
 from typing import Callable, Iterable, Protocol
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -161,11 +161,15 @@ class YonseiNoticeAdapter(CommonNoticeAdapter):
 
 
 class SejongNoticeAdapter(CommonNoticeAdapter):
-    """세종대 K2Web 공지 목록용 학교별 오버라이드."""
+    """세종대 K2Web 공지 목록용 학교별 오버라이드.
+
+    ``tr.b-top-box``는 상단 고정공지에만 붙으므로 행 선택자로 쓰면 일반 공지가
+    통째로 누락된다(실측: 16행 중 6행). 상세 링크가 있는 행 전체를 읽는다.
+    """
 
     def parse_listing(self, html: str, page_url: str) -> Iterable[ListingItem]:
         soup = BeautifulSoup(html, "html.parser")
-        for row in soup.select("tr.b-top-box"):
+        for row in soup.select("table tbody tr"):
             link = row.select_one(".b-title-box a[href*='mode=view'][href*='articleNo']")
             if link is None or not link.get("href"):
                 continue
@@ -215,6 +219,63 @@ class SkkuNoticeAdapter(CommonNoticeAdapter):
             )
 
 
+# 호스트별 학교 어댑터. 미등록 호스트는 `CommonNoticeAdapter` 로 폴백한다.
+# 새 학교를 추가할 땐 어댑터 클래스와 함께 여기에 호스트를 등록한다.
+ADAPTER_REGISTRY: dict[str, type[CommonNoticeAdapter]] = {
+    "www.yonsei.ac.kr": YonseiNoticeAdapter,
+    "www.sejong.ac.kr": SejongNoticeAdapter,
+    "www.hongik.ac.kr": HongikNoticeAdapter,
+    "www.skku.edu": SkkuNoticeAdapter,
+}
+
+
+def adapter_for(base_url: str) -> CommonNoticeAdapter:
+    """`base_url` 호스트에 맞는 어댑터를 만든다.
+
+    공용 파서는 `table tbody tr` 기반이라 연세대(`ul > li`)·성균관대(`dl`)처럼
+    구조가 다른 게시판에서는 목록을 한 줄도 읽지 못한다. 등록된 학교는 반드시
+    전용 어댑터로 내려보내야 한다.
+    """
+
+    host = urlsplit(base_url).hostname or ""
+    return ADAPTER_REGISTRY.get(host.lower(), CommonNoticeAdapter)()
+
+
+@dataclass(frozen=True)
+class Board:
+    """수집할 게시판 하나. `label` 은 공지의 분류 힌트로 전달된다."""
+
+    url: str
+    label: str | None = None
+
+
+# 호스트별 하위 게시판(탭). 한 학교의 공지가 탭으로 쪼개져 있으면 여기에 적는다.
+# 미등록 호스트는 등록 URL 하나만 수집한다.
+#
+# 자동 탐색은 하지 않는다. 세종대는 같은 메뉴에 `qna1~8.do`(Q&A)가 섞여 있어
+# URL 패턴만으로는 공지 게시판을 가려낼 수 없다.
+BOARD_REGISTRY: dict[str, tuple[Board, ...]] = {
+    "www.sejong.ac.kr": (
+        Board("https://www.sejong.ac.kr/kor/intro/notice1.do", "일반공지"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice2.do", "입학공지"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice3.do", "학사공지"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice4.do", "국제교류"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice6.do", "취업"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice7.do", "장학"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice8.do", "채용·모집"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice9.do", "법무감사"),
+        Board("https://www.sejong.ac.kr/kor/intro/notice10.do", "입찰공고"),
+    ),
+}
+
+
+def boards_for(base_url: str) -> tuple[Board, ...]:
+    """`base_url` 호스트가 등록돼 있으면 하위 게시판 전체를, 아니면 그 URL 하나를 준다."""
+
+    host = (urlsplit(base_url).hostname or "").lower()
+    return BOARD_REGISTRY.get(host) or (Board(base_url),)
+
+
 HashExists = Callable[[int, str, str], bool]
 UrlExists = Callable[[int, str], bool]
 RobotsAllowed = Callable[[str], bool]
@@ -232,6 +293,57 @@ class CrawlStorage(Protocol):
 class CrawlRun:
     pages: list[CrawledPage] = field(default_factory=list)
     failures: list[CrawlFailure] = field(default_factory=list)
+
+
+@dataclass
+class _BoardCursor:
+    """게시판 하나의 순회 상태. 라운드 로빈으로 한 페이지씩 처리하며 이어간다."""
+
+    board: Board
+    listing_url: str | None
+    visited_listing_urls: set[str] = field(default_factory=set)
+    collected: int = 0
+    pages_done: int = 0
+
+    @property
+    def finished(self) -> bool:
+        """더 볼 목록 페이지가 없다."""
+
+        return self.listing_url is None
+
+
+@dataclass
+class _CrawlBudget:
+    """크롤 1회 전체를 묶는 요청 수·시간 예산.
+
+    페이지·건수 상한은 게시판마다 따로 적용되므로 하위 게시판이 늘어나면 총
+    요청량을 못 막는다. 예산이 바닥나면 예외를 던지지 않고 그때까지 모은 결과를
+    유지한 채 수집을 멈춘다 — 부분 수집이 전량 실패보다 낫다.
+    """
+
+    max_requests: int
+    deadline: float
+    clock: Callable[[], float]
+    requests_used: int = 0
+    exceeded_code: str | None = None
+
+    def charge(self) -> bool:
+        """요청 하나를 예산에서 차감한다. 예산이 남아 있으면 True."""
+
+        if self.exceeded_code is not None:
+            return False
+        if self.requests_used >= self.max_requests:
+            self.exceeded_code = "REQUEST_BUDGET_EXCEEDED"
+            return False
+        if self.clock() >= self.deadline:
+            self.exceeded_code = "TIME_BUDGET_EXCEEDED"
+            return False
+        self.requests_used += 1
+        return True
+
+    @property
+    def exhausted(self) -> bool:
+        return self.exceeded_code is not None
 
 
 @dataclass(frozen=True)
@@ -277,6 +389,7 @@ class Crawler:
         session: requests.Session | None = None,
         sleeper: Callable[[float], None] = sleep,
         robots_allowed: RobotsAllowed | None = None,
+        clock: Callable[[], float] = monotonic,
     ) -> None:
         self.hash_exists = hash_exists
         self.url_exists = url_exists
@@ -288,6 +401,7 @@ class Crawler:
         if session is None:
             self.session.headers.update({"User-Agent": USER_AGENT})
         self.sleeper = sleeper
+        self.clock = clock
         self.robots_allowed = robots_allowed or self._robots_allowed
         self._policy_by_origin: dict[str, RobotsPolicy] = {}
 
@@ -302,81 +416,159 @@ class Crawler:
         )
 
     def crawl(self, request: CrawlRequest, adapter: NoticeAdapter) -> CrawlRun:
+        """`base_url` 게시판 하나를 수집한다."""
+
+        return self.crawl_boards(request, (Board(request.base_url),), adapter)
+
+    def crawl_boards(self, request: CrawlRequest, boards: Iterable[Board], adapter: NoticeAdapter) -> CrawlRun:
+        """하위 게시판(탭) 여러 개를 한 번의 크롤로 수집한다.
+
+        게시판을 하나씩 끝까지 도는 대신 **한 페이지씩 번갈아** 돈다. 목록은
+        최신순이므로 이렇게 하면 예산이 부족해도 모든 탭의 최신 공지가 먼저
+        확보된다. 순서대로 돌면 공지가 많은 앞쪽 탭이 예산을 다 써서 뒤쪽 탭이
+        한 건도 수집되지 않는다.
+
+        예산과 중복 URL 집합은 게시판 사이에서 공유한다. 게시판마다 새로 잡으면
+        탭이 늘어난 만큼 총 요청량이 그대로 늘어나고, 여러 탭에 함께 걸린 공지를
+        중복 수집하게 된다.
+        """
+
         run = CrawlRun()
+        scope = request.scope
+        budget = _CrawlBudget(
+            max_requests=scope.max_requests if scope else 500,
+            deadline=self.clock() + (scope.max_duration_seconds if scope else 600.0),
+            clock=self.clock,
+        )
+        visited_detail_urls: set[str] = set()
+        cursors = [_BoardCursor(board=board, listing_url=board.url) for board in boards]
+
+        while cursors and not budget.exhausted:
+            for cursor in list(cursors):
+                if budget.exhausted:
+                    break
+                self._crawl_listing_page(request, cursor, adapter, run, budget, visited_detail_urls)
+                if cursor.finished:
+                    cursors.remove(cursor)
+        return run
+
+    def _crawl_listing_page(
+        self,
+        request: CrawlRequest,
+        cursor: "_BoardCursor",
+        adapter: NoticeAdapter,
+        run: CrawlRun,
+        budget: _CrawlBudget,
+        visited_detail_urls: set[str],
+    ) -> None:
+        """게시판 하나의 목록 **한 페이지**를 처리하고 커서를 다음 페이지로 옮긴다."""
+
         scope = request.scope
         max_listing_pages = scope.max_listing_pages if scope else 10
         max_items = scope.max_items if scope else 300
-        listing_url = request.base_url
-        visited_listing_urls: set[str] = set()
-        visited_detail_urls: set[str] = set()
+        board = cursor.board
+        listing_url = cursor.listing_url
+        assert listing_url is not None  # `finished` 커서는 호출자가 걸러낸다
+        cursor.listing_url = None  # 아래에서 다음 페이지를 찾으면 다시 채운다
 
-        for _ in range(max_listing_pages):
-            canonical_listing_url = normalize_url(listing_url)
-            if canonical_listing_url in visited_listing_urls:
-                break
-            visited_listing_urls.add(canonical_listing_url)
-            # 첫 페이지(base_url)뿐 아니라 다음 목록 페이지도 매번 검사한다. 페이지네이션
-            # URL 만 막아 둔 robots.txt 를 2페이지부터 그냥 통과시키면 안 된다.
-            if not self.robots_allowed(listing_url):
-                self._policy_failure(request, listing_url, run)
-                break
-            listing_html = self._fetch(request, listing_url, run)
-            if listing_html is None:
-                break
+        canonical_listing_url = normalize_url(listing_url)
+        if canonical_listing_url in cursor.visited_listing_urls or cursor.pages_done >= max_listing_pages:
+            return
+        cursor.visited_listing_urls.add(canonical_listing_url)
+        cursor.pages_done += 1
 
-            for item in adapter.parse_listing(listing_html, listing_url):
-                if len(visited_detail_urls) >= max_items:
-                    return run
-                canonical_url = normalize_detail_url(item.url)
-                if canonical_url in visited_detail_urls or not is_allowed(canonical_url, request):
-                    continue
-                visited_detail_urls.add(canonical_url)
-                if not self.robots_allowed(canonical_url):
-                    self._policy_failure(request, canonical_url, run)
-                    continue
-                # 일부 학교는 목록에서 상세 공지로 이동한 요청만 허용한다.
-                # 브라우저 클릭과 동일하게 현재 목록 URL을 Referer로 전달한다.
-                html = self._fetch(request, canonical_url, run, referer=listing_url)
-                if html is None:
-                    continue
-                content_hash = html_hash(html)
-                if self.hash_exists(request.school_id, canonical_url, content_hash):
-                    status = "unchanged"
-                elif self.url_exists and self.url_exists(request.school_id, canonical_url):
-                    status = "changed"
-                else:
-                    status = "new"
+        # 첫 페이지(base_url)뿐 아니라 다음 목록 페이지도 매번 검사한다. 페이지네이션
+        # URL 만 막아 둔 robots.txt 를 2페이지부터 그냥 통과시키면 안 된다.
+        if not self.robots_allowed(listing_url):
+            self._policy_failure(request, listing_url, run)
+            return
+        listing_html = self._fetch(request, listing_url, run, budget=budget)
+        if listing_html is None:
+            if budget.exhausted:
+                self._budget_failure(request, listing_url, run, budget)
+            return
 
-                run.pages.append(
-                    CrawledPage(
-                        crawl_id=request.crawl_id,
-                        school_id=request.school_id,
-                        source_url=item.url,
-                        canonical_url=canonical_url,
-                        title_hint=item.title_hint,
-                        category_hint=item.category_hint,
-                        author_hint=item.author_hint,
-                        published_at_hint=item.published_at_hint,
-                        raw_html=html,
-                        attachments=adapter.parse_attachments(html, canonical_url),
-                        content_hash=content_hash,
-                        fetched_at=datetime.now(timezone.utc),
-                        crawl_status=status,
-                    )
+        # 재크롤 조기 종료 판단용. 목록은 최신순이라 한 페이지가 통째로
+        # unchanged 면 뒤쪽은 볼 필요가 없다.
+        page_had_items = False
+        page_had_updates = False
+
+        for item in adapter.parse_listing(listing_html, listing_url):
+            # 건수 상한은 게시판마다 따로 센다. 공유하면 공지가 많은 첫 탭이 상한을
+            # 다 써 뒤쪽 탭이 한 건도 수집되지 않는다.
+            if cursor.collected >= max_items:
+                return
+            canonical_url = normalize_detail_url(item.url)
+            if canonical_url in visited_detail_urls or not is_allowed(canonical_url, request):
+                continue
+            visited_detail_urls.add(canonical_url)
+            if not self.robots_allowed(canonical_url):
+                self._policy_failure(request, canonical_url, run)
+                continue
+            # 일부 학교는 목록에서 상세 공지로 이동한 요청만 허용한다.
+            # 브라우저 클릭과 동일하게 현재 목록 URL을 Referer로 전달한다.
+            html = self._fetch(request, canonical_url, run, referer=listing_url, budget=budget)
+            if html is None:
+                if budget.exhausted:
+                    self._budget_failure(request, canonical_url, run, budget)
+                    return
+                continue
+            content_hash = html_hash(html)
+            if self.hash_exists(request.school_id, canonical_url, content_hash):
+                status = "unchanged"
+            elif self.url_exists and self.url_exists(request.school_id, canonical_url):
+                status = "changed"
+            else:
+                status = "new"
+            cursor.collected += 1
+            page_had_items = True
+            page_had_updates = page_had_updates or status != "unchanged"
+
+            run.pages.append(
+                CrawledPage(
+                    crawl_id=request.crawl_id,
+                    school_id=request.school_id,
+                    source_url=item.url,
+                    canonical_url=canonical_url,
+                    title_hint=item.title_hint,
+                    # 게시판 라벨은 목록이 분류를 주지 않을 때만 쓴다. 홍익대처럼
+                    # 행마다 분류가 붙는 학교의 값을 탭 이름으로 덮으면 안 된다.
+                    category_hint=item.category_hint or board.label,
+                    author_hint=item.author_hint,
+                    published_at_hint=item.published_at_hint,
+                    raw_html=html,
+                    attachments=adapter.parse_attachments(html, canonical_url),
+                    content_hash=content_hash,
+                    fetched_at=datetime.now(timezone.utc),
+                    crawl_status=status,
                 )
+            )
 
-            next_url = adapter.next_listing_url(listing_html, listing_url)
-            if next_url is None or not is_allowed(normalize_url(next_url), request):
-                break
-            listing_url = next_url
-        return run
+        # 재크롤에서 이 페이지가 전부 unchanged 였다면 더 오래된 페이지도 마찬가지다.
+        if request.mode == "recrawl" and page_had_items and not page_had_updates:
+            return
+
+        next_url = adapter.next_listing_url(listing_html, listing_url)
+        if next_url is not None and is_allowed(normalize_url(next_url), request):
+            cursor.listing_url = next_url
 
     def pages_for_extractor(self, run: CrawlRun) -> list[CrawledPage]:
         """신규·변경 페이지만 다음 단계로 전달한다."""
         return [page for page in run.pages if page.crawl_status in {"new", "changed"}]
 
-    def _fetch(self, request: CrawlRequest, url: str, run: CrawlRun, *, referer: str | None = None) -> str | None:
+    def _fetch(
+        self,
+        request: CrawlRequest,
+        url: str,
+        run: CrawlRun,
+        *,
+        referer: str | None = None,
+        budget: _CrawlBudget | None = None,
+    ) -> str | None:
         for attempt in range(self.settings.max_retries + 1):
+            # 재시도도 서버에 대한 요청이므로 시도마다 예산을 쓴다.
+            if budget is not None and not budget.charge():
+                return None
             try:
                 headers = {"Referer": referer} if referer else None
                 response = self.session.get(url, timeout=self.settings.timeout_seconds, headers=headers)
@@ -468,6 +660,27 @@ class Crawler:
                 # 네트워크·서버 오류로 robots.txt 를 못 읽은 것은 정책 거부와 달리 나중에 풀린다.
                 error_code=error_code,
                 retryable=error_code != "ROBOTS_DISALLOWED",
+                occurred_at=datetime.now(timezone.utc),
+            )
+        )
+
+    @staticmethod
+    def _budget_failure(request: CrawlRequest, url: str, run: CrawlRun, budget: _CrawlBudget) -> None:
+        """예산 소진으로 중단했다는 사실을 남긴다.
+
+        기록이 없으면 "수집이 왜 여기서 끊겼는지" 알 수 없어 목록이 짧은 것인지
+        상한에 걸린 것인지 구분되지 않는다. 다음 크롤에서 이어받으면 되므로
+        재시도 가능으로 표시한다.
+        """
+
+        run.failures.append(
+            CrawlFailure(
+                crawl_id=request.crawl_id,
+                school_id=request.school_id,
+                source_url=url,
+                stage="budget",
+                error_code=budget.exceeded_code or "BUDGET_EXCEEDED",
+                retryable=True,
                 occurred_at=datetime.now(timezone.utc),
             )
         )

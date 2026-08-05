@@ -13,6 +13,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -26,6 +27,7 @@ from app.schemas import (
     AttachmentListResponse,
     AttachmentUploadResponse,
     CrawlRequest,
+    CrawlScope,
     EntityDetailResponse,
     EntityNeighbor,
     ErrorDetail,
@@ -137,7 +139,7 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         "message": "공지 페이지 수집 중...",
     }
     try:
-        from app.crawler import CommonNoticeAdapter, Crawler
+        from app.crawler import Crawler, adapter_for, boards_for
         from app.extractor import DocumentExtractor
         from app.graph_builder import GraphBuilder
         from app.schemas import ExtractionFailure
@@ -148,10 +150,14 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
             school_id=school_id,
             base_url=base_url,
             mode=mode,
+            # 경로는 제한하지 않는다. 같은 학교 안에서 다른 게시판으로 넘어가는
+            # 공지(예: 홍익대 목록에 섞인 대학원 공지)를 놓치지 않기 위해서다.
+            scope=CrawlScope(allowed_hosts=[urlsplit(base_url).hostname or ""]),
         )
         crawler = Crawler.from_storage(storage)
-        adapter = CommonNoticeAdapter()
-        run = crawler.crawl(crawl_request, adapter)
+        adapter = adapter_for(base_url)
+        # 세종대처럼 공지가 여러 탭으로 쪼개진 학교는 등록된 게시판을 모두 돈다.
+        run = crawler.crawl_boards(crawl_request, boards_for(base_url), adapter)
         pages = crawler.pages_for_extractor(run)
 
         # 전체 방문/수집된 페이지 수

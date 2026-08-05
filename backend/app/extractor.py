@@ -11,6 +11,7 @@ import logging
 import re
 from time import sleep
 from typing import Callable, Protocol
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 from pydantic import ValidationError
@@ -82,12 +83,15 @@ class CommonContentParser:
         return CleanedDocument(title=title, content=content, used_body_fallback=selected_body is None)
 
 
-class SejongContentParser:
-    """세종대 공지 상세 페이지의 실제 게시글 영역만 선택하는 파서.
+class K2WebContentParser:
+    """K2Web 게시판 상세 페이지의 실제 게시글 영역만 선택하는 파서.
 
-    세종대 ``main`` 영역에는 대학 소개·챗봇·메뉴도 함께 들어간다. 공통 파서가
-    그 전체를 본문으로 오인하지 않도록, 게시판의 ``.b-content-box``를 명시적으로
-    선택한다. 해당 선택자가 바뀌면 ``DocumentExtractor``가 공통 파서로 폴백한다.
+    이 계열 상세 페이지에는 본문 외에 대학 소개·챗봇·메뉴가 함께 들어가고, 본문
+    바로 아래에 이전·다음 글 목록이 붙는다. 공통 파서는 이 전체를 본문으로 오인해
+    다른 공지의 제목까지 본문에 섞는다. 게시판의 ``.b-content-box``를 명시적으로
+    선택해 막는다. 선택자가 바뀌면 ``DocumentExtractor``가 공통 파서로 폴백한다.
+
+    현재 세종대·홍익대가 같은 마크업을 쓴다.
     """
 
     _TITLE_SELECTORS = (".b-title", *CommonContentParser._TITLE_SELECTORS)
@@ -101,8 +105,23 @@ class SejongContentParser:
         title = _first_text(soup, self._TITLE_SELECTORS)
         body = _first_node(soup, self._CONTENT_SELECTORS)
         if body is None:
-            raise ValueError("sejong content selector not found")
+            raise ValueError("k2web content selector not found")
         return CleanedDocument(title=title, content=_body_text(body))
+
+
+# 호스트별 본문 파서. 미등록 호스트는 `CommonContentParser` 로 폴백한다.
+# 크롤러의 `ADAPTER_REGISTRY` 와 같은 기준(호스트)으로 고른다.
+CONTENT_PARSER_REGISTRY: dict[str, type[ContentParser]] = {
+    "www.sejong.ac.kr": K2WebContentParser,
+    "www.hongik.ac.kr": K2WebContentParser,
+}
+
+
+def content_parser_for(url: str) -> ContentParser:
+    """`url` 호스트에 맞는 본문 파서를 만든다."""
+
+    host = (urlsplit(url).hostname or "").lower()
+    return CONTENT_PARSER_REGISTRY.get(host, CommonContentParser)()
 
 
 def _first_node(soup: BeautifulSoup, selectors: tuple[str, ...]):
@@ -286,11 +305,13 @@ class DocumentExtractor:
         return results
 
     def _parse_page(self, page: CrawledPage) -> CleanedDocument:
-        parser = self.parsers.get(page.school_id, self.common_parser)
+        # 명시 주입(school_id) 이 있으면 그것을, 없으면 호스트로 고른다. 호스트 기준이
+        # 기본값이라 새 학교를 추가할 때 레지스트리 한 곳만 등록하면 된다.
+        parser = self.parsers.get(page.school_id) or content_parser_for(page.canonical_url)
         try:
             return parser.parse(page.raw_html)
         except Exception as error:  # 전용 파서 실패 시 공통 파서로 안전하게 폴백
-            if parser is self.common_parser:
+            if isinstance(parser, CommonContentParser):
                 raise
             LOGGER.warning("content parser failed for %s: %s; using common parser", page.source_url, type(error).__name__)
             return self.common_parser.parse(page.raw_html)

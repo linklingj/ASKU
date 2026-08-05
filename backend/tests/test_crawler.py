@@ -5,6 +5,7 @@ import unittest
 import requests
 
 from app.crawler import (
+    Board,
     CommonNoticeAdapter,
     Crawler,
     CrawlSettings,
@@ -12,6 +13,8 @@ from app.crawler import (
     SejongNoticeAdapter,
     SkkuNoticeAdapter,
     YonseiNoticeAdapter,
+    adapter_for,
+    boards_for,
     html_hash,
     normalize_detail_url,
     normalize_url,
@@ -198,6 +201,42 @@ class CrawlerTests(unittest.TestCase):
             adapter.next_listing_url(html, listing_url),
             f"{listing_url}?mode=list&articleLimit=10&article.offset=10",
         )
+
+    def test_adapter_for_resolves_registered_hosts(self) -> None:
+        """등록된 학교는 전용 어댑터로, 그 외에는 공용 어댑터로 내려간다."""
+        cases = {
+            "https://www.yonsei.ac.kr/sc/254/subview.do": YonseiNoticeAdapter,
+            "https://www.sejong.ac.kr/kor/intro/notice1.do": SejongNoticeAdapter,
+            "https://WWW.HONGIK.AC.KR/kr/newscenter/notice.do": HongikNoticeAdapter,
+            "https://www.skku.edu/skku/campus/skk_comm/notice02.do": SkkuNoticeAdapter,
+            "https://example.edu/notice/list.do": CommonNoticeAdapter,
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url):
+                self.assertIsInstance(adapter_for(url), expected)
+
+    def test_sejong_override_reads_pinned_and_normal_rows(self) -> None:
+        """``b-top-box``(상단 고정공지)가 아닌 일반 공지 행도 수집한다."""
+        html = """
+        <table><tbody>
+          <tr class='b-top-box'>
+            <td class='b-td-title'><div class='b-title-box'>
+              <a href='?mode=view&amp;articleNo=1'><span class='b-title'>고정 공지</span></a>
+            </div><div class='b-m-con'><span class='b-writer'>총무과</span>
+              <span class='b-date'>2026.07.24</span></div></td>
+          </tr>
+          <tr>
+            <td class='b-td-title'><div class='b-title-box'>
+              <a href='?mode=view&amp;articleNo=2'><span class='b-title'>일반 공지</span></a>
+            </div><div class='b-m-con'><span class='b-writer'>학사팀</span>
+              <span class='b-date'>2026.07.20</span></div></td>
+          </tr>
+        </tbody></table>
+        """
+        items = list(SejongNoticeAdapter().parse_listing(html, "https://www.sejong.ac.kr/kor/intro/notice1.do"))
+
+        self.assertEqual([item.title_hint for item in items], ["고정 공지", "일반 공지"])
+        self.assertEqual(items[1].author_hint, "학사팀")
 
     def test_hongik_override_reads_metadata_and_next_page(self) -> None:
         """홍익대 실제 목록의 메타데이터와 K2Web 페이지네이션을 검증한다."""
@@ -519,6 +558,268 @@ class ListingPolicyTests(unittest.TestCase):
         self.assertEqual(run.pages, [])
         self.assertEqual(run.failures[0].error_code, "ROBOTS_UNREACHABLE")
         self.assertTrue(run.failures[0].retryable)
+
+
+class MultiBoardTests(unittest.TestCase):
+    """공지가 여러 탭으로 쪼개진 학교(세종대) 수집."""
+
+    FIRST = "https://example.edu/notice/list.do"
+    SECOND = "https://example.edu/notice/list2.do"
+
+    def board_html(self, ids: list[int]) -> str:
+        """분류 칸이 없는 목록. 이런 학교에서만 탭 이름이 분류로 쓰인다."""
+
+        rows = "".join(
+            f"<tr><td>{i}</td><td><a href='/notice/view.do?id={i}'>공지 {i}</a></td>"
+            f"<td>학사팀</td><td>2026-07-0{i}</td></tr>"
+            for i in ids
+        )
+        return f"<table><tbody>{rows}</tbody></table>"
+
+    def crawler(self, session: FakeSession) -> Crawler:
+        return Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+
+    def request(self, **overrides) -> CrawlRequest:
+        return CrawlRequest(
+            crawl_id=uuid4(),
+            school_id=1,
+            base_url=self.FIRST,
+            mode="initial",
+            scope=CrawlScope(allowed_hosts=["example.edu"], **overrides),
+        )
+
+    def test_every_board_is_crawled_and_label_fills_empty_category(self) -> None:
+        session = FakeSession(
+            {
+                self.FIRST: FakeResponse(200, self.board_html([1, 2])),
+                self.SECOND: FakeResponse(200, self.board_html([3])),
+                "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+                "https://example.edu/notice/view.do?id=2": FakeResponse(200, "<main>2</main>"),
+                "https://example.edu/notice/view.do?id=3": FakeResponse(200, "<main>3</main>"),
+            }
+        )
+        boards = (Board(self.FIRST, "일반공지"), Board(self.SECOND, "장학"))
+
+        run = self.crawler(session).crawl_boards(self.request(), boards, CommonNoticeAdapter())
+
+        self.assertEqual(len(run.pages), 3)
+        self.assertIn(self.SECOND, session.calls)
+        # 목록이 분류를 주지 않으므로 탭 이름이 채워진다
+        self.assertEqual([page.category_hint for page in run.pages], ["일반공지", "일반공지", "장학"])
+
+    def test_board_label_does_not_overwrite_listing_category(self) -> None:
+        """홍익대처럼 행마다 분류가 붙는 학교의 값을 탭 이름으로 덮으면 안 된다."""
+
+        listing = "<table><tbody><tr><td>1</td><td>입시</td><td><a href='/notice/view.do?id=1'>공지</a></td><td>입학팀</td><td>2026-07-01</td></tr></tbody></table>"
+        session = FakeSession(
+            {
+                self.FIRST: FakeResponse(200, listing),
+                "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+            }
+        )
+
+        run = self.crawler(session).crawl_boards(self.request(), (Board(self.FIRST, "장학"),), CommonNoticeAdapter())
+
+        self.assertEqual(run.pages[0].category_hint, "입시")
+
+    def test_notice_listed_in_two_boards_is_collected_once(self) -> None:
+        """탭 사이에서도 중복 URL 을 걸러야 같은 공지를 두 번 받지 않는다."""
+
+        session = FakeSession(
+            {
+                self.FIRST: FakeResponse(200, self.board_html([1])),
+                self.SECOND: FakeResponse(200, self.board_html([1])),
+                "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+            }
+        )
+        boards = (Board(self.FIRST, "일반공지"), Board(self.SECOND, "장학"))
+
+        run = self.crawler(session).crawl_boards(self.request(), boards, CommonNoticeAdapter())
+
+        self.assertEqual(len(run.pages), 1)
+        self.assertEqual(session.calls.count("https://example.edu/notice/view.do?id=1"), 1)
+
+    def test_budget_is_shared_across_boards(self) -> None:
+        """게시판마다 예산을 새로 잡으면 탭이 늘어난 만큼 총 요청량이 늘어난다."""
+
+        session = FakeSession(
+            {
+                self.FIRST: FakeResponse(200, self.board_html([1, 2])),
+                self.SECOND: FakeResponse(200, self.board_html([3])),
+                "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+                "https://example.edu/notice/view.do?id=2": FakeResponse(200, "<main>2</main>"),
+                "https://example.edu/notice/view.do?id=3": FakeResponse(200, "<main>3</main>"),
+            }
+        )
+        boards = (Board(self.FIRST, "일반공지"), Board(self.SECOND, "장학"))
+
+        run = self.crawler(session).crawl_boards(self.request(max_requests=3), boards, CommonNoticeAdapter())
+
+        self.assertEqual(len(session.calls), 3)
+        self.assertNotIn(self.SECOND, session.calls)  # 예산이 바닥나면 다음 탭으로 넘어가지 않는다
+        self.assertEqual([f.error_code for f in run.failures], ["REQUEST_BUDGET_EXCEEDED"])
+
+    def test_boards_are_visited_round_robin_so_no_tab_starves(self) -> None:
+        """게시판을 하나씩 끝까지 돌면 공지가 많은 앞쪽 탭이 예산을 다 쓴다."""
+
+        def listing(board: int, page: int) -> str:
+            rows = "".join(
+                f"<tr><td>{i}</td><td><a href='/v.do?id={board}-{page}-{i}'>공지</a></td>"
+                f"<td>부서</td><td>2026-07-01</td></tr>"
+                for i in range(4)
+            )
+            return f"<table><tbody>{rows}</tbody></table><a rel='next' href='/l.do?b={board}&p={page + 1}'>다음</a>"
+
+        class Pages(dict):
+            """페이지를 미리 다 만들지 않고 요청이 올 때 만들어 준다."""
+
+            def __missing__(self, url: str) -> FakeResponse:
+                if "/l.do" in url:
+                    board = int(url.split("b=")[1].split("&")[0])
+                    page = int(url.split("p=")[1])
+                    return FakeResponse(200, listing(board, page))
+                return FakeResponse(200, "<main>본문</main>")
+
+        session = FakeSession(Pages())
+        boards = tuple(Board(f"https://example.edu/l.do?b={i}&p=1", f"탭{i}") for i in range(1, 4))
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+
+        # 1바퀴에 목록 3회 + 상세 12회 = 15회. 예산 20회면 2바퀴를 다 돌지 못한다.
+        run = crawler.crawl_boards(self.request(max_requests=20), boards, CommonNoticeAdapter())
+
+        collected = {label: 0 for label in ("탭1", "탭2", "탭3")}
+        for page in run.pages:
+            collected[page.category_hint] += 1
+        # 순서대로 돌면 탭1 이 20회를 다 써 탭2·탭3 이 0건이 된다
+        self.assertTrue(all(count >= 4 for count in collected.values()), collected)
+
+    def test_boards_for_returns_registered_tabs_or_the_url_itself(self) -> None:
+        sejong = boards_for("https://www.sejong.ac.kr/kor/intro/notice1.do")
+        self.assertGreater(len(sejong), 1)
+        self.assertIn("장학", [board.label for board in sejong])
+
+        other = boards_for("https://example.edu/notice/list.do")
+        self.assertEqual(other, (Board("https://example.edu/notice/list.do"),))
+
+
+class CrawlBudgetTests(unittest.TestCase):
+    """게시판 수와 무관하게 크롤 1회 전체 요청량을 묶는 예산."""
+
+    LISTING = "https://example.edu/notice/list.do"
+
+    def pages(self) -> dict[str, FakeResponse]:
+        return {
+            self.LISTING: FakeResponse(200, LISTING_HTML),
+            "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+            "https://example.edu/notice/view.do?id=2": FakeResponse(200, "<main>2</main>"),
+            "https://example.edu/notice/view.do?id=3": FakeResponse(200, "<main>3</main>"),
+        }
+
+    def crawl(self, scope: CrawlScope, *, mode: str = "initial", clock=None, hash_exists=None):
+        session = FakeSession(self.pages())
+        crawler = Crawler(
+            hash_exists=hash_exists or (lambda *_args: False),
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+            **({"clock": clock} if clock else {}),
+        )
+        run = crawler.crawl(
+            CrawlRequest(crawl_id=uuid4(), school_id=1, base_url=self.LISTING, mode=mode, scope=scope),
+            CommonNoticeAdapter(),
+        )
+        return run, session
+
+    def test_request_budget_stops_crawl_and_keeps_partial_result(self) -> None:
+        """예산이 바닥나면 예외 대신 중단한다. 그때까지 모은 페이지는 살아야 한다."""
+
+        scope = CrawlScope(allowed_hosts=["example.edu"], max_requests=3)
+        run, session = self.crawl(scope)
+
+        # 목록 1회 + 상세 2회로 예산 소진 → 세 번째 상세는 요청하지 않는다
+        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(len(run.pages), 2)
+        self.assertEqual([f.error_code for f in run.failures], ["REQUEST_BUDGET_EXCEEDED"])
+        self.assertEqual(run.failures[0].stage, "budget")
+        self.assertTrue(run.failures[0].retryable)
+
+    def test_time_budget_stops_crawl(self) -> None:
+        """요청 수가 남아도 시간 상한을 넘기면 멈춘다."""
+
+        ticks = iter([0.0, 0.0, 5.0, 99.0, 99.0])
+        scope = CrawlScope(allowed_hosts=["example.edu"], max_duration_seconds=10.0)
+        run, _session = self.crawl(scope, clock=lambda: next(ticks))
+
+        self.assertEqual([f.error_code for f in run.failures], ["TIME_BUDGET_EXCEEDED"])
+        self.assertLess(len(run.pages), 3)
+
+    def test_recrawl_stops_when_a_listing_page_is_fully_unchanged(self) -> None:
+        """목록은 최신순이라 한 페이지가 통째로 unchanged 면 뒤쪽도 볼 필요가 없다."""
+
+        listing_html = LISTING_HTML + f"<a rel='next' href='{self.LISTING}?page=2'>다음</a>"
+        session = FakeSession({**self.pages(), self.LISTING: FakeResponse(200, listing_html)})
+        crawler = Crawler(
+            hash_exists=lambda *_args: True,  # 전부 이미 저장된 내용
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+
+        run = crawler.crawl(
+            CrawlRequest(
+                crawl_id=uuid4(),
+                school_id=1,
+                base_url=self.LISTING,
+                mode="recrawl",
+                scope=CrawlScope(allowed_hosts=["example.edu"], max_listing_pages=5),
+            ),
+            CommonNoticeAdapter(),
+        )
+
+        self.assertNotIn(f"{self.LISTING}?page=2", session.calls)
+        self.assertEqual({page.crawl_status for page in run.pages}, {"unchanged"})
+        self.assertEqual(run.failures, [])
+
+    def test_initial_crawl_does_not_stop_on_unchanged_page(self) -> None:
+        """초기 수집은 unchanged 가 나와도 뒤쪽 페이지를 계속 봐야 한다."""
+
+        second = f"{self.LISTING}?page=2"
+        listing_html = LISTING_HTML + f"<a rel='next' href='{second}'>다음</a>"
+        session = FakeSession({**self.pages(), self.LISTING: FakeResponse(200, listing_html), second: FakeResponse(200, "")})
+        crawler = Crawler(
+            hash_exists=lambda *_args: True,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+
+        crawler.crawl(
+            CrawlRequest(
+                crawl_id=uuid4(),
+                school_id=1,
+                base_url=self.LISTING,
+                mode="initial",
+                scope=CrawlScope(allowed_hosts=["example.edu"], max_listing_pages=5),
+            ),
+            CommonNoticeAdapter(),
+        )
+
+        self.assertIn(second, session.calls)
 
 
 if __name__ == "__main__":
