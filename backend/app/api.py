@@ -26,6 +26,9 @@ from app.schemas import (
     AttachmentItem,
     AttachmentListResponse,
     AttachmentUploadResponse,
+    CrawlQuality,
+    CrawlQualityBoard,
+    CrawlQualityFinding,
     CrawlRequest,
     CrawlScope,
     EntityDetailResponse,
@@ -109,6 +112,62 @@ def _error_response(status_code: int, code: str, message: str, details: dict | N
     return JSONResponse(status_code=status_code, content=body.model_dump())
 
 
+def _record_crawl_quality(storage, school_id: int, crawl_id: str, run, adapter, boards) -> None:
+    """크롤 직후 수집 품질을 판정해 이력으로 남긴다.
+
+    파서가 사이트 구조와 어긋나도 크롤은 0건 성공으로 끝나므로, 지표를 남기지
+    않으면 개편을 알아챌 방법이 없다. 부가 작업이라 실패해도 크롤은 계속한다.
+    """
+
+    try:
+        from app.validation import validate_crawl
+
+        reports = validate_crawl(
+            run,
+            adapter,
+            boards,
+            previous_rows=lambda board: storage.get_previous_listing_rows(
+                school_id, board, before_crawl_id=crawl_id
+            ),
+        )
+        storage.record_crawl_quality(school_id, crawl_id, reports)
+        for report in reports:
+            if not report.passed:
+                logger.warning("수집 품질 경고: school_id=%d %s", school_id, report.summary())
+    except Exception:
+        logger.exception("수집 품질 기록 실패: school_id=%d", school_id)
+
+
+def _crawl_quality(storage, school_id: int) -> CrawlQuality:
+    """마지막 크롤의 게시판별 수집 품질을 응답 모델로 옮긴다."""
+
+    try:
+        rows = storage.get_latest_crawl_quality(school_id)
+    except Exception:  # 지표는 부가 정보다. 조회 실패가 학교 상세를 막아선 안 된다.
+        logger.exception("수집 품질 조회 실패: school_id=%d", school_id)
+        return CrawlQuality()
+    rows = list(rows or [])
+    if not rows:
+        return CrawlQuality()
+
+    boards = [
+        CrawlQualityBoard(
+            board=row["board"],
+            listing_rows=row["listing_rows"],
+            title_ratio=row["title_ratio"],
+            date_ratio=row["date_ratio"],
+            checked_details=row["checked_details"],
+            findings=[CrawlQualityFinding(**finding) for finding in row["findings"]],
+        )
+        for row in rows
+    ]
+    return CrawlQuality(
+        status="ok" if all(board.passed for board in boards) else "warning",
+        checked_at=max(row["recorded_at"] for row in rows),
+        boards=boards,
+    )
+
+
 def _school_not_found(school_id: int) -> JSONResponse:
     return _error_response(404, "SCHOOL_NOT_FOUND", "해당 학교를 찾을 수 없습니다.")
 
@@ -157,7 +216,9 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         crawler = Crawler.from_storage(storage)
         adapter = adapter_for(base_url)
         # 세종대처럼 공지가 여러 탭으로 쪼개진 학교는 등록된 게시판을 모두 돈다.
-        run = crawler.crawl_boards(crawl_request, boards_for(base_url), adapter)
+        boards = boards_for(base_url)
+        run = crawler.crawl_boards(crawl_request, boards, adapter)
+        _record_crawl_quality(storage, school_id, str(crawl_request.crawl_id), run, adapter, boards)
         pages = crawler.pages_for_extractor(run)
 
         # 전체 방문/수집된 페이지 수
@@ -423,6 +484,7 @@ def get_school(school_id: int):
         crawl_schedule=school.crawl_schedule,
         status=school.status,
         stats=SchoolDetailStats(**stats),
+        crawl_quality=_crawl_quality(storage, school_id),
         created_at=school.created_at,
         updated_at=school.updated_at,
     )

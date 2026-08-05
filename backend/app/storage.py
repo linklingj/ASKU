@@ -31,7 +31,7 @@ from sqlalchemy import (
     select,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, insert
+from sqlalchemy.dialects.postgresql import ARRAY, DOUBLE_PRECISION, JSONB, insert
 from sqlalchemy.engine import Engine, RowMapping
 
 from app.models import (
@@ -59,6 +59,24 @@ schools = Table(
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
 )
+
+# 크롤 실행마다 남기는 수집 품질 지표. 학교당 한 행만 두지 않고 이력으로 쌓는다.
+# 직전 실행과 비교해야 "사이트 개편으로 수집량이 급감했다"를 판정할 수 있다.
+crawl_quality = Table(
+    "crawl_quality",
+    metadata,
+    Column("quality_id", BIGINT, primary_key=True),
+    Column("school_id", BIGINT, ForeignKey("schools.school_id"), nullable=False),
+    Column("crawl_id", TEXT, nullable=False),
+    Column("board", TEXT, nullable=False),  # 게시판 라벨. 단일 게시판이면 '기본'
+    Column("listing_rows", INTEGER, nullable=False, server_default=text("0")),
+    Column("title_ratio", DOUBLE_PRECISION, nullable=False, server_default=text("0")),
+    Column("date_ratio", DOUBLE_PRECISION, nullable=False, server_default=text("0")),
+    Column("checked_details", INTEGER, nullable=False, server_default=text("0")),
+    Column("findings", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("recorded_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
+)
+Index("ix_crawl_quality_school_recorded", crawl_quality.c.school_id, crawl_quality.c.recorded_at.desc())
 
 attachments = Table(
     "attachments",
@@ -397,6 +415,68 @@ class Storage:
                 "attachment_count": attachment_count,
                 "last_crawled_at": last_crawled_at,
             }
+
+    def record_crawl_quality(self, school_id: int, crawl_id: str, reports: Sequence[Any]) -> None:
+        """크롤 실행의 게시판별 수집 품질 지표를 이력으로 남긴다."""
+
+        if not reports:
+            return
+        rows = [
+            {
+                "school_id": school_id,
+                "crawl_id": crawl_id,
+                "board": report.target,
+                "listing_rows": report.listing_rows,
+                "title_ratio": report.title_ratio,
+                "date_ratio": report.date_ratio,
+                "checked_details": report.checked_details,
+                "findings": [{"code": f.code, "detail": f.detail} for f in report.findings],
+            }
+            for report in reports
+        ]
+        with self._engine.begin() as connection:
+            connection.execute(crawl_quality.insert(), rows)
+
+    def get_latest_crawl_quality(self, school_id: int) -> list[dict]:
+        """가장 최근 크롤의 게시판별 지표. 없으면 빈 목록."""
+
+        with self._engine.connect() as connection:
+            latest = connection.execute(
+                select(crawl_quality.c.crawl_id)
+                .where(crawl_quality.c.school_id == school_id)
+                .order_by(crawl_quality.c.recorded_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if latest is None:
+                return []
+            rows = connection.execute(
+                select(crawl_quality)
+                .where(
+                    and_(
+                        crawl_quality.c.school_id == school_id,
+                        crawl_quality.c.crawl_id == latest,
+                    )
+                )
+                .order_by(crawl_quality.c.quality_id)
+            ).mappings()
+            return [dict(row) for row in rows]
+
+    def get_previous_listing_rows(self, school_id: int, board: str, *, before_crawl_id: str) -> int | None:
+        """같은 게시판의 직전 크롤 목록 행 수. 급감 판정에 쓴다."""
+
+        with self._engine.connect() as connection:
+            return connection.execute(
+                select(crawl_quality.c.listing_rows)
+                .where(
+                    and_(
+                        crawl_quality.c.school_id == school_id,
+                        crawl_quality.c.board == board,
+                        crawl_quality.c.crawl_id != before_crawl_id,
+                    )
+                )
+                .order_by(crawl_quality.c.recorded_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
 
     # ── 첨부 문서(사용자 업로드) ──────────────────────────────────────
 
