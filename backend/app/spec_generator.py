@@ -166,6 +166,41 @@ def generate_spec(
     return result
 
 
+def collect_samples(crawler, request, base_url: str, count: int = 2) -> tuple[PageSample, list[PageSample]] | None:
+    """규격을 판정할 표본(목록 1장 + 상세 몇 건)을 받는다.
+
+    표본 링크는 전용·공용 어댑터로 찾는다. 규격이 아직 없는 상황이라 완벽할 필요는
+    없고, 상세 페이지 몇 장만 확보하면 된다.
+    """
+
+    from app.crawler import CommonNoticeAdapter, CrawlRun, adapter_for
+
+    run = CrawlRun()
+    if not crawler.robots_allowed(base_url):
+        LOGGER.warning("robots.txt 가 수집을 허용하지 않습니다: %s", base_url)
+        return None
+    listing_html = crawler._fetch(request, base_url, run)  # noqa: SLF001
+    if listing_html is None:
+        return None
+
+    items = list(adapter_for(base_url).parse_listing(listing_html, base_url))
+    if not items:
+        items = list(CommonNoticeAdapter().parse_listing(listing_html, base_url))
+
+    details: list[PageSample] = []
+    for item in items:
+        if len(details) >= count:
+            break
+        if not crawler.robots_allowed(item.url):
+            continue
+        html = crawler._fetch(request, item.url, run, referer=base_url)  # noqa: SLF001
+        if html is not None:
+            details.append(PageSample(item.url, html))
+    if not details:
+        return None
+    return PageSample(base_url, listing_html), details
+
+
 def match_template(
     host: str, listing: PageSample, details: list[PageSample]
 ) -> tuple[str, AdapterSpec, ValidationReport] | None:

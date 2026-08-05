@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -110,6 +111,67 @@ def _error_response(status_code: int, code: str, message: str, details: dict | N
     """공통 에러 형식 {error: {code, message, details}} 으로 응답한다."""
     body = ErrorResponse(error=ErrorDetail(code=code, message=message, details=details))
     return JSONResponse(status_code=status_code, content=body.model_dump())
+
+
+def _ensure_adapter_spec(storage, crawler, request, base_url: str):
+    """규격이 없으면 확보한다. 알려진 게시판 제품이면 LLM 없이 끝난다.
+
+    LLM 생성은 기본으로 켜지 않는다(`SPEC_AUTOGEN`). 잘못된 선택자가 곧바로 크롤에
+    쓰이면 남의 서버를 잘못 긁고, 호출당 수만 토큰이 든다. 템플릿 대조는 공짜라
+    항상 시도한다.
+    """
+
+    from app.crawler import ADAPTER_REGISTRY
+    from app.spec_generator import collect_samples, generate_spec, match_template
+
+    host = (urlsplit(base_url).hostname or "").lower()
+    if host in ADAPTER_REGISTRY:
+        return None  # 검증된 전용 어댑터가 있으면 규격이 필요 없다
+
+    existing = _adapter_spec(storage, base_url)
+    if existing is not None:
+        return existing
+
+    samples = collect_samples(crawler, request, base_url)
+    if samples is None:
+        logger.warning("규격 판정용 표본을 얻지 못했습니다: %s", base_url)
+        return None
+    listing, details = samples
+
+    matched = match_template(host, listing, details)
+    if matched is not None:
+        name, spec, report = matched
+        _save_spec(storage, host, spec, origin=f"template:{name}")
+        logger.info("규격 템플릿 적용: host=%s template=%s %s", host, name, report.summary())
+        return spec
+
+    if os.getenv("SPEC_AUTOGEN", "").lower() not in ("1", "true", "yes"):
+        logger.info("알려진 템플릿과 맞지 않습니다. 자동 생성은 꺼져 있습니다: host=%s", host)
+        return None
+
+    try:
+        from app.llm import GeminiProvider
+
+        result = generate_spec(GeminiProvider(), host, listing, details)
+    except Exception:
+        logger.exception("규격 자동 생성 실패: host=%s", host)
+        return None
+
+    if not result.accepted:
+        logger.warning("규격 자동 생성이 검증을 통과하지 못했습니다: host=%s %s", host, result.summary())
+        return None
+    _save_spec(storage, host, result.spec, origin="generated")
+    logger.info("규격 자동 생성: host=%s %s", host, result.summary())
+    return result.spec
+
+
+def _save_spec(storage, host: str, spec, *, origin: str) -> None:
+    """확보한 규격을 저장한다. 저장 실패가 크롤을 막지는 않는다."""
+
+    try:
+        storage.upsert_adapter_spec(host, spec.model_dump(mode="json"), source=spec.source)
+    except Exception:
+        logger.exception("규격 저장 실패: host=%s origin=%s", host, origin)
 
 
 def _adapter_spec(storage, base_url: str):
@@ -234,9 +296,12 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
             scope=CrawlScope(allowed_hosts=[urlsplit(base_url).hostname or ""]),
         )
         crawler = Crawler.from_storage(storage)
-        # 규격은 크롤 시작 때 한 번만 꺼내 파이프라인 전체에 넘긴다. Crawler·Extractor 가
+        # 규격은 크롤 시작 때 한 번만 확보해 파이프라인 전체에 넘긴다. Crawler·Extractor 가
         # Storage 를 직접 알지 않게 하고, 페이지마다 조회하는 일도 없게 한다.
-        spec = _adapter_spec(storage, base_url)
+        # 처음 보는 학교면 여기서 규격을 만든다(알려진 게시판 제품이면 LLM 없이).
+        _PROGRESS_MAP[school_id]["message"] = "게시판 구조 확인 중..."
+        spec = _ensure_adapter_spec(storage, crawler, crawl_request, base_url)
+        _PROGRESS_MAP[school_id]["message"] = "공지 페이지 수집 중..."
         adapter = adapter_for(base_url, spec)
         # 세종대처럼 공지가 여러 탭으로 쪼개진 학교는 등록된 게시판을 모두 돈다.
         boards = boards_for(base_url, spec)
