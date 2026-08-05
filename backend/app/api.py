@@ -132,7 +132,7 @@ def _ensure_adapter_spec(storage, crawler, request, base_url: str):
 
 def _provision_adapter_spec(storage, crawler, request, base_url: str):
     from app.crawler import ADAPTER_REGISTRY
-    from app.spec_generator import collect_samples, generate_spec, match_template
+    from app.spec_generator import collect_samples, discover_boards, generate_spec, match_template
 
     host = (urlsplit(base_url).hostname or "").lower()
     if host in ADAPTER_REGISTRY:
@@ -151,6 +151,9 @@ def _provision_adapter_spec(storage, crawler, request, base_url: str):
     matched = match_template(host, listing, details)
     if matched is not None:
         name, spec, report = matched
+        # 템플릿 경로는 LLM 을 부르지 않으므로, 여기서 찾지 않으면 하위 게시판을
+        # 발견할 기회가 아예 없다.
+        spec = discover_boards(spec, listing, crawler, request)
         _save_spec(storage, host, spec, origin=f"template:{name}")
         logger.info("규격 템플릿 적용: host=%s template=%s %s", host, name, report.summary())
         return spec
@@ -170,6 +173,7 @@ def _provision_adapter_spec(storage, crawler, request, base_url: str):
     if not result.accepted:
         logger.warning("규격 자동 생성이 검증을 통과하지 못했습니다: host=%s %s", host, result.summary())
         return None
+    result.spec = discover_boards(result.spec, listing, crawler, request)
     _save_spec(storage, host, result.spec, origin="generated")
     logger.info("규격 자동 생성: host=%s %s", host, result.summary())
     return result.spec

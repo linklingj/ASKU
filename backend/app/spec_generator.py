@@ -242,6 +242,38 @@ def _guess_detail_links(listing_html: str, base_url: str, limit: int = 3) -> lis
     return [ListingItem(url=url, title_hint=text) for url, text in best[:limit]]
 
 
+def discover_boards(spec: AdapterSpec, listing: PageSample, crawler, request) -> AdapterSpec:
+    """규격에 게시판 목록이 비어 있으면 찾아서 채운다.
+
+    공지가 `일반공지 / 장학 / 채용` 으로 나뉜 학교가 흔한데, 규격만 확보하고 끝내면
+    등록한 URL 하나만 돌아 나머지를 통째로 놓친다. 템플릿으로 규격을 얻은 학교는
+    LLM 을 부르지 않으므로, 이 단계가 없으면 탭을 찾을 기회 자체가 없다.
+
+    LLM 을 쓰지 않는다. 후보를 실제로 받아 보고 목록이 읽히는지로 판정한다.
+    """
+
+    from app.board_discovery import find_boards
+    from app.crawler import CrawlRun, adapter_for
+
+    if spec.boards:
+        return spec  # 이미 있으면 그대로 둔다(사람이 적었거나 LLM 이 채웠다)
+
+    run = CrawlRun()
+
+    def fetch(url: str) -> str | None:
+        if not crawler.robots_allowed(url):
+            return None
+        return crawler._fetch(request, url, run, referer=listing.url)  # noqa: SLF001
+
+    boards = find_boards(listing.html, listing.url, adapter_for(listing.url, spec), fetch)
+    if len(boards) <= 1:
+        return spec
+    LOGGER.info("게시판 %d개 발견: %s", len(boards), ", ".join(b.label or "?" for b in boards))
+    from app.adapter_spec import BoardSpec
+
+    return spec.model_copy(update={"boards": [BoardSpec(url=b.url, label=b.label) for b in boards]})
+
+
 def match_template(
     host: str, listing: PageSample, details: list[PageSample]
 ) -> tuple[str, AdapterSpec, ValidationReport] | None:
