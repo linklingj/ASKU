@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 import re
-from time import sleep
+from time import monotonic, sleep
 from typing import Callable, Iterable, Protocol
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -260,6 +260,40 @@ class CrawlRun:
     failures: list[CrawlFailure] = field(default_factory=list)
 
 
+@dataclass
+class _CrawlBudget:
+    """크롤 1회 전체를 묶는 요청 수·시간 예산.
+
+    페이지·건수 상한은 게시판마다 따로 적용되므로 하위 게시판이 늘어나면 총
+    요청량을 못 막는다. 예산이 바닥나면 예외를 던지지 않고 그때까지 모은 결과를
+    유지한 채 수집을 멈춘다 — 부분 수집이 전량 실패보다 낫다.
+    """
+
+    max_requests: int
+    deadline: float
+    clock: Callable[[], float]
+    requests_used: int = 0
+    exceeded_code: str | None = None
+
+    def charge(self) -> bool:
+        """요청 하나를 예산에서 차감한다. 예산이 남아 있으면 True."""
+
+        if self.exceeded_code is not None:
+            return False
+        if self.requests_used >= self.max_requests:
+            self.exceeded_code = "REQUEST_BUDGET_EXCEEDED"
+            return False
+        if self.clock() >= self.deadline:
+            self.exceeded_code = "TIME_BUDGET_EXCEEDED"
+            return False
+        self.requests_used += 1
+        return True
+
+    @property
+    def exhausted(self) -> bool:
+        return self.exceeded_code is not None
+
+
 @dataclass(frozen=True)
 class RobotsPolicy:
     """오리진 하나의 robots.txt 판정 결과. 성공·거부 모두 캐시해 재요청을 막는다.
@@ -303,6 +337,7 @@ class Crawler:
         session: requests.Session | None = None,
         sleeper: Callable[[float], None] = sleep,
         robots_allowed: RobotsAllowed | None = None,
+        clock: Callable[[], float] = monotonic,
     ) -> None:
         self.hash_exists = hash_exists
         self.url_exists = url_exists
@@ -314,6 +349,7 @@ class Crawler:
         if session is None:
             self.session.headers.update({"User-Agent": USER_AGENT})
         self.sleeper = sleeper
+        self.clock = clock
         self.robots_allowed = robots_allowed or self._robots_allowed
         self._policy_by_origin: dict[str, RobotsPolicy] = {}
 
@@ -332,6 +368,11 @@ class Crawler:
         scope = request.scope
         max_listing_pages = scope.max_listing_pages if scope else 10
         max_items = scope.max_items if scope else 300
+        budget = _CrawlBudget(
+            max_requests=scope.max_requests if scope else 500,
+            deadline=self.clock() + (scope.max_duration_seconds if scope else 600.0),
+            clock=self.clock,
+        )
         listing_url = request.base_url
         visited_listing_urls: set[str] = set()
         visited_detail_urls: set[str] = set()
@@ -346,9 +387,16 @@ class Crawler:
             if not self.robots_allowed(listing_url):
                 self._policy_failure(request, listing_url, run)
                 break
-            listing_html = self._fetch(request, listing_url, run)
+            listing_html = self._fetch(request, listing_url, run, budget=budget)
             if listing_html is None:
+                if budget.exhausted:
+                    self._budget_failure(request, listing_url, run, budget)
                 break
+
+            # 재크롤 조기 종료 판단용. 목록은 최신순이라 한 페이지가 통째로
+            # unchanged 면 뒤쪽은 볼 필요가 없다.
+            page_had_items = False
+            page_had_updates = False
 
             for item in adapter.parse_listing(listing_html, listing_url):
                 if len(visited_detail_urls) >= max_items:
@@ -362,8 +410,11 @@ class Crawler:
                     continue
                 # 일부 학교는 목록에서 상세 공지로 이동한 요청만 허용한다.
                 # 브라우저 클릭과 동일하게 현재 목록 URL을 Referer로 전달한다.
-                html = self._fetch(request, canonical_url, run, referer=listing_url)
+                html = self._fetch(request, canonical_url, run, referer=listing_url, budget=budget)
                 if html is None:
+                    if budget.exhausted:
+                        self._budget_failure(request, canonical_url, run, budget)
+                        return run
                     continue
                 content_hash = html_hash(html)
                 if self.hash_exists(request.school_id, canonical_url, content_hash):
@@ -372,6 +423,8 @@ class Crawler:
                     status = "changed"
                 else:
                     status = "new"
+                page_had_items = True
+                page_had_updates = page_had_updates or status != "unchanged"
 
                 run.pages.append(
                     CrawledPage(
@@ -391,6 +444,10 @@ class Crawler:
                     )
                 )
 
+            # 재크롤에서 이 페이지가 전부 unchanged 였다면 더 오래된 페이지도 마찬가지다.
+            if request.mode == "recrawl" and page_had_items and not page_had_updates:
+                break
+
             next_url = adapter.next_listing_url(listing_html, listing_url)
             if next_url is None or not is_allowed(normalize_url(next_url), request):
                 break
@@ -401,8 +458,19 @@ class Crawler:
         """신규·변경 페이지만 다음 단계로 전달한다."""
         return [page for page in run.pages if page.crawl_status in {"new", "changed"}]
 
-    def _fetch(self, request: CrawlRequest, url: str, run: CrawlRun, *, referer: str | None = None) -> str | None:
+    def _fetch(
+        self,
+        request: CrawlRequest,
+        url: str,
+        run: CrawlRun,
+        *,
+        referer: str | None = None,
+        budget: _CrawlBudget | None = None,
+    ) -> str | None:
         for attempt in range(self.settings.max_retries + 1):
+            # 재시도도 서버에 대한 요청이므로 시도마다 예산을 쓴다.
+            if budget is not None and not budget.charge():
+                return None
             try:
                 headers = {"Referer": referer} if referer else None
                 response = self.session.get(url, timeout=self.settings.timeout_seconds, headers=headers)
@@ -494,6 +562,27 @@ class Crawler:
                 # 네트워크·서버 오류로 robots.txt 를 못 읽은 것은 정책 거부와 달리 나중에 풀린다.
                 error_code=error_code,
                 retryable=error_code != "ROBOTS_DISALLOWED",
+                occurred_at=datetime.now(timezone.utc),
+            )
+        )
+
+    @staticmethod
+    def _budget_failure(request: CrawlRequest, url: str, run: CrawlRun, budget: _CrawlBudget) -> None:
+        """예산 소진으로 중단했다는 사실을 남긴다.
+
+        기록이 없으면 "수집이 왜 여기서 끊겼는지" 알 수 없어 목록이 짧은 것인지
+        상한에 걸린 것인지 구분되지 않는다. 다음 크롤에서 이어받으면 되므로
+        재시도 가능으로 표시한다.
+        """
+
+        run.failures.append(
+            CrawlFailure(
+                crawl_id=request.crawl_id,
+                school_id=request.school_id,
+                source_url=url,
+                stage="budget",
+                error_code=budget.exceeded_code or "BUDGET_EXCEEDED",
+                retryable=True,
                 occurred_at=datetime.now(timezone.utc),
             )
         )

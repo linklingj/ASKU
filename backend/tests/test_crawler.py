@@ -558,5 +558,113 @@ class ListingPolicyTests(unittest.TestCase):
         self.assertTrue(run.failures[0].retryable)
 
 
+class CrawlBudgetTests(unittest.TestCase):
+    """게시판 수와 무관하게 크롤 1회 전체 요청량을 묶는 예산."""
+
+    LISTING = "https://example.edu/notice/list.do"
+
+    def pages(self) -> dict[str, FakeResponse]:
+        return {
+            self.LISTING: FakeResponse(200, LISTING_HTML),
+            "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+            "https://example.edu/notice/view.do?id=2": FakeResponse(200, "<main>2</main>"),
+            "https://example.edu/notice/view.do?id=3": FakeResponse(200, "<main>3</main>"),
+        }
+
+    def crawl(self, scope: CrawlScope, *, mode: str = "initial", clock=None, hash_exists=None):
+        session = FakeSession(self.pages())
+        crawler = Crawler(
+            hash_exists=hash_exists or (lambda *_args: False),
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+            **({"clock": clock} if clock else {}),
+        )
+        run = crawler.crawl(
+            CrawlRequest(crawl_id=uuid4(), school_id=1, base_url=self.LISTING, mode=mode, scope=scope),
+            CommonNoticeAdapter(),
+        )
+        return run, session
+
+    def test_request_budget_stops_crawl_and_keeps_partial_result(self) -> None:
+        """예산이 바닥나면 예외 대신 중단한다. 그때까지 모은 페이지는 살아야 한다."""
+
+        scope = CrawlScope(allowed_hosts=["example.edu"], max_requests=3)
+        run, session = self.crawl(scope)
+
+        # 목록 1회 + 상세 2회로 예산 소진 → 세 번째 상세는 요청하지 않는다
+        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(len(run.pages), 2)
+        self.assertEqual([f.error_code for f in run.failures], ["REQUEST_BUDGET_EXCEEDED"])
+        self.assertEqual(run.failures[0].stage, "budget")
+        self.assertTrue(run.failures[0].retryable)
+
+    def test_time_budget_stops_crawl(self) -> None:
+        """요청 수가 남아도 시간 상한을 넘기면 멈춘다."""
+
+        ticks = iter([0.0, 0.0, 5.0, 99.0, 99.0])
+        scope = CrawlScope(allowed_hosts=["example.edu"], max_duration_seconds=10.0)
+        run, _session = self.crawl(scope, clock=lambda: next(ticks))
+
+        self.assertEqual([f.error_code for f in run.failures], ["TIME_BUDGET_EXCEEDED"])
+        self.assertLess(len(run.pages), 3)
+
+    def test_recrawl_stops_when_a_listing_page_is_fully_unchanged(self) -> None:
+        """목록은 최신순이라 한 페이지가 통째로 unchanged 면 뒤쪽도 볼 필요가 없다."""
+
+        listing_html = LISTING_HTML + f"<a rel='next' href='{self.LISTING}?page=2'>다음</a>"
+        session = FakeSession({**self.pages(), self.LISTING: FakeResponse(200, listing_html)})
+        crawler = Crawler(
+            hash_exists=lambda *_args: True,  # 전부 이미 저장된 내용
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+
+        run = crawler.crawl(
+            CrawlRequest(
+                crawl_id=uuid4(),
+                school_id=1,
+                base_url=self.LISTING,
+                mode="recrawl",
+                scope=CrawlScope(allowed_hosts=["example.edu"], max_listing_pages=5),
+            ),
+            CommonNoticeAdapter(),
+        )
+
+        self.assertNotIn(f"{self.LISTING}?page=2", session.calls)
+        self.assertEqual({page.crawl_status for page in run.pages}, {"unchanged"})
+        self.assertEqual(run.failures, [])
+
+    def test_initial_crawl_does_not_stop_on_unchanged_page(self) -> None:
+        """초기 수집은 unchanged 가 나와도 뒤쪽 페이지를 계속 봐야 한다."""
+
+        second = f"{self.LISTING}?page=2"
+        listing_html = LISTING_HTML + f"<a rel='next' href='{second}'>다음</a>"
+        session = FakeSession({**self.pages(), self.LISTING: FakeResponse(200, listing_html), second: FakeResponse(200, "")})
+        crawler = Crawler(
+            hash_exists=lambda *_args: True,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+
+        crawler.crawl(
+            CrawlRequest(
+                crawl_id=uuid4(),
+                school_id=1,
+                base_url=self.LISTING,
+                mode="initial",
+                scope=CrawlScope(allowed_hosts=["example.edu"], max_listing_pages=5),
+            ),
+            CommonNoticeAdapter(),
+        )
+
+        self.assertIn(second, session.calls)
+
+
 if __name__ == "__main__":
     unittest.main()

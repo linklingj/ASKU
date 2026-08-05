@@ -26,12 +26,19 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class CrawlScope(BaseModel):
-    """크롤 범위. 목록 페이지 수와 총 공지 수를 별도로 제한한다."""
+    """크롤 범위. 목록 페이지 수와 총 공지 수를 별도로 제한한다.
+
+    ``max_requests``·``max_duration_seconds`` 는 게시판 수와 무관하게 크롤 1회
+    전체를 묶는 예산이다. 하위 게시판(탭)이 늘어나면 페이지·건수 상한은 게시판마다
+    따로 적용돼 총 요청량을 못 막으므로, 마지막 방어선으로 둔다.
+    """
 
     allowed_hosts: list[str] = Field(default_factory=list)
     path_prefixes: list[str] = Field(default_factory=list)
     max_listing_pages: int = Field(default=10, ge=1)
     max_items: int = Field(default=300, ge=1)
+    max_requests: int = Field(default=500, ge=1)
+    max_duration_seconds: float = Field(default=600.0, gt=0)
 
 
 class Attachment(BaseModel):
@@ -95,7 +102,8 @@ class CrawlFailure(BaseModel):
     crawl_id: UUID
     school_id: int
     source_url: str
-    stage: Literal["policy", "fetch", "render"]
+    # budget: 요청 수·시간 상한에 걸려 수집을 중단했다(부분 수집은 유지된다).
+    stage: Literal["policy", "fetch", "render", "budget"]
     error_code: str
     retryable: bool
     occurred_at: datetime
