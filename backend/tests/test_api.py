@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.api
-from app.models import Document, Edge, Entity, School
+from app.models import Attachment, Document, Edge, Entity, School
 from app.schemas import (
     BuildResult,
     ExtractionFailure,
@@ -87,6 +87,21 @@ def _make_document(**overrides) -> Document:
     return Document(**defaults)
 
 
+def _make_attachment(**overrides) -> Attachment:
+    defaults = {
+        "attachment_id": 7,
+        "school_id": 1,
+        "filename": "수강편람.pdf",
+        "content_type": "application/pdf",
+        "byte_size": 1024,
+        "file_hash": "hash",
+        "status": "pending",
+        "uploaded_at": _NOW,
+    }
+    defaults.update(overrides)
+    return Attachment(**defaults)
+
+
 # ── 픽스처 ─────────────────────────────────────────────────────────────
 
 
@@ -106,10 +121,17 @@ def mock_storage():
     storage.get_school_stats.return_value = {
         "document_count": 245,
         "entity_count": 1023,
+        "attachment_count": 2,
         "last_crawled_at": _NOW,
     }
     storage.create_schema.return_value = None
     storage.close.return_value = None
+
+    # 첨부(사용자 업로드) 기본값 — 첨부 없음
+    storage.count_ready_attachments.return_value = 0
+    storage.list_attachments.return_value = []
+    storage.create_attachment.side_effect = lambda **kwargs: _make_attachment(**kwargs)
+    storage.delete_attachment.return_value = True
 
     # 그래프/엔티티 관련
     entity1 = _make_entity()
@@ -235,12 +257,46 @@ class TestQuerySchool:
         assert len(body["sources"]) == 1
         assert body["entity_ids"] == ["e_123"]
 
+    def test_source_type_is_passed_through(self, client, mock_storage):
+        """어느 단계(그래프·문서)가 답을 냈는지 응답에 그대로 노출한다."""
+        rag_answer = RagAnswer(
+            answer="졸업 요건은 130학점입니다.",
+            sources=[Source(title="수강편람.pdf - 12페이지", url="attachment://7")],
+            source_type="document",
+        )
+        with patch("app.api._get_rag_engine") as mock_rag:
+            mock_rag.return_value.answer.return_value = rag_answer
+            resp = client.post("/schools/1/query", json={"question": "졸업 학점?"})
+
+        assert resp.status_code == 200
+        assert resp.json()["source_type"] == "document"
+
+    def test_no_evidence_answer_reports_null_source_type(self, client, mock_storage):
+        with patch("app.api._get_rag_engine") as mock_rag:
+            mock_rag.return_value.answer.return_value = RagAnswer(answer="해당 정보를 찾지 못했습니다.")
+            resp = client.post("/schools/1/query", json={"question": "질문"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["source_type"] is None
+        assert body["sources"] == []
+
     def test_503_not_ready(self, client, mock_storage):
         mock_storage.get_school.return_value = _make_school(status="crawling")
         resp = client.post("/schools/1/query", json={"question": "질문"})
         assert resp.status_code == 503
         body = resp.json()
         assert body["error"]["code"] == "SCHOOL_NOT_READY"
+
+    def test_ready_attachment_opens_query_before_crawl_finishes(self, client, mock_storage):
+        """크롤링이 끝나지 않아도 색인된 첨부가 있으면 문서 RAG 로 답할 수 있다."""
+        mock_storage.get_school.return_value = _make_school(status="failed")
+        mock_storage.count_ready_attachments.return_value = 1
+        with patch("app.api._get_rag_engine") as mock_rag:
+            mock_rag.return_value.answer.return_value = RagAnswer(answer="답", source_type="document")
+            resp = client.post("/schools/1/query", json={"question": "질문"})
+
+        assert resp.status_code == 200
 
     def test_404_school_not_found(self, client, mock_storage):
         mock_storage.get_school.return_value = None
@@ -525,3 +581,125 @@ class TestRunCrawlPipeline:
 
         # 0페이지 → failed (ready·indexing 로 새면 안 됨)
         mock_storage.update_school_status.assert_called_once_with(1, "failed")
+
+
+# ── 첨부 문서 (POST/GET/DELETE /schools/{id}/attachments) ──────────────
+
+
+class TestUploadAttachments:
+    def test_202_accepted_and_ingest_scheduled(self, client, mock_storage):
+        with patch("app.api._run_attachment_ingest") as mock_ingest:
+            resp = client.post(
+                "/schools/1/attachments",
+                files=[("files", ("수강편람.pdf", b"%PDF-1.4 fake", "application/pdf"))],
+            )
+
+        assert resp.status_code == 202
+        body = resp.json()
+        assert [item["filename"] for item in body["accepted"]] == ["수강편람.pdf"]
+        assert body["accepted"][0]["status"] == "pending"
+        assert body["rejected"] == []
+        # 파싱·임베딩은 응답을 막지 않고 백그라운드에서 이어진다
+        mock_ingest.assert_called_once()
+        attachment, data = mock_ingest.call_args.args
+        assert attachment.filename == "수강편람.pdf"
+        assert data == b"%PDF-1.4 fake"
+
+    def test_file_hash_is_derived_from_bytes(self, client, mock_storage):
+        """같은 파일을 다시 올리면 같은 해시 → 저장소가 기존 첨부를 재사용한다."""
+        from hashlib import sha256
+
+        payload = b"%PDF-1.4 fake"
+        with patch("app.api._run_attachment_ingest"):
+            client.post("/schools/1/attachments", files=[("files", ("a.pdf", payload, "application/pdf"))])
+
+        kwargs = mock_storage.create_attachment.call_args.kwargs
+        assert kwargs["file_hash"] == sha256(payload).hexdigest()
+        assert kwargs["byte_size"] == len(payload)
+        assert kwargs["school_id"] == 1
+
+    def test_supported_file_is_accepted_while_unsupported_one_is_rejected(self, client, mock_storage):
+        """한 파일이 걸려도 나머지는 계속 처리한다."""
+        with patch("app.api._run_attachment_ingest") as mock_ingest:
+            resp = client.post(
+                "/schools/1/attachments",
+                files=[
+                    ("files", ("학칙.hwp", b"hwp-bytes", "application/x-hwp")),
+                    ("files", ("사진.png", b"png-bytes", "image/png")),
+                ],
+            )
+
+        assert resp.status_code == 202
+        body = resp.json()
+        assert [item["filename"] for item in body["accepted"]] == ["학칙.hwp"]
+        assert body["rejected"][0]["filename"] == "사진.png"
+        assert body["rejected"][0]["code"] == "UNSUPPORTED_FILE_TYPE"
+        assert mock_ingest.call_count == 1
+
+    def test_415_when_nothing_is_processable(self, client, mock_storage):
+        resp = client.post(
+            "/schools/1/attachments",
+            files=[("files", ("사진.png", b"png-bytes", "image/png"))],
+        )
+
+        assert resp.status_code == 415
+        body = resp.json()
+        assert body["error"]["code"] == "NO_SUPPORTED_ATTACHMENT"
+        mock_storage.create_attachment.assert_not_called()
+
+    def test_empty_file_is_rejected(self, client, mock_storage):
+        resp = client.post("/schools/1/attachments", files=[("files", ("빈.pdf", b"", "application/pdf"))])
+
+        assert resp.status_code == 415
+        assert resp.json()["error"]["details"]["rejected"][0]["code"] == "EMPTY_FILE"
+
+    def test_oversized_file_is_rejected(self, client, mock_storage):
+        from app.api import MAX_ATTACHMENT_BYTES
+
+        oversized = b"a" * (MAX_ATTACHMENT_BYTES + 1)
+        resp = client.post("/schools/1/attachments", files=[("files", ("큰.pdf", oversized, "application/pdf"))])
+
+        assert resp.status_code == 415
+        assert resp.json()["error"]["details"]["rejected"][0]["code"] == "FILE_TOO_LARGE"
+
+    def test_404_when_school_missing(self, client, mock_storage):
+        mock_storage.get_school.return_value = None
+        resp = client.post("/schools/999/attachments", files=[("files", ("a.pdf", b"x", "application/pdf"))])
+
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "SCHOOL_NOT_FOUND"
+
+
+class TestListAttachments:
+    def test_200_lists_attachments_with_index_state(self, client, mock_storage):
+        mock_storage.list_attachments.return_value = [
+            _make_attachment(status="ready", page_count=120, chunk_count=340),
+            _make_attachment(attachment_id=8, filename="학칙.hwp", status="failed", error_code="HWP_ENCRYPTED"),
+        ]
+
+        resp = client.get("/schools/1/attachments")
+
+        assert resp.status_code == 200
+        items = resp.json()["attachments"]
+        assert [item["status"] for item in items] == ["ready", "failed"]
+        assert items[0]["chunk_count"] == 340
+        assert items[1]["error_code"] == "HWP_ENCRYPTED"
+
+    def test_404_when_school_missing(self, client, mock_storage):
+        mock_storage.get_school.return_value = None
+        assert client.get("/schools/999/attachments").status_code == 404
+
+
+class TestDeleteAttachment:
+    def test_204_deletes_attachment_and_chunks(self, client, mock_storage):
+        resp = client.delete("/schools/1/attachments/7")
+
+        assert resp.status_code == 204
+        mock_storage.delete_attachment.assert_called_once_with(1, 7)
+
+    def test_404_when_attachment_missing(self, client, mock_storage):
+        mock_storage.delete_attachment.return_value = False
+        resp = client.delete("/schools/1/attachments/999")
+
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "ATTACHMENT_NOT_FOUND"

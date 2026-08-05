@@ -23,6 +23,13 @@ Crawler는 학교의 `base_url`에서 공지·학사 정보를 수집해 Extract
 - 임베딩 생성, 그래프 구성, 데이터베이스 직접 쓰기
 - 재크롤링 주기 결정(이는 Scheduler의 책임)
 
+> **첨부 본문은 업로드 경로로 처리한다.** 수강편람 PDF·학칙 HWP 등은 크롤러가 내려받아
+> 파싱하지 않고, 사용자가 `POST /schools/{id}/attachments`로 직접 올린다
+> ([`01_backend-api.md`](01_backend-api.md) §2.4-1). 크롤러는 지금까지처럼 첨부의
+> URL·파일명 힌트만 `CrawledPage.attachments`에 담아 전달한다. 로그인·세션이 필요한
+> 다운로드 서블릿이나 robots.txt 제약에 걸리는 파일도 사용자가 올리면 색인되므로,
+> 크롤러 범위를 넓히지 않고도 문서 RAG가 성립한다([`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
+
 Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_url_exists`로 기존 본문 해시와 원문 URL 처리 이력을 조회하며, 다른 테이블이나 SQL에 직접 접근하지 않는다. 같은 해시이면 `unchanged`, 같은 URL의 다른 해시면 `changed`, 처음 보는 URL이면 `new`다. 구현에서는 `Crawler.from_storage(storage)`로 두 조회를 연결한다.
 
 ## 3. 입력과 출력

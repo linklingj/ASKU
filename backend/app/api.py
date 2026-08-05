@@ -15,13 +15,16 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
-from app.models import School
+from app.models import Attachment, School
 from app.schemas import (
+    AttachmentItem,
+    AttachmentListResponse,
+    AttachmentUploadResponse,
     CrawlRequest,
     EntityDetailResponse,
     EntityNeighbor,
@@ -33,6 +36,7 @@ from app.schemas import (
     QueryRequest,
     QueryResponse,
     RecrawlResponse,
+    RejectedAttachment,
     SchoolCreateRequest,
     SchoolDetailResponse,
     SchoolDetailStats,
@@ -50,6 +54,7 @@ logger = logging.getLogger(__name__)
 _storage = None
 _crawler = None
 _rag_engine = None
+_embedder = None
 
 
 def _get_storage():
@@ -63,22 +68,34 @@ def _get_storage():
 
 
 def _get_rag_engine():
-    """GraphRAG 엔진 싱글턴을 반환한다. 최초 호출 시 초기화."""
+    """HybridRAG 엔진 싱글턴을 반환한다(그래프 RAG → 문서 RAG fallback). 최초 호출 시 초기화."""
     global _rag_engine
     if _rag_engine is None:
         from app.llm import GeminiProvider, LocalEmbedder
-        from app.rag import GraphRAG
+        from app.rag import DocumentRAG, GraphRAG, HybridRAG
 
         storage = _get_storage()
         embedder = LocalEmbedder()
         provider = GeminiProvider()
-        _rag_engine = GraphRAG(
+        graph_rag = GraphRAG(
             storage=storage,
             embedder=embedder,
             extractor=provider,
             generator=provider,
         )
+        document_rag = DocumentRAG(storage=storage, embedder=embedder, generator=provider)
+        _rag_engine = HybridRAG(graph_rag=graph_rag, document_rag=document_rag)
     return _rag_engine
+
+
+def _get_embedder():
+    """첨부 색인용 Embedder 싱글턴. 모델 로딩이 무거워 요청마다 만들지 않는다."""
+    global _embedder
+    if _embedder is None:
+        from app.llm import LocalEmbedder
+
+        _embedder = LocalEmbedder()
+    return _embedder
 
 
 # ── 공통 에러 응답 헬퍼 ───────────────────────────────────────────────
@@ -413,8 +430,9 @@ def query_school(school_id: int, body: QueryRequest):
     if school is None:
         return _school_not_found(school_id)
 
-    # 아직 준비되지 않은 학교에 질의 시
-    if school.status not in ("ready", "partial_failed"):
+    # 아직 준비되지 않은 학교에 질의 시. 다만 색인이 끝난 첨부가 하나라도 있으면
+    # 크롤링 결과 없이도 문서 RAG 로 답할 수 있으므로 질의를 열어준다.
+    if school.status not in ("ready", "partial_failed") and storage.count_ready_attachments(school_id) == 0:
         return _error_response(
             503,
             "SCHOOL_NOT_READY",
@@ -428,7 +446,151 @@ def query_school(school_id: int, body: QueryRequest):
         answer=result.answer,
         sources=result.sources,
         entity_ids=result.entity_ids,
+        source_type=result.source_type,
     )
+
+
+# ── 첨부 문서 (사용자 업로드) ──────────────────────────────────────────
+
+# 업로드 파일 1건 상한. 수강편람 PDF(수백 페이지)도 통상 이 안에 들어간다.
+MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+
+def _attachment_item(attachment: Attachment) -> AttachmentItem:
+    return AttachmentItem(
+        attachment_id=attachment.attachment_id,
+        filename=attachment.filename,
+        content_type=attachment.content_type,
+        byte_size=attachment.byte_size,
+        page_count=attachment.page_count,
+        chunk_count=attachment.chunk_count,
+        status=attachment.status,
+        error_code=attachment.error_code,
+        uploaded_at=attachment.uploaded_at,
+    )
+
+
+def _run_attachment_ingest(attachment: Attachment, data: bytes) -> None:
+    """백그라운드에서 첨부 한 건을 파싱·청킹·임베딩해 색인한다.
+
+    실패해도 첨부 상태(``failed``)와 ``error_code`` 는 인제스터가 남기므로, 여기서는
+    로그만 남기고 다른 첨부 처리를 막지 않는다.
+    """
+    try:
+        from app.attachment_ingest import AttachmentIngestor
+
+        ingestor = AttachmentIngestor(storage=_get_storage(), embedder=_get_embedder())
+        result = ingestor.ingest(attachment, data)
+        logger.info(
+            "첨부 색인 완료: school_id=%d, file=%s, units=%d, chunks=%d",
+            attachment.school_id, result.filename, result.unit_count, result.chunk_count,
+        )
+    except Exception:
+        logger.exception(
+            "첨부 색인 실패: school_id=%d, attachment_id=%s, file=%s",
+            attachment.school_id, attachment.attachment_id, attachment.filename,
+        )
+
+
+@app.post("/schools/{school_id}/attachments", status_code=202, response_model=AttachmentUploadResponse)
+async def upload_attachments(
+    school_id: int,
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(..., description="PDF·HWP 등 첨부 문서"),
+):
+    """학교에 첨부 문서(수강편람 PDF·HWP 등)를 올리고 색인을 비동기로 시작한다.
+
+    학교 등록 직후에도, 이미 등록된 학교에도 같은 경로로 올린다. 검증에 걸린 파일은
+    ``rejected`` 로 돌려주고 나머지는 계속 처리한다 — 한 파일 때문에 전체가 실패하지
+    않게 한다.
+    """
+    from hashlib import sha256
+
+    from app.attachment_ingest import is_supported, supported_extensions
+
+    storage = _get_storage()
+    if storage.get_school(school_id) is None:
+        return _school_not_found(school_id)
+
+    accepted: list[AttachmentItem] = []
+    rejected: list[RejectedAttachment] = []
+    for upload in files:
+        filename = (upload.filename or "").strip()
+        if not filename:
+            rejected.append(
+                RejectedAttachment(filename="(이름 없음)", code="INVALID_FILENAME", message="파일 이름이 없습니다.")
+            )
+            continue
+        if not is_supported(filename):
+            rejected.append(
+                RejectedAttachment(
+                    filename=filename,
+                    code="UNSUPPORTED_FILE_TYPE",
+                    message=f"지원하지 않는 파일 형식입니다. 지원: {', '.join(supported_extensions())}",
+                )
+            )
+            continue
+
+        data = await upload.read()
+        if not data:
+            rejected.append(
+                RejectedAttachment(filename=filename, code="EMPTY_FILE", message="빈 파일입니다.")
+            )
+            continue
+        if len(data) > MAX_ATTACHMENT_BYTES:
+            rejected.append(
+                RejectedAttachment(
+                    filename=filename,
+                    code="FILE_TOO_LARGE",
+                    message=f"파일이 너무 큽니다 (최대 {MAX_ATTACHMENT_BYTES // (1024 * 1024)}MB).",
+                )
+            )
+            continue
+
+        attachment = storage.create_attachment(
+            school_id=school_id,
+            filename=filename,
+            content_type=upload.content_type,
+            byte_size=len(data),
+            file_hash=sha256(data).hexdigest(),
+        )
+        background_tasks.add_task(_run_attachment_ingest, attachment, data)
+        accepted.append(_attachment_item(attachment))
+
+    if not accepted and rejected:
+        return _error_response(
+            415,
+            "NO_SUPPORTED_ATTACHMENT",
+            "처리할 수 있는 첨부가 없습니다.",
+            details={"rejected": [item.model_dump() for item in rejected]},
+        )
+
+    return AttachmentUploadResponse(accepted=accepted, rejected=rejected)
+
+
+@app.get("/schools/{school_id}/attachments", response_model=AttachmentListResponse)
+def list_attachments(school_id: int):
+    """학교에 올린 첨부 문서 목록과 색인 상태를 반환한다."""
+    storage = _get_storage()
+    if storage.get_school(school_id) is None:
+        return _school_not_found(school_id)
+
+    return AttachmentListResponse(
+        attachments=[_attachment_item(item) for item in storage.list_attachments(school_id)]
+    )
+
+
+@app.delete("/schools/{school_id}/attachments/{attachment_id}", status_code=204)
+def delete_attachment(school_id: int, attachment_id: int):
+    """첨부와 그 청크를 함께 지운다. 지운 뒤에는 문서 RAG 검색 대상에서 빠진다."""
+    storage = _get_storage()
+    if storage.get_school(school_id) is None:
+        return _school_not_found(school_id)
+
+    if not storage.delete_attachment(school_id, attachment_id):
+        return _error_response(404, "ATTACHMENT_NOT_FOUND", "해당 첨부를 찾을 수 없습니다.")
+
+    return Response(status_code=204)  # 204 는 본문을 실으면 안 된다
 
 
 @app.post("/schools/{school_id}/recrawl", status_code=202, response_model=RecrawlResponse)
