@@ -12,6 +12,7 @@ from app.crawler import (
     SejongNoticeAdapter,
     SkkuNoticeAdapter,
     YonseiNoticeAdapter,
+    adapter_for,
     html_hash,
     normalize_detail_url,
     normalize_url,
@@ -198,6 +199,19 @@ class CrawlerTests(unittest.TestCase):
             adapter.next_listing_url(html, listing_url),
             f"{listing_url}?mode=list&articleLimit=10&article.offset=10",
         )
+
+    def test_adapter_for_resolves_registered_hosts(self) -> None:
+        """등록된 학교는 전용 어댑터로, 그 외에는 공용 어댑터로 내려간다."""
+        cases = {
+            "https://www.yonsei.ac.kr/sc/254/subview.do": YonseiNoticeAdapter,
+            "https://www.sejong.ac.kr/kor/intro/notice1.do": SejongNoticeAdapter,
+            "https://WWW.HONGIK.AC.KR/kr/newscenter/notice.do": HongikNoticeAdapter,
+            "https://www.skku.edu/skku/campus/skk_comm/notice02.do": SkkuNoticeAdapter,
+            "https://example.edu/notice/list.do": CommonNoticeAdapter,
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url):
+                self.assertIsInstance(adapter_for(url), expected)
 
     def test_sejong_override_reads_pinned_and_normal_rows(self) -> None:
         """``b-top-box``(상단 고정공지)가 아닌 일반 공지 행도 수집한다."""

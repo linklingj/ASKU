@@ -219,6 +219,28 @@ class SkkuNoticeAdapter(CommonNoticeAdapter):
             )
 
 
+# 호스트별 학교 어댑터. 미등록 호스트는 `CommonNoticeAdapter` 로 폴백한다.
+# 새 학교를 추가할 땐 어댑터 클래스와 함께 여기에 호스트를 등록한다.
+ADAPTER_REGISTRY: dict[str, type[CommonNoticeAdapter]] = {
+    "www.yonsei.ac.kr": YonseiNoticeAdapter,
+    "www.sejong.ac.kr": SejongNoticeAdapter,
+    "www.hongik.ac.kr": HongikNoticeAdapter,
+    "www.skku.edu": SkkuNoticeAdapter,
+}
+
+
+def adapter_for(base_url: str) -> CommonNoticeAdapter:
+    """`base_url` 호스트에 맞는 어댑터를 만든다.
+
+    공용 파서는 `table tbody tr` 기반이라 연세대(`ul > li`)·성균관대(`dl`)처럼
+    구조가 다른 게시판에서는 목록을 한 줄도 읽지 못한다. 등록된 학교는 반드시
+    전용 어댑터로 내려보내야 한다.
+    """
+
+    host = urlsplit(base_url).hostname or ""
+    return ADAPTER_REGISTRY.get(host.lower(), CommonNoticeAdapter)()
+
+
 HashExists = Callable[[int, str, str], bool]
 UrlExists = Callable[[int, str], bool]
 RobotsAllowed = Callable[[str], bool]
