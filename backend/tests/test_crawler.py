@@ -665,6 +665,46 @@ class MultiBoardTests(unittest.TestCase):
         self.assertNotIn(self.SECOND, session.calls)  # 예산이 바닥나면 다음 탭으로 넘어가지 않는다
         self.assertEqual([f.error_code for f in run.failures], ["REQUEST_BUDGET_EXCEEDED"])
 
+    def test_boards_are_visited_round_robin_so_no_tab_starves(self) -> None:
+        """게시판을 하나씩 끝까지 돌면 공지가 많은 앞쪽 탭이 예산을 다 쓴다."""
+
+        def listing(board: int, page: int) -> str:
+            rows = "".join(
+                f"<tr><td>{i}</td><td><a href='/v.do?id={board}-{page}-{i}'>공지</a></td>"
+                f"<td>부서</td><td>2026-07-01</td></tr>"
+                for i in range(4)
+            )
+            return f"<table><tbody>{rows}</tbody></table><a rel='next' href='/l.do?b={board}&p={page + 1}'>다음</a>"
+
+        class Pages(dict):
+            """페이지를 미리 다 만들지 않고 요청이 올 때 만들어 준다."""
+
+            def __missing__(self, url: str) -> FakeResponse:
+                if "/l.do" in url:
+                    board = int(url.split("b=")[1].split("&")[0])
+                    page = int(url.split("p=")[1])
+                    return FakeResponse(200, listing(board, page))
+                return FakeResponse(200, "<main>본문</main>")
+
+        session = FakeSession(Pages())
+        boards = tuple(Board(f"https://example.edu/l.do?b={i}&p=1", f"탭{i}") for i in range(1, 4))
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            session=session,
+            sleeper=lambda _seconds: None,
+            robots_allowed=lambda _url: True,
+        )
+
+        # 1바퀴에 목록 3회 + 상세 12회 = 15회. 예산 20회면 2바퀴를 다 돌지 못한다.
+        run = crawler.crawl_boards(self.request(max_requests=20), boards, CommonNoticeAdapter())
+
+        collected = {label: 0 for label in ("탭1", "탭2", "탭3")}
+        for page in run.pages:
+            collected[page.category_hint] += 1
+        # 순서대로 돌면 탭1 이 20회를 다 써 탭2·탭3 이 0건이 된다
+        self.assertTrue(all(count >= 4 for count in collected.values()), collected)
+
     def test_boards_for_returns_registered_tabs_or_the_url_itself(self) -> None:
         sejong = boards_for("https://www.sejong.ac.kr/kor/intro/notice1.do")
         self.assertGreater(len(sejong), 1)
