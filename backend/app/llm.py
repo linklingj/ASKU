@@ -67,7 +67,19 @@ class Extractor(abc.ABC):
         """
 
 
-class GeminiProvider(Generator, Extractor):
+class SpecDrafter(abc.ABC):
+    """게시판 HTML 에서 수집 규격 초안을 만드는 능력.
+
+    답변 생성·엔티티 추출과 목적이 다르다. 학교를 등록할 때 한 번만 부르고,
+    결과는 사람이 쓴 규격과 같은 자리(`adapter_specs`)에 들어간다.
+    """
+
+    @abc.abstractmethod
+    def draft_spec(self, prompt: str) -> str:
+        """규격 JSON 문자열을 만든다. 스키마 검증과 채점은 호출자가 한다."""
+
+
+class GeminiProvider(Generator, Extractor, SpecDrafter):
     """Gemini API 로 답변 생성·구조화 추출을 담당한다(임베딩은 LocalEmbedder 몫).
 
     api_key·model 은 환경변수/인자로 주입한다(하드코딩 금지): `GEMINI_API_KEY`,
@@ -102,6 +114,16 @@ class GeminiProvider(Generator, Extractor):
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
         return Extraction.model_validate_json(resp.text)
+
+    def draft_spec(self, prompt: str) -> str:
+        from google.genai import types
+
+        resp = self._client.models.generate_content(
+            model=self._model,
+            contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        return resp.text
 
 
 class LocalEmbedder(Embedder):

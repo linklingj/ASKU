@@ -160,6 +160,30 @@ class DetailValidationTests(unittest.TestCase):
 
         self.assertNotIn("TITLE_MISMATCH", [f.code for f in report.findings])
 
+    def test_listing_title_with_extra_badge_still_matches(self) -> None:
+        """목록에는 상세에 없는 말머리가 붙는다(아주대 `[공지] [생활관] …`).
+
+        말머리가 제목 셀 안에 있어 선택자로 떼어낼 수 없다. 이를 불일치로 보면
+        고칠 수 없는 문제를 규격 탓으로 돌리게 된다.
+        """
+
+        report = validate_detail(
+            self.document("본문을 충분히 채운 공지 문단입니다. " * 3, title="[생활관] 2026학년도 2학기 잔여석 신청 안내"),
+            item("[공지] [생활관] 2026학년도 2학기 잔여석 신청 안내"),
+        )
+
+        self.assertNotIn("TITLE_MISMATCH", [f.code for f in report.findings])
+
+    def test_short_detail_title_does_not_pass_by_accident(self) -> None:
+        """짧은 제목은 우연히 포함될 수 있어 일치 근거로 쓰지 않는다."""
+
+        report = validate_detail(
+            self.document("전혀 다른 공지의 본문입니다. " * 4, title="공지"),
+            item("공지사항 안내문 제목입니다"),
+        )
+
+        self.assertIn("TITLE_MISMATCH", [f.code for f in report.findings])
+
     def test_body_fallback_is_reported(self) -> None:
         report = validate_detail(
             self.document("장학금 신청 안내 " + "본문 " * 30, fallback=True),

@@ -51,7 +51,7 @@ nano .env
 |---|---|
 | `POSTGRES_PASSWORD` | DB 비밀번호. DB 컨테이너와 `DATABASE_URL`에 함께 쓰임 |
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey)에서 발급 |
-| `GEMINI_MODEL` | 기본 `gemini-2.5-flash` (저비용). 필요 시 변경 |
+| `GEMINI_MODEL` | 기본 `gemini-3.5-flash` (저비용). 필요 시 변경. `gemini-2.5-flash` 는 신규 키로 호출하면 404 다 |
 
 `DATABASE_URL`은 compose가 `db` 서비스명으로 자동 구성하므로 직접 넣지 않는다.
 

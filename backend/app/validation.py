@@ -132,10 +132,8 @@ def validate_detail(
         report.add("EMPTY_CONTENT", f"본문이 {len(content)}자뿐이다(기준 {MIN_CONTENT_CHARS}자)")
 
     # 목록의 제목이 상세 본문·제목 어디에도 없으면 링크를 잘못 잡았을 가능성이 크다.
-    if item.title_hint:
-        haystack = _squash(f"{document.title or ''} {content}")
-        if _squash(item.title_hint) not in haystack:
-            report.add("TITLE_MISMATCH", f"목록 제목이 상세 페이지에 없다: {item.title_hint[:40]}")
+    if item.title_hint and not _titles_match(item.title_hint, document, content):
+        report.add("TITLE_MISMATCH", f"목록 제목이 상세 페이지에 없다: {item.title_hint[:40]}")
 
     leaked = [title for title in (other_titles or []) if _squash(title) in _squash(content)]
     if leaked:
@@ -245,6 +243,25 @@ def _check_pagination(adapter: NoticeAdapter, html: str, listing_url: str, repor
 
 def _ratio(items: list[ListingItem], predicate) -> float:
     return sum(1 for item in items if predicate(item)) / len(items) if items else 0.0
+
+
+def _titles_match(listing_title: str, document: CleanedDocument, content: str) -> bool:
+    """목록 제목과 상세 페이지가 같은 글을 가리키는지 본다.
+
+    양쪽 포함 관계를 모두 본다. 목록에는 상세에 없는 말머리가 붙는 경우가 있고
+    (아주대 `[공지] [생활관] …` 대 `[생활관] …`), 이는 목록 제목 셀 안에 들어
+    있어 선택자로 떼어낼 수 없다. 한 방향만 보면 고칠 수 없는 문제를 규격 탓으로
+    돌리게 된다.
+    """
+
+    listing = _squash(listing_title)
+    if not listing:
+        return True
+    if listing in _squash(f"{document.title or ''} {content}"):
+        return True
+    detail_title = _squash(document.title or "")
+    # 짧은 제목이 우연히 포함되는 것을 막는다. 말머리를 뗀 제목은 충분히 길다.
+    return len(detail_title) >= 8 and detail_title in listing
 
 
 def _squash(value: str) -> str:
