@@ -240,6 +240,40 @@ class SchoolDetailStats(BaseModel):
     last_crawled_at: datetime | None = None
 
 
+class CrawlQualityFinding(BaseModel):
+    """수집 품질 검증에서 발견한 문제 하나."""
+
+    code: str
+    detail: str
+
+
+class CrawlQualityBoard(BaseModel):
+    """게시판 하나의 마지막 수집 품질 지표."""
+
+    board: str
+    listing_rows: int = 0
+    title_ratio: float = 0.0
+    date_ratio: float = 0.0
+    checked_details: int = 0
+    findings: list[CrawlQualityFinding] = Field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        return not self.findings
+
+
+class CrawlQuality(BaseModel):
+    """학교 상세의 수집 품질 섹션.
+
+    파서가 사이트 구조와 어긋나도 크롤은 0건 성공으로 끝나므로, 상태값만으로는
+    정상과 구분되지 않는다. 게시판별 지표를 함께 노출해 원인을 드러낸다.
+    """
+
+    status: Literal["unknown", "ok", "warning"] = "unknown"
+    checked_at: datetime | None = None
+    boards: list[CrawlQualityBoard] = Field(default_factory=list)
+
+
 class SchoolDetailResponse(BaseModel):
     """GET /schools/{id} 응답."""
 
@@ -249,6 +283,7 @@ class SchoolDetailResponse(BaseModel):
     crawl_schedule: str | None = None
     status: str
     stats: SchoolDetailStats
+    crawl_quality: CrawlQuality = Field(default_factory=CrawlQuality)
     created_at: datetime
     updated_at: datetime
 

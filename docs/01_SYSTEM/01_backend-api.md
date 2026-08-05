@@ -123,10 +123,38 @@ GET /schools/{school_id}
     "entity_count": 1023,
     "last_crawled_at": "2026-07-24T12:30:00Z"
   },
+  "crawl_quality": {
+    "status": "warning",
+    "checked_at": "2026-07-24T12:30:00Z",
+    "boards": [
+      {
+        "board": "일반공지",
+        "listing_rows": 16,
+        "title_ratio": 1.0,
+        "date_ratio": 1.0,
+        "checked_details": 3,
+        "findings": []
+      },
+      {
+        "board": "장학",
+        "listing_rows": 0,
+        "title_ratio": 0.0,
+        "date_ratio": 0.0,
+        "checked_details": 0,
+        "findings": [
+          {"code": "NO_LISTING_ROWS", "detail": "목록에서 공지를 한 줄도 읽지 못했다"}
+        ]
+      }
+    ]
+  },
   "created_at": "2026-07-24T12:00:00Z",
   "updated_at": "2026-07-24T12:30:00Z"
 }
 ```
+
+`crawl_quality`는 마지막 크롤의 수집 품질이다. `status`는 `unknown`(아직 판정 없음) · `ok` · `warning` 중 하나이며, 게시판 하나라도 문제가 있으면 `warning`이다.
+
+파서가 사이트 구조와 어긋나도 크롤은 0건 성공으로 끝나 `status: "ready"`가 되므로, 상태값만으로는 정상과 구분되지 않는다. 이 섹션이 그 차이를 드러낸다. 판정 항목은 [`03_crawler.md`](03_crawler.md) §6-2에 정리돼 있다.
 
 ---
 

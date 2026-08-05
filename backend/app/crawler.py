@@ -241,6 +241,10 @@ def adapter_for(base_url: str) -> CommonNoticeAdapter:
     return ADAPTER_REGISTRY.get(host.lower(), CommonNoticeAdapter)()
 
 
+# 라벨 없는 단일 게시판을 지표에 표기할 때 쓰는 이름.
+DEFAULT_BOARD_LABEL = "기본"
+
+
 @dataclass(frozen=True)
 class Board:
     """수집할 게시판 하나. `label` 은 공지의 분류 힌트로 전달된다."""
@@ -293,6 +297,9 @@ class CrawlStorage(Protocol):
 class CrawlRun:
     pages: list[CrawledPage] = field(default_factory=list)
     failures: list[CrawlFailure] = field(default_factory=list)
+    # 게시판별 첫 목록 페이지 HTML. 수집 품질 검증이 파서를 다시 돌려 보기 위해
+    # 남긴다(`app.validation`). 목록 전체를 들고 있지는 않는다.
+    first_listing_html: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -487,6 +494,8 @@ class Crawler:
             if budget.exhausted:
                 self._budget_failure(request, listing_url, run, budget)
             return
+        if cursor.pages_done == 1:
+            run.first_listing_html[board.label or DEFAULT_BOARD_LABEL] = listing_html
 
         # 재크롤 조기 종료 판단용. 목록은 최신순이라 한 페이지가 통째로
         # unchanged 면 뒤쪽은 볼 필요가 없다.

@@ -165,6 +165,33 @@ frontier URL -> 정책 검사 -> 목록/상세 수집 -> URL 정규화 + 해시 
 - 한 페이지 실패가 기존 문서나 그래프 데이터를 삭제하지 않는다. 미관측 URL의 만료 판정은 Scheduler의 확인 정책 뒤에만 수행한다.
 - 실행 상태는 `queued / running / completed / partial_failed / failed`로 기록한다.
 
+## 6-2. 수집 품질 검증
+
+파서가 사이트 구조와 어긋나도 크롤은 예외 없이 **0건 성공**으로 끝난다. 상태값만 보면 정상과 구분되지 않으므로, 실행마다 지표를 남겨 드러낸다(`app/validation.py`).
+
+크롤이 끝나면 게시판별로 판정해 `crawl_quality` 테이블에 이력으로 쌓고, `GET /schools/{id}` 의 `crawl_quality` 로 노출한다. 이력으로 쌓는 이유는 직전 실행과 비교해야 급감을 알 수 있기 때문이다. 판정은 이미 받아 둔 HTML 로만 하며 추가 요청을 보내지 않는다.
+
+| 코드 | 뜻 |
+|---|---|
+| `NO_LISTING_ROWS` | 목록을 한 줄도 읽지 못했다(파서와 구조 불일치) |
+| `LISTING_ROWS_DROPPED` | 직전 크롤의 절반 아래로 줄었다(부분 불일치·사이트 개편) |
+| `MISSING_TITLES` · `MISSING_DATES` | 링크는 잡았으나 메타데이터 선택자가 어긋났다 |
+| `EMPTY_CONTENT` | 본문이 최소 길이에 못 미친다 |
+| `NEIGHBOUR_LEAK` | 다른 공지 제목이 본문에 섞였다(이전·다음 글 목록까지 잡음) |
+| `TITLE_MISMATCH` | 목록 제목이 상세 페이지에 없다(상세 링크 오연결) |
+| `BODY_FALLBACK` | 본문 영역을 못 찾아 페이지 전체를 본문으로 썼다 |
+| `PAGINATION_LOOP` | 다음 페이지 링크가 현재 페이지와 같다 |
+
+기준값(`MIN_TITLE_RATIO`, `LISTING_DROP_RATIO` 등)은 운영하며 오탐·미탐을 보고 조정한다. 특히 행 수 급감은 공지가 실제로 줄어드는 경우와 구분되지 않으므로 경고 성격으로 다룬다.
+
+학교를 등록하기 전이나 파서를 고친 뒤에는 같은 기준을 개발용 명령으로 확인한다.
+
+```bash
+PYTHONPATH=backend python3 backend/scripts/validate_school.py --all
+```
+
+> **조사에 존재하지 않는 게시글 번호를 쓰지 않는다.** 일부 사이트는 없는 `articleNo` 를 요청해도 404 대신 목록을 돌려준다. 이를 상세 페이지로 오인하면 멀쩡한 학교를 "본문이 없는 사이트"로 잘못 판정한다. 반드시 목록에서 얻은 실제 링크를 쓴다.
+
 ## 7. 확장 가능성
 
 - 모든 작업에 `school_id`와 URL 범위를 넣어 여러 학교를 격리한다.
