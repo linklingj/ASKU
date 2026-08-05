@@ -23,6 +23,13 @@ Crawler는 학교의 `base_url`에서 공지·학사 정보를 수집해 Extract
 - 임베딩 생성, 그래프 구성, 데이터베이스 직접 쓰기
 - 재크롤링 주기 결정(이는 Scheduler의 책임)
 
+> **첨부 본문은 업로드 경로로 처리한다.** 수강편람 PDF·학칙 HWP 등은 크롤러가 내려받아
+> 파싱하지 않고, 사용자가 `POST /schools/{id}/attachments`로 직접 올린다
+> ([`01_backend-api.md`](01_backend-api.md) §2.4-1). 크롤러는 지금까지처럼 첨부의
+> URL·파일명 힌트만 `CrawledPage.attachments`에 담아 전달한다. 로그인·세션이 필요한
+> 다운로드 서블릿이나 robots.txt 제약에 걸리는 파일도 사용자가 올리면 색인되므로,
+> 크롤러 범위를 넓히지 않고도 문서 RAG가 성립한다([`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
+
 Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_url_exists`로 기존 본문 해시와 원문 URL 처리 이력을 조회하며, 다른 테이블이나 SQL에 직접 접근하지 않는다. 같은 해시이면 `unchanged`, 같은 URL의 다른 해시면 `changed`, 처음 보는 URL이면 `new`다. 구현에서는 `Crawler.from_storage(storage)`로 두 조회를 연결한다.
 
 ## 3. 입력과 출력
@@ -102,9 +109,27 @@ frontier URL -> 정책 검사 -> 목록/상세 수집 -> URL 정규화 + 해시 
 
 호출을 동기 API로 할지 작업 큐로 할지는 **미정**이다. 어느 방식이든 `crawl_id`와 `school_id`를 포함해 실행을 추적한다.
 
+## 5-2. robots.txt 정책과 요청 간격
+
+파서는 `protego`를 쓴다. 표준 `urllib.robotparser`는 경로 안 와일드카드(`Disallow: /*?mode=view`)와 `$` 앵커를 지원하지 않고, Allow/Disallow 우선순위도 RFC 9309의 최장 일치가 아니라 파일에 쓰인 순서로 정한다. 두 한계가 각각 **금지된 URL을 허용으로**, **허용된 게시판을 금지로** 오판한다.
+
+응답 상태별 판정(RFC 9309 §2.3.1):
+
+| robots.txt 응답 | 판정 | 실패 코드 |
+|---|---|---|
+| 200 | 규칙대로 | — |
+| 401 · 403 | 오리진 전체 금지 | `ROBOTS_DISALLOWED` (재시도 안 함) |
+| 그 밖의 4xx (404 등) | 전면 허용 | — |
+| 5xx · 네트워크 오류 | 일시적 전체 금지 | `ROBOTS_UNREACHABLE` (재시도 대상) |
+
+- 판정은 **오리진당 한 번만** 가져와 캐시한다. 거부까지 캐시해야 robots.txt가 401/403인 사이트에 URL마다 다시 요청하는 일이 없다.
+- 검사 대상은 기준 URL·상세 URL뿐 아니라 **모든 목록 페이지**다. 페이지네이션 URL만 막아 둔 사이트를 2페이지부터 그냥 통과시키면 안 된다.
+- 요청 간격은 `max(설정값 1초, robots.txt의 Crawl-delay)`이며, **응답 상태와 무관하게** 지킨다. 200일 때만 쉬면 죽은 링크가 늘어선 목록을 무지연으로 연타하게 된다. 재시도 백오프(1→2→4초)는 이와 별개로 더해진다.
+- `robots.txt` 자체를 가져올 때는 아직 선언값을 모르므로 설정값(1초)을 쓴다.
+
 ## 6. 오류 처리
 
-- `robots.txt` 거부·허용 범위 밖 URL은 재시도하지 않고 정책 거부로 기록한다.
+- `robots.txt` 거부·허용 범위 밖 URL은 재시도하지 않고 정책 거부로 기록한다. 다만 `robots.txt`를 읽지 못해 막은 경우(`ROBOTS_UNREACHABLE`)는 나중에 풀릴 수 있으므로 재시도 대상으로 남긴다.
 - 네트워크 오류, 429, 5xx는 최대 3회, 기본 1초 간격의 지수 백오프 재시도 대상이다. 요청 간 기본 간격은 1초이며 `robots.txt`가 더 엄격하면 그 값을 우선한다.
 - 4xx, 파싱 불가 콘텐츠, 렌더링 실패는 해당 페이지의 실패로 남기고 다른 URL 수집은 계속한다.
 - `school_id + canonical_url + content_hash`와 `crawl_id`를 멱등 키로 사용해 재시도 중복을 막는다.

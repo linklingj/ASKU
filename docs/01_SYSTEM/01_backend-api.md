@@ -156,13 +156,75 @@ POST /schools/{school_id}/query
       "title": "2026학년도 2학기 성적우수 장학금 안내",
       "url": "https://www.yonsei.ac.kr/..."
     }
+  ],
+  "entity_ids": ["e_123"],
+  "source_type": "graph"
+}
+```
+
+내부적으로 RAG Engine의 `answer(school_id, question)`을 호출한다
+([`07_graph-rag-engine.md`](07_graph-rag-engine.md)). 엔진은 **그래프 RAG → 문서 RAG**
+순으로 2단 검색하며, `source_type`이 어느 단계가 답을 냈는지 알린다.
+
+| `source_type` | 뜻 | `sources` |
+|---|---|---|
+| `"graph"` | 크롤링 공지 + 그래프 확장으로 답함 | 공지 제목·원문 URL |
+| `"document"` | 업로드 첨부(수강편람 등)로 답함 | `"수강편람.pdf - 12페이지"` · `attachment://7` |
+| `null` | 두 단계 모두 근거를 못 찾아 보류 | `[]` |
+
+근거 청크가 없거나 유사도가 임계 미만이면 `answer`에 정보 부재 메시지를 반환한다.
+
+학교가 아직 `ready`가 아니어도 **색인이 끝난 첨부가 하나라도 있으면** 질의를 받는다.
+크롤링이 실패한 학교라도 올려둔 문서로는 답할 수 있어야 하기 때문이다.
+
+---
+
+### 2.4-1 첨부 문서 업로드
+
+```
+POST   /schools/{school_id}/attachments        # multipart/form-data, 필드명 files (복수 가능)
+GET    /schools/{school_id}/attachments
+DELETE /schools/{school_id}/attachments/{attachment_id}
+```
+
+수강편람 PDF·학칙 HWP 처럼 웹에서 크롤링되지 않는 문서를 사용자가 직접 올린다.
+**학교 등록 직후에도, 이미 등록된 학교에도** 같은 경로로 올린다. 크롤러는 이 경로에
+관여하지 않는다 — 첨부 본문 파싱은 여전히 크롤러 범위 밖이다([`03_crawler.md`](03_crawler.md)).
+
+지원 형식: `.pdf` · `.hwp` · `.hwpx` · `.txt` · `.md`. 파일당 최대 50MB.
+
+**응답 `202 Accepted`** — 파싱·임베딩은 백그라운드에서 이어진다.
+
+```json
+{
+  "accepted": [
+    {
+      "attachment_id": 7,
+      "filename": "2026_수강편람.pdf",
+      "content_type": "application/pdf",
+      "byte_size": 4823910,
+      "page_count": 0,
+      "chunk_count": 0,
+      "status": "pending",
+      "error_code": null,
+      "uploaded_at": "2026-08-05T09:00:00Z"
+    }
+  ],
+  "rejected": [
+    { "filename": "캠퍼스맵.png", "code": "UNSUPPORTED_FILE_TYPE", "message": "지원하지 않는 파일 형식입니다. ..." }
   ]
 }
 ```
 
-내부적으로 Graph RAG Engine의 `answer(school_id, question)`을 호출한다
-([`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
-근거 청크가 없거나 유사도가 임계 미만이면 `answer`에 정보 부재 메시지를 반환한다.
+- 검증에 걸린 파일은 `rejected`로 돌려주고 **나머지는 계속 처리한다** — 한 파일 때문에
+  업로드 전체가 실패하지 않는다. 처리 가능한 파일이 하나도 없으면 `415 NO_SUPPORTED_ATTACHMENT`.
+- 같은 학교에 같은 파일을 다시 올리면 새 첨부가 생기지 않고 기존 첨부를 다시 색인한다
+  (파일 바이트 해시 기준, [`06_storage.md`](06_storage.md)).
+- 색인 진행은 `GET .../attachments` 의 `status`(`pending` → `indexing` → `ready`/`failed`)로
+  확인한다. 실패 시 `error_code`(예: `HWP_ENCRYPTED`, `EMPTY_CONTENT`)가 사유를 알린다.
+  스캔 이미지만 있어 텍스트 계층이 없는 PDF 는 `EMPTY_CONTENT`로 실패한다(OCR 미지원).
+- `DELETE`는 첨부와 그 청크를 함께 지운다(`204 No Content`). 지운 뒤에는 문서 RAG 검색
+  대상에서 빠진다.
 
 ---
 
@@ -303,8 +365,10 @@ GET /schools/{school_id}/entities/{entity_id}
 | 404 | `SCHOOL_NOT_FOUND` | 존재하지 않는 `school_id` |
 | 409 | `CRAWL_IN_PROGRESS` | 이미 크롤링 진행 중인데 재크롤링 요청 |
 | 422 | `INVALID_URL` | `base_url` 형식이 올바르지 않음 |
+| 415 | `NO_SUPPORTED_ATTACHMENT` | 업로드에 처리 가능한 첨부가 하나도 없음 (`details.rejected`에 사유) |
+| 404 | `ATTACHMENT_NOT_FOUND` | 삭제·조회 대상 첨부가 없음 |
 | 500 | `INTERNAL_ERROR` | 서버 내부 오류 |
-| 503 | `SCHOOL_NOT_READY` | 학교 데이터가 아직 준비되지 않음 (크롤링·인덱싱 중 질의 시) |
+| 503 | `SCHOOL_NOT_READY` | 학교 데이터가 아직 준비되지 않음 (크롤링·인덱싱 중이고 색인된 첨부도 없을 때) |
 
 ## 5. 다른 시스템과의 연동
 
@@ -312,7 +376,8 @@ GET /schools/{school_id}/entities/{entity_id}
 |---|---|---|
 | Frontend | 이전 | REST 요청을 받는다. |
 | Crawler | 다음 | 학교 등록·수동 재크롤링 시 `CrawlRequest`를 생성·전달한다 ([`03_crawler.md`](03_crawler.md)). |
-| Graph RAG Engine | 다음 | 질의 시 `answer(school_id, question)`을 호출한다 ([`07_graph-rag-engine.md`](07_graph-rag-engine.md)). |
+| RAG Engine | 다음 | 질의 시 `HybridRAG.answer(school_id, question)`을 호출한다. 그래프→문서 단계 선택은 엔진 책임이다 ([`07_graph-rag-engine.md`](07_graph-rag-engine.md)). |
+| 첨부 인제스터 | 다음 | 업로드 첨부를 백그라운드에서 파싱·청킹·임베딩해 `documents(source_type='attachment')`로 저장한다. |
 | Storage | 양방향 | 학교 CRUD, 상태 조회·갱신을 공개 인터페이스로 요청한다 ([`06_storage.md`](06_storage.md)). |
 | Scheduler | 간접 | Scheduler가 주기적으로 재크롤링 `CrawlRequest`를 만들 때 같은 경로를 탄다 ([`09_scheduler.md`](09_scheduler.md)). |
 

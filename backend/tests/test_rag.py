@@ -1,4 +1,4 @@
-"""Graph RAG 엔진의 DB·모델 독립 계약 테스트.
+"""RAG 엔진(그래프 → 문서 2단 fallback)의 DB·모델 독립 계약 테스트.
 
 저장소(RagStorage)와 LLM(Embedder·Extractor·Generator)을 가짜로 주입해 pgvector·
 bge-m3·Gemini 없이 질의 흐름과 환각 방지 분기를 검증한다.
@@ -9,8 +9,8 @@ import unittest
 
 from app.graph_builder import normalize_entity_key
 from app.llm import Embedder, Extraction, Extractor, Generator
-from app.models import EMBEDDING_DIM, Document
-from app.rag import NO_EVIDENCE_ANSWER, GraphRAG
+from app.models import EMBEDDING_DIM, SOURCE_TYPE_ATTACHMENT, SOURCE_TYPE_WEB, Document
+from app.rag import NO_EVIDENCE_ANSWER, DocumentRAG, GraphRAG, HybridRAG
 from app.schemas import ExtractedEntity
 
 
@@ -43,16 +43,18 @@ class FakeGenerator(Generator):
 
 
 class FakeStorage:
-    def __init__(self, *, hits=(), entities=(), neighbors=(), documents=()) -> None:
-        self._hits = list(hits)  # [(Document, score)]
+    def __init__(self, *, hits=(), entities=(), neighbors=(), documents=(), attachment_hits=()) -> None:
+        self._hits = list(hits)  # [(Document, score)] — source_type='web' 풀
+        self._attachment_hits = list(attachment_hits)  # source_type='attachment' 풀
         self._entities = list(entities)  # [SimpleNamespace(entity_id, norm_key)]
         self._neighbors = list(neighbors)
         self._docs = {doc.doc_id: doc for doc in documents}
         self.calls: list[tuple] = []
 
-    def vector_search(self, school_id, query_embedding, k):
-        self.calls.append(("vector_search", school_id))
-        return self._hits[:k]
+    def vector_search(self, school_id, query_embedding, k, *, source_type=None):
+        self.calls.append(("vector_search", school_id, source_type))
+        pool = self._attachment_hits if source_type == SOURCE_TYPE_ATTACHMENT else self._hits
+        return pool[:k]
 
     def entities_by_norm_keys(self, school_id, norm_keys):
         self.calls.append(("entities_by_norm_keys", school_id, tuple(norm_keys)))
@@ -221,6 +223,132 @@ class GraphRagTests(unittest.TestCase):
         self.assertIn(("get_documents", 1, ()), storage.calls)  # 이웃 근거가 이미 top-k 에 있어 추가 조회 없음
         _, context = generator.calls[0]
         self.assertIn("ASKU —담당→ 팀 (출처: https://ex.edu/1)", context)
+
+    def test_graph_rag_searches_only_the_web_pool(self) -> None:
+        storage = FakeStorage(hits=[(doc(1), 0.9)])
+
+        result = engine(storage).answer(1, "q")
+
+        self.assertEqual(result.source_type, "graph")
+        self.assertIn(("vector_search", 1, SOURCE_TYPE_WEB), storage.calls)
+
+
+def attachment_doc(doc_id: int, *, filename="수강편람.pdf", page=None, content="첨부 본문") -> Document:
+    """업로드 첨부에서 나온 청크. source_url 은 attachment://{id} 합성 URI 다."""
+
+    return Document(
+        doc_id=doc_id,
+        school_id=1,
+        source_url=f"attachment://{doc_id}",
+        title=filename,
+        content=content,
+        content_hash="h",
+        source_type=SOURCE_TYPE_ATTACHMENT,
+        page=page,
+        attachment_id=doc_id,
+    )
+
+
+def document_engine(storage, *, generator=None, **kwargs) -> DocumentRAG:
+    return DocumentRAG(storage, FakeEmbedder(), generator or FakeGenerator(), **kwargs)
+
+
+class DocumentRagTests(unittest.TestCase):
+    def test_answer_uses_attachment_pool_and_cites_pages(self) -> None:
+        storage = FakeStorage(
+            hits=[(doc(1), 0.9)],  # 그래프 풀에 근거가 있어도 문서 RAG 는 쓰지 않는다
+            attachment_hits=[(attachment_doc(5, page=3, content="졸업 학점 130학점"), 0.8)],
+        )
+        generator = FakeGenerator()
+
+        result = document_engine(storage, generator=generator).answer(1, "졸업 학점은?")
+
+        self.assertEqual(result.answer, "생성된 답변")
+        self.assertEqual(result.source_type, "document")
+        self.assertEqual(
+            [(source.title, source.url) for source in result.sources],
+            [("수강편람.pdf - 3페이지", "attachment://5")],
+        )
+        _, context = generator.calls[0]
+        self.assertIn("졸업 학점 130학점", context)
+        self.assertIn("수강편람.pdf - 3페이지", context)
+        self.assertEqual(storage.calls, [("vector_search", 1, SOURCE_TYPE_ATTACHMENT)])
+
+    def test_same_attachment_pages_merge_into_one_source(self) -> None:
+        page_3 = attachment_doc(5, page=3)
+        page_15 = Document(**{**attachment_doc(5, page=15).model_dump(), "doc_id": 6})
+        storage = FakeStorage(attachment_hits=[(page_3, 0.9), (page_15, 0.7)])
+
+        result = document_engine(storage).answer(1, "q")
+
+        self.assertEqual(
+            [(source.title, source.url) for source in result.sources],
+            [("수강편람.pdf - 3, 15페이지", "attachment://5")],  # 뒤쪽 페이지 인용이 사라지지 않는다
+        )
+
+    def test_page_is_omitted_from_citation_when_unpaginated(self) -> None:
+        storage = FakeStorage(attachment_hits=[(attachment_doc(5, filename="안내.txt", page=None), 0.9)])
+
+        result = document_engine(storage).answer(1, "q")
+
+        self.assertEqual([source.title for source in result.sources], ["안내.txt"])
+
+    def test_below_threshold_returns_no_evidence_without_generate(self) -> None:
+        storage = FakeStorage(attachment_hits=[(attachment_doc(5), 0.2)])
+        generator = FakeGenerator()
+
+        result = document_engine(storage, generator=generator, min_similarity=0.3).answer(1, "q")
+
+        self.assertEqual(result.answer, NO_EVIDENCE_ANSWER)
+        self.assertEqual(result.sources, [])
+        self.assertIsNone(result.source_type)
+        self.assertEqual(generator.calls, [])
+
+
+class HybridRagTests(unittest.TestCase):
+    """그래프 → 문서 → 실패의 2단 fallback 순서."""
+
+    def _hybrid(self, storage, *, generator=None, extractor=None) -> HybridRAG:
+        generator = generator or FakeGenerator()
+        return HybridRAG(
+            graph_rag=GraphRAG(storage, FakeEmbedder(), extractor or FakeExtractor(), generator),
+            document_rag=DocumentRAG(storage, FakeEmbedder(), generator),
+        )
+
+    def test_graph_answer_short_circuits_document_stage(self) -> None:
+        storage = FakeStorage(
+            hits=[(doc(1), 0.9)],
+            attachment_hits=[(attachment_doc(5), 0.9)],
+        )
+
+        result = self._hybrid(storage).answer(1, "q")
+
+        self.assertEqual(result.source_type, "graph")
+        self.assertNotIn(("vector_search", 1, SOURCE_TYPE_ATTACHMENT), storage.calls)
+
+    def test_falls_back_to_documents_when_graph_has_no_evidence(self) -> None:
+        storage = FakeStorage(hits=[], attachment_hits=[(attachment_doc(5), 0.9)])
+
+        result = self._hybrid(storage).answer(1, "q")
+
+        self.assertEqual(result.source_type, "document")
+        self.assertEqual(result.answer, "생성된 답변")
+        self.assertEqual([source.url for source in result.sources], ["attachment://5"])
+
+    def test_both_stages_without_evidence_report_failure(self) -> None:
+        storage = FakeStorage(hits=[], attachment_hits=[])
+        generator = FakeGenerator()
+
+        result = self._hybrid(storage, generator=generator).answer(1, "q")
+
+        self.assertEqual(result.answer, NO_EVIDENCE_ANSWER)
+        self.assertEqual(result.sources, [])
+        self.assertIsNone(result.source_type)  # 어느 단계도 답을 내지 못했다
+        self.assertEqual(generator.calls, [])  # 생성 없이 보류(환각 방지)
+        self.assertEqual(
+            storage.calls,
+            [("vector_search", 1, SOURCE_TYPE_WEB), ("vector_search", 1, SOURCE_TYPE_ATTACHMENT)],
+        )
 
 
 if __name__ == "__main__":

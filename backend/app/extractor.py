@@ -150,6 +150,45 @@ def _deduplicate_adjacent_blocks(blocks: list[str]) -> list[str]:
     return unique
 
 
+def chunk_document(content: str, chunk_chars: int, overlap_chars: int) -> list[tuple[str, int]]:
+    """정제된 텍스트 하나는 유지하고, 긴 본문만 문단 경계 우선으로 분할한다.
+
+    HTML 청킹(``DocumentExtractor.chunk``)과 첨부 문서 청킹(``app.attachment_ingest``)이
+    공유하는 문단 분할 규칙. 줄바꿈을 문단 경계로 취급한다.
+    """
+    content = _normalise_text(content)
+    if not content:
+        return []
+    if len(content) <= chunk_chars:
+        return [(content, 0)]
+
+    paragraphs = [part.strip() for part in re.split(r"\n+", content) if part.strip()]
+    chunks: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        if len(paragraph) > chunk_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_split_long_paragraph(paragraph, chunk_chars, overlap_chars))
+            continue
+        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
+        if len(candidate) <= chunk_chars:
+            current = candidate
+            continue
+        chunks.append(current)
+        overlap = current[-overlap_chars:] if overlap_chars else ""
+        current = f"{overlap}\n\n{paragraph}".strip()
+    if current:
+        chunks.append(current)
+    return [(item, index) for index, item in enumerate(chunks)]
+
+
+def _split_long_paragraph(paragraph: str, chunk_chars: int, overlap_chars: int) -> list[str]:
+    step = chunk_chars - overlap_chars
+    return [paragraph[start : start + chunk_chars] for start in range(0, len(paragraph), step)]
+
+
 class DocumentExtractor:
     """`CrawledPage`를 정제·추출해 Graph Builder 계약으로 변환한다.
 
@@ -181,33 +220,8 @@ class DocumentExtractor:
 
     def chunk(self, document: str) -> list[tuple[str, int]]:
         """공지 하나는 유지하고, 긴 본문만 문단 경계 우선으로 분할한다."""
-        content = _normalise_text(document)
-        if not content:
-            return []
-        if len(content) <= self.chunk_chars:
-            return [(content, 0)]
-
         # HTML 정제 후 각 블록은 줄바꿈으로 남는다. 줄 단위를 문단 경계로 취급한다.
-        paragraphs = [part.strip() for part in re.split(r"\n+", content) if part.strip()]
-        chunks: list[str] = []
-        current = ""
-        for paragraph in paragraphs:
-            if len(paragraph) > self.chunk_chars:
-                if current:
-                    chunks.append(current)
-                    current = ""
-                chunks.extend(self._split_long_paragraph(paragraph))
-                continue
-            candidate = paragraph if not current else f"{current}\n\n{paragraph}"
-            if len(candidate) <= self.chunk_chars:
-                current = candidate
-                continue
-            chunks.append(current)
-            overlap = current[-self.overlap_chars :] if self.overlap_chars else ""
-            current = f"{overlap}\n\n{paragraph}".strip()
-        if current:
-            chunks.append(current)
-        return [(item, index) for index, item in enumerate(chunks)]
+        return chunk_document(document, self.chunk_chars, self.overlap_chars)
 
     def extract(self, chunk_text: str) -> Extraction:
         """LLM 추출과 화이트리스트 검증을 수행하는 공개 청크 단위 인터페이스."""
@@ -280,10 +294,6 @@ class DocumentExtractor:
                 raise
             LOGGER.warning("content parser failed for %s: %s; using common parser", page.source_url, type(error).__name__)
             return self.common_parser.parse(page.raw_html)
-
-    def _split_long_paragraph(self, paragraph: str) -> list[str]:
-        step = self.chunk_chars - self.overlap_chars
-        return [paragraph[start : start + self.chunk_chars] for start in range(0, len(paragraph), step)]
 
     def _call_llm(self, text: str) -> Extraction:
         last_error: Exception | None = None

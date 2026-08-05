@@ -34,7 +34,15 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, insert
 from sqlalchemy.engine import Engine, RowMapping
 
-from app.models import EMBEDDING_DIM, Document, Edge, Entity, School
+from app.models import (
+    EMBEDDING_DIM,
+    SOURCE_TYPE_WEB,
+    Attachment,
+    Document,
+    Edge,
+    Entity,
+    School,
+)
 
 
 metadata = MetaData()
@@ -52,6 +60,25 @@ schools = Table(
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
 )
 
+attachments = Table(
+    "attachments",
+    metadata,
+    Column("attachment_id", BIGINT, primary_key=True),
+    Column("school_id", BIGINT, ForeignKey("schools.school_id"), nullable=False),
+    Column("filename", TEXT, nullable=False),
+    Column("content_type", TEXT),
+    Column("byte_size", BIGINT, nullable=False),
+    Column("file_hash", TEXT, nullable=False),
+    Column("page_count", INTEGER, nullable=False, server_default=text("0")),
+    Column("chunk_count", INTEGER, nullable=False, server_default=text("0")),
+    Column("status", TEXT, nullable=False, server_default=text("'pending'")),
+    Column("error_code", TEXT),
+    Column("uploaded_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
+    # 같은 학교에 같은 파일을 다시 올리면 새 행을 만들지 않고 기존 첨부를 다시 색인한다.
+    UniqueConstraint("school_id", "file_hash", name="uq_attachments_school_file_hash"),
+)
+Index("ix_attachments_school_id", attachments.c.school_id)
+
 documents = Table(
     "documents",
     metadata,
@@ -66,6 +93,9 @@ documents = Table(
     Column("crawled_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     Column("miss_count", INTEGER, nullable=False, server_default=text("0")),
     Column("expired_at", TIMESTAMP(timezone=True)),
+    Column("source_type", TEXT, nullable=False, server_default=text(f"'{SOURCE_TYPE_WEB}'")),
+    Column("page", INTEGER),  # 첨부 문서의 페이지·구역 번호. 'web' 청크는 NULL
+    Column("attachment_id", BIGINT, ForeignKey("attachments.attachment_id")),
     UniqueConstraint(
         "school_id",
         "source_url",
@@ -81,6 +111,9 @@ Index(
     postgresql_ops={"embedding": "vector_cosine_ops"},
 )
 Index("ix_documents_school_id", documents.c.school_id)
+# 검색 풀 분리(그래프 RAG='web', 문서 RAG='attachment')가 인덱스를 타게 한다.
+Index("ix_documents_school_source_type", documents.c.school_id, documents.c.source_type)
+Index("ix_documents_attachment_id", documents.c.attachment_id)
 
 entities = Table(
     "entities",
@@ -159,6 +192,25 @@ def _document(row: RowMapping) -> Document:
         crawled_at=row["crawled_at"],
         miss_count=int(row["miss_count"]) if row.get("miss_count") is not None else 0,
         expired_at=row.get("expired_at"),
+        source_type=row.get("source_type") or SOURCE_TYPE_WEB,
+        page=row.get("page"),
+        attachment_id=row.get("attachment_id"),
+    )
+
+
+def _attachment(row: RowMapping) -> Attachment:
+    return Attachment(
+        attachment_id=row["attachment_id"],
+        school_id=row["school_id"],
+        filename=row["filename"],
+        content_type=row["content_type"],
+        byte_size=int(row["byte_size"]),
+        file_hash=row["file_hash"],
+        page_count=int(row["page_count"]),
+        chunk_count=int(row["chunk_count"]),
+        status=row["status"],
+        error_code=row["error_code"],
+        uploaded_at=row["uploaded_at"],
     )
 
 
@@ -225,6 +277,19 @@ class Storage:
             connection.execute(text("ALTER TABLE schools ADD COLUMN IF NOT EXISTS crawl_started_at TIMESTAMPTZ"))
             connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS miss_count INT NOT NULL DEFAULT 0"))
             connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ"))
+            connection.execute(
+                text(
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL "
+                    f"DEFAULT '{SOURCE_TYPE_WEB}'"
+                )
+            )
+            connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS page INT"))
+            connection.execute(
+                text(
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS attachment_id BIGINT "
+                    "REFERENCES attachments(attachment_id)"
+                )
+            )
 
     def create_school(self, school: School) -> School:
         values = {
@@ -318,6 +383,10 @@ class Storage:
                 select(func.count()).where(entities.c.school_id == school_id)
             ).scalar_one()
 
+            attachment_count = connection.execute(
+                select(func.count()).where(attachments.c.school_id == school_id)
+            ).scalar_one()
+
             last_crawled_at = connection.execute(
                 select(func.max(documents.c.crawled_at)).where(documents.c.school_id == school_id)
             ).scalar_one_or_none()
@@ -325,8 +394,139 @@ class Storage:
             return {
                 "document_count": document_count,
                 "entity_count": entity_count,
+                "attachment_count": attachment_count,
                 "last_crawled_at": last_crawled_at,
             }
+
+    # ── 첨부 문서(사용자 업로드) ──────────────────────────────────────
+
+    def create_attachment(
+        self,
+        school_id: int,
+        filename: str,
+        content_type: str | None,
+        byte_size: int,
+        file_hash: str,
+    ) -> Attachment:
+        """업로드 첨부를 ``pending`` 상태로 등록하고 첨부 행을 반환한다.
+
+        같은 학교에 같은 바이트의 파일을 다시 올리면 새 행을 만들지 않고 기존 행을
+        다시 ``pending`` 으로 되돌린다. 청크는 ``source_url`` 이 같아 멱등 업서트되므로
+        재색인해도 중복이 쌓이지 않는다.
+        """
+
+        statement = insert(attachments).values(
+            school_id=school_id,
+            filename=filename,
+            content_type=content_type,
+            byte_size=byte_size,
+            file_hash=file_hash,
+        )
+        statement = statement.on_conflict_do_update(
+            constraint="uq_attachments_school_file_hash",
+            set_={
+                "filename": statement.excluded.filename,
+                "content_type": statement.excluded.content_type,
+                "byte_size": statement.excluded.byte_size,
+                "status": "pending",
+                "error_code": None,
+                "uploaded_at": func.now(),
+            },
+        ).returning(*attachments.c)
+        with self._engine.begin() as connection:
+            row = connection.execute(statement).mappings().one()
+        return _attachment(row)
+
+    def get_attachment(self, school_id: int, attachment_id: int) -> Attachment | None:
+        """학교 범위 안의 첨부 한 건을 조회한다."""
+
+        statement = select(attachments).where(
+            and_(
+                attachments.c.school_id == school_id,
+                attachments.c.attachment_id == attachment_id,
+            )
+        )
+        with self._engine.connect() as connection:
+            row = connection.execute(statement).mappings().one_or_none()
+        return _attachment(row) if row is not None else None
+
+    def list_attachments(self, school_id: int) -> list[Attachment]:
+        """학교의 첨부 목록을 최신 업로드 순으로 반환한다."""
+
+        statement = (
+            select(attachments)
+            .where(attachments.c.school_id == school_id)
+            .order_by(attachments.c.uploaded_at.desc(), attachments.c.attachment_id.desc())
+        )
+        with self._engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+        return [_attachment(row) for row in rows]
+
+    def update_attachment_status(
+        self,
+        school_id: int,
+        attachment_id: int,
+        status: str,
+        *,
+        page_count: int | None = None,
+        chunk_count: int | None = None,
+        error_code: str | None = None,
+    ) -> Attachment | None:
+        """첨부의 색인 상태·집계를 갱신한다. 주지 않은 집계 값은 그대로 둔다."""
+
+        values: dict[str, Any] = {"status": status, "error_code": error_code}
+        if page_count is not None:
+            values["page_count"] = page_count
+        if chunk_count is not None:
+            values["chunk_count"] = chunk_count
+
+        statement = (
+            attachments.update()
+            .where(
+                and_(
+                    attachments.c.school_id == school_id,
+                    attachments.c.attachment_id == attachment_id,
+                )
+            )
+            .values(**values)
+            .returning(*attachments.c)
+        )
+        with self._engine.begin() as connection:
+            row = connection.execute(statement).mappings().one_or_none()
+        return _attachment(row) if row is not None else None
+
+    def delete_attachment(self, school_id: int, attachment_id: int) -> bool:
+        """첨부와 그 청크를 함께 지운다. 지울 첨부가 없으면 False."""
+
+        with self._engine.begin() as connection:
+            connection.execute(
+                documents.delete().where(
+                    and_(
+                        documents.c.school_id == school_id,
+                        documents.c.attachment_id == attachment_id,
+                    )
+                )
+            )
+            deleted = connection.execute(
+                attachments.delete()
+                .where(
+                    and_(
+                        attachments.c.school_id == school_id,
+                        attachments.c.attachment_id == attachment_id,
+                    )
+                )
+                .returning(attachments.c.attachment_id)
+            ).scalar_one_or_none()
+        return deleted is not None
+
+    def count_ready_attachments(self, school_id: int) -> int:
+        """색인이 끝난 첨부 수. 크롤링이 실패해도 질의를 열어줄지 판단하는 데 쓴다."""
+
+        statement = select(func.count()).where(
+            and_(attachments.c.school_id == school_id, attachments.c.status == "ready")
+        )
+        with self._engine.connect() as connection:
+            return int(connection.execute(statement).scalar_one())
 
     def get_entities_for_graph(self, school_id: int, *, limit: int = 100) -> list[Entity]:
         """그래프 코어 표시를 위해 차수가 높은 엔티티를 반환한다."""
@@ -404,8 +604,16 @@ class Storage:
         embedding: Sequence[float] | None,
         *,
         crawled_at: datetime | None = None,
+        source_type: str = SOURCE_TYPE_WEB,
+        page: int | None = None,
+        attachment_id: int | None = None,
     ) -> int:
-        """청크를 해시 기준으로 멱등 저장하고 ``doc_id``를 반환한다."""
+        """청크를 해시 기준으로 멱등 저장하고 ``doc_id``를 반환한다.
+
+        ``source_type`` 은 검색 풀을 가른다('web' 크롤링 / 'attachment' 업로드).
+        첨부 청크는 ``page``(페이지 번호)와 ``attachment_id``(소속 첨부)를 함께 남겨
+        인용 시 페이지를 표기하고 첨부 삭제 시 청크를 함께 지울 수 있게 한다.
+        """
 
         _validate_embedding(embedding)
         values: dict[str, Any] = {
@@ -416,6 +624,9 @@ class Storage:
             "chunk_index": chunk_index,
             "content_hash": content_hash,
             "embedding": list(embedding) if embedding is not None else None,
+            "source_type": source_type,
+            "page": page,
+            "attachment_id": attachment_id,
         }
         if crawled_at is not None:
             values["crawled_at"] = crawled_at
@@ -428,6 +639,9 @@ class Storage:
                 "content": statement.excluded.content,
                 "embedding": statement.excluded.embedding,
                 "crawled_at": statement.excluded.crawled_at,
+                "source_type": statement.excluded.source_type,
+                "page": statement.excluded.page,
+                "attachment_id": statement.excluded.attachment_id,
                 "miss_count": 0,
                 "expired_at": None,
             },
@@ -555,23 +769,34 @@ class Storage:
             return connection.execute(statement).scalar_one_or_none() is not None
 
     def vector_search(
-        self, school_id: int, query_embedding: Sequence[float], k: int
+        self,
+        school_id: int,
+        query_embedding: Sequence[float],
+        k: int,
+        *,
+        source_type: str | None = None,
     ) -> list[tuple[Document, float]]:
-        """같은 학교 안에서 코사인 유사도 기준 상위 ``k`` 청크를 찾는다."""
+        """같은 학교 안에서 코사인 유사도 기준 상위 ``k`` 청크를 찾는다.
+
+        ``source_type`` 을 주면 그 풀만 검색한다 — 그래프 RAG 는 ``'web'``,
+        문서 RAG 는 ``'attachment'`` 로 단계를 분리한다(07_graph-rag-engine.md).
+        생략하면 구분 없이 전체를 검색한다.
+        """
 
         _validate_embedding(query_embedding)
         if k <= 0:
             return []
         distance = documents.c.embedding.cosine_distance(list(query_embedding))
+        conditions = [
+            documents.c.school_id == school_id,
+            documents.c.embedding.is_not(None),
+            documents.c.expired_at.is_(None),
+        ]
+        if source_type is not None:
+            conditions.append(documents.c.source_type == source_type)
         statement = (
             select(*documents.c, (1 - distance).label("score"))
-            .where(
-                and_(
-                    documents.c.school_id == school_id,
-                    documents.c.embedding.is_not(None),
-                    documents.c.expired_at.is_(None),
-                )
-            )
+            .where(and_(*conditions))
             .order_by(distance)
             .limit(k)
         )
@@ -649,13 +874,20 @@ class Storage:
 
         이미 만료된 문서(expired_at IS NOT NULL)는 건드리지 않는다.
         observed_urls가 비어 있으면 no-op (실패·빈 수집으로 전량 미관측 처리 방지).
+
+        대상은 크롤링 청크('web')뿐이다. 업로드 첨부는 크롤러가 관측할 수 없어
+        재크롤마다 미관측으로 집계되고, 그대로 두면 멀쩡한 첨부가 만료된다.
         """
 
         urls = [u for u in dict.fromkeys(observed_urls) if u]
         if not urls:
             return
 
-        active = and_(documents.c.school_id == school_id, documents.c.expired_at.is_(None))
+        active = and_(
+            documents.c.school_id == school_id,
+            documents.c.expired_at.is_(None),
+            documents.c.source_type == SOURCE_TYPE_WEB,
+        )
         with self._engine.begin() as connection:
             connection.execute(
                 documents.update()

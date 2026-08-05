@@ -1,4 +1,4 @@
-"""핵심 엔터티: School · Document(청크) · Entity(노드) · Edge(관계).
+"""핵심 엔터티: School · Attachment(업로드 파일) · Document(청크) · Entity(노드) · Edge(관계).
 
 개념 모델과 불변식의 단일 기준은 docs/01_SYSTEM/10_data-model.md,
 물리 스키마(DDL)는 docs/01_SYSTEM/06_storage.md 이다. 필드는 그 DDL 컬럼과 1:1로 맞춘다.
@@ -25,6 +25,11 @@ from pydantic import BaseModel, Field, field_validator
 # 임베딩 모델(bge-m3) 출력 차원. 모델 교체 시 함께 바뀌고 재임베딩이 필요하다
 EMBEDDING_DIM = 1024
 
+# Document.source_type 값 = 검색 풀 구분의 단일 기준(07_graph-rag-engine.md).
+# 'web' 은 크롤링 공지(그래프 RAG), 'attachment' 는 업로드 문서(문서 RAG)가 쓴다.
+SOURCE_TYPE_WEB = "web"
+SOURCE_TYPE_ATTACHMENT = "attachment"
+
 
 class School(BaseModel):
     """학교 — 격리 단위이자 재크롤링 주기 기준."""
@@ -39,12 +44,56 @@ class School(BaseModel):
     updated_at: datetime | None = None
 
 
+class Attachment(BaseModel):
+    """사용자가 학교에 직접 올린 첨부 문서(수강편람 PDF·HWP 등) 한 건.
+
+    크롤러가 수집한 웹 공지와 달리 원문 URL이 없으므로, 인용용 식별자는
+    ``attachment://{attachment_id}`` 형태의 합성 URI 를 쓴다(``source_uri``).
+    파일 바이트는 보관하지 않는다 — 텍스트를 뽑아 Document 청크로만 남긴다.
+    """
+
+    attachment_id: int | None = None  # PK(BIGSERIAL)
+    school_id: int
+    filename: str
+    content_type: str | None = None
+    byte_size: int
+    file_hash: str  # 파일 바이트 sha256. (school_id, file_hash) UNIQUE 로 재업로드 멱등
+    page_count: int = 0
+    chunk_count: int = 0
+    status: str = "pending"  # pending | indexing | ready | failed
+    error_code: str | None = None  # status=failed 일 때만
+    uploaded_at: datetime | None = None
+
+    @property
+    def source_uri(self) -> str:
+        """근거 인용에 쓰는 합성 URI. 청크의 ``Document.source_url`` 과 같은 값이다."""
+
+        return attachment_source_uri(self.attachment_id)
+
+
+def attachment_source_uri(attachment_id: int | None) -> str:
+    """첨부 청크가 ``source_url`` 로 쓰는 합성 URI 를 만든다.
+
+    첨부에는 원문 링크가 없지만 ``documents`` 는 ``source_url`` 을 요구하고,
+    (school_id, source_url, content_hash, chunk_index) 유니크로 멱등 업서트한다.
+    첨부 ID 를 URI 로 삼으면 파일명이 겹쳐도 서로 다른 첨부가 섞이지 않는다.
+    """
+
+    if attachment_id is None:
+        raise ValueError("attachment_id 가 있어야 source_url 을 만들 수 있습니다")
+    return f"attachment://{attachment_id}"
+
+
 class Document(BaseModel):
-    """검색·인용의 최소 단위(청크). 공지 1건 = 기본 1행, 긴 문서만 여러 행으로 분할."""
+    """검색·인용의 최소 단위(청크). 공지 1건 = 기본 1행, 긴 문서만 여러 행으로 분할.
+
+    ``source_type`` 은 검색 풀을 가른다. ``'web'`` 은 크롤링 공지로 Graph RAG 가,
+    ``'attachment'`` 은 업로드 문서로 문서 RAG 가 쓴다(07_graph-rag-engine.md).
+    """
 
     doc_id: int | None = None  # PK(BIGSERIAL)
     school_id: int
-    source_url: str  # 원문 링크(근거 제공용)
+    source_url: str  # 원문 링크(근거 제공용). 첨부 청크는 attachment://{id}
     title: str | None = None
     content: str
     chunk_index: int = 0  # 같은 원문 내 순번
@@ -53,6 +102,9 @@ class Document(BaseModel):
     crawled_at: datetime | None = None
     miss_count: int = 0  # 연속 미관측 횟수 (스케줄러 만료 판정)
     expired_at: datetime | None = None  # 만료 확정 시각 (None이면 유효)
+    source_type: str = SOURCE_TYPE_WEB  # 'web'(크롤링) | 'attachment'(업로드)
+    page: int | None = None  # 첨부 문서의 페이지·구역 번호(1부터). 'web' 청크는 None
+    attachment_id: int | None = None  # 첨부 청크의 소속 Attachment. 'web' 청크는 None
 
     @field_validator("embedding")
     @classmethod

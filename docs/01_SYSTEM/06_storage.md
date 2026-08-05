@@ -37,20 +37,39 @@ CREATE TABLE schools (
   updated_at        TIMESTAMPTZ DEFAULT now()
 );
 
+-- 첨부 문서 = 사용자가 학교에 직접 올린 파일(수강편람 PDF·학칙 HWP 등) 한 건.
+-- 파일 바이트는 보관하지 않는다. 뽑아낸 텍스트를 documents 청크로만 남긴다.
+CREATE TABLE attachments (
+  attachment_id BIGSERIAL PRIMARY KEY,
+  school_id     BIGINT NOT NULL REFERENCES schools(school_id),
+  filename      TEXT NOT NULL,
+  content_type  TEXT,
+  byte_size     BIGINT NOT NULL,
+  file_hash     TEXT NOT NULL,          -- 파일 바이트 sha256 (재업로드 멱등 키)
+  page_count    INT NOT NULL DEFAULT 0, -- 인용 단위 수(PDF=페이지, HWP=구역)
+  chunk_count   INT NOT NULL DEFAULT 0,
+  status        TEXT NOT NULL DEFAULT 'pending',  -- pending|indexing|ready|failed
+  error_code    TEXT,                   -- status='failed' 일 때만
+  uploaded_at   TIMESTAMPTZ DEFAULT now()
+);
+
 -- 문서 = 검색·인용의 최소 단위(청크). 공지 1건 = 기본 1행.
 -- 긴 문서는 여러 행으로 분할하되 source_url·title을 공유하고 chunk_index로 구분.
 CREATE TABLE documents (
   doc_id        BIGSERIAL PRIMARY KEY,
   school_id     BIGINT NOT NULL REFERENCES schools(school_id),
-  source_url    TEXT NOT NULL,          -- 원문 링크(근거 제공용)
-  title         TEXT,
+  source_url    TEXT NOT NULL,          -- 원문 링크. 첨부 청크는 attachment://{id}
+  title         TEXT,                   -- 첨부 청크는 파일명
   content       TEXT NOT NULL,          -- 청크 본문
   chunk_index   INT DEFAULT 0,          -- 같은 원문 내 순번
   content_hash  TEXT NOT NULL,          -- 변경 감지용(본문 해시)
   embedding     vector(1024),
   crawled_at    TIMESTAMPTZ DEFAULT now(),
   miss_count    INT NOT NULL DEFAULT 0, -- 연속 미관측 횟수 (Scheduler 만료)
-  expired_at    TIMESTAMPTZ             -- 만료 확정 시각 (NULL이면 유효)
+  expired_at    TIMESTAMPTZ,            -- 만료 확정 시각 (NULL이면 유효)
+  source_type   TEXT NOT NULL DEFAULT 'web',  -- 'web'(크롤링) | 'attachment'(업로드)
+  page          INT,                    -- 첨부의 페이지·구역 번호. 'web' 은 NULL
+  attachment_id BIGINT REFERENCES attachments(attachment_id)  -- 'web' 은 NULL
 );
 
 -- 엔티티(노드)
@@ -76,6 +95,10 @@ CREATE TABLE edges (
 
 CREATE INDEX ON documents USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON documents (school_id);
+CREATE INDEX ON documents (school_id, source_type);   -- RAG 단계별 검색 풀 분리
+CREATE INDEX ON documents (attachment_id);            -- 첨부 삭제 시 청크 정리
+CREATE INDEX ON attachments (school_id);
+CREATE UNIQUE INDEX ON attachments (school_id, file_hash);
 CREATE UNIQUE INDEX ON entities (school_id, norm_key);
 CREATE INDEX ON edges (school_id, source_entity_id);
 ```
@@ -92,18 +115,32 @@ CREATE INDEX ON edges (school_id, source_entity_id);
 다른 모듈은 아래 함수로만 저장소에 접근한다(SQL 직접 노출 금지).
 
 ```
-upsert_document(school_id, source_url, title, content, chunk_index, content_hash, embedding) -> doc_id
+upsert_document(school_id, source_url, title, content, chunk_index, content_hash, embedding,
+                *, source_type='web', page=None, attachment_id=None) -> doc_id
 upsert_entity(school_id, type, name, norm_key, attributes, source_doc_ids) -> entity_id
 upsert_edge(school_id, source_entity_id, target_entity_id, relation, source_doc_ids) -> edge_id
 
-vector_search(school_id, query_embedding, k) -> [doc_id, source_url, title, content, score]
+vector_search(school_id, query_embedding, k, *, source_type=None)
+                                               -> [doc_id, source_url, title, content, score]
 entities_by_norm_keys(school_id, norm_keys) -> [entity]        # RAG 질의 엔티티 매핑용
 neighbors(school_id, entity_ids, hops=1) -> [entity, edge, source_doc_ids]
 get_documents(school_id, doc_ids) -> [document]
 
 doc_hash_exists(school_id, source_url, content_hash) -> bool   # 증분 갱신용
 doc_url_exists(school_id, source_url) -> bool                  # 변경 감지용
+
+create_attachment(school_id, filename, content_type, byte_size, file_hash) -> attachment
+get_attachment(school_id, attachment_id) -> attachment | None
+list_attachments(school_id) -> [attachment]                    # 최신 업로드 순
+update_attachment_status(school_id, attachment_id, status,
+                         *, page_count=None, chunk_count=None, error_code=None) -> attachment | None
+delete_attachment(school_id, attachment_id) -> bool            # 첨부 + 그 청크 함께 삭제
+count_ready_attachments(school_id) -> int                      # 질의 가능 여부 판정용
 ```
+
+`vector_search` 의 `source_type` 은 RAG 단계별 검색 풀을 가른다 — 그래프 RAG 는 `'web'`,
+문서 RAG 는 `'attachment'` ([`07_graph-rag-engine.md`](07_graph-rag-engine.md)).
+생략하면 구분 없이 전체를 검색한다.
 
 `upsert_*`는 유니크 키 충돌 시 갱신(증분 업데이트 지원).
 관련: [`05_graph-builder.md`](05_graph-builder.md), [`07_graph-rag-engine.md`](07_graph-rag-engine.md),
@@ -116,7 +153,8 @@ Storage는 다음 데이터를 Postgres에 영속하고 공개 인터페이스�
 | 데이터 | 생산자 | 저장 위치·역할 |
 |---|---|---|
 | School | Backend API | `schools`: 학교 격리와 수집 주기 기준 |
-| 정제 청크·임베딩 | Graph Builder | `documents`: 검색·인용의 최소 단위 |
+| 첨부 파일 메타 | Backend API(업로드) | `attachments`: 파일 단위 색인 상태·집계 |
+| 정제 청크·임베딩 | Graph Builder · 첨부 인제스터 | `documents`: 검색·인용의 최소 단위 |
 | 엔티티·속성 | Graph Builder | `entities`: 그래프 노드와 근거 문서 목록 |
 | 관계 | Graph Builder | `edges`: 1-hop 그래프 확장 |
 | 실행·오류 이력 | 각 시스템 | 별도 실행 이력 저장소 또는 테이블 — 스키마는 미정 |
@@ -133,6 +171,9 @@ Storage는 URL 수집·HTML 파싱·LLM 호출·엔티티 의미 판단·스케�
 - MVP는 문서·엔티티·엣지의 유니크 키를 멱등 키로 사용해 중복 반영을 막는다. 실행 이력 테이블과 요청 ID 추적은 Crawler·Scheduler 도입 시 별도로 추가한다.
 - pgvector 임베딩과 관계 테이블 반영이 일부만 성공하면 MVP에서는 오류를 호출자에게 전파한다. 자동 실행 이력, 보상·재처리 큐는 후속 작업으로 유보한다.
 - Crawler의 단일 미관측만으로 삭제하지 않는다. Scheduler가 연속 미관측 N회(`documents.miss_count`) 뒤에 `expired_at`을 기록해 만료를 확정한다. 벡터 검색은 `expired_at IS NULL`인 문서만 반환한다. 만료 문서의 그래프 기여분 물리 삭제 여부는 **미정**이다.
+- 미관측 집계(`record_url_observations`)는 `source_type='web'` 청크만 대상으로 한다. 업로드 첨부는 크롤러가 관측할 수 없어, 포함하면 재크롤링마다 미관측으로 집계돼 멀쩡한 첨부가 만료된다.
+- 첨부는 만료 정책이 아니라 **사용자 삭제**로만 사라진다. `delete_attachment`가 첨부 행과 그 청크(`documents.attachment_id`)를 함께 지운다.
+- `create_attachment`는 `(school_id, file_hash)` 충돌 시 새 행을 만들지 않고 기존 첨부를 `pending`으로 되돌린다. 같은 파일을 다시 올려도 청크는 `source_url = attachment://{id}` 기준으로 멱등 업서트되므로 중복이 쌓이지 않는다.
 
 ## 7. 조회·백업·확장
 

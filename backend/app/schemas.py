@@ -168,14 +168,17 @@ class Source(BaseModel):
 
 
 class RagAnswer(BaseModel):
-    """Graph RAG 엔진 출력 = API POST /schools/{id}/query 응답 본문.
+    """RAG 엔진 출력 = API POST /schools/{id}/query 응답 본문.
 
     근거가 없거나 유사도 임계 미만이면 answer 는 보류 문구, sources 는 빈 목록이다.
+    ``source_type`` 은 어느 단계가 답을 냈는지 알린다 — ``graph``(그래프 RAG),
+    ``document``(첨부 문서 RAG), ``None``(둘 다 근거를 못 찾아 보류).
     """
 
     answer: str
     sources: list[Source] = Field(default_factory=list)
     entity_ids: list[str] = Field(default_factory=list)
+    source_type: Literal["graph", "document"] | None = None
 
 
 # ── Backend API 요청·응답 스키마 (01_backend-api.md) ─────────────────
@@ -225,6 +228,7 @@ class SchoolDetailStats(BaseModel):
 
     document_count: int = 0
     entity_count: int = 0
+    attachment_count: int = 0
     last_crawled_at: datetime | None = None
 
 
@@ -248,11 +252,53 @@ class QueryRequest(BaseModel):
 
 
 class QueryResponse(BaseModel):
-    """POST /schools/{id}/query 응답."""
+    """POST /schools/{id}/query 응답.
+
+    ``source_type`` 은 어느 단계가 답을 냈는지 알린다(graph|document|null).
+    """
 
     answer: str
     sources: list[Source] = Field(default_factory=list)
     entity_ids: list[str] = Field(default_factory=list)
+    source_type: Literal["graph", "document"] | None = None
+
+
+class AttachmentItem(BaseModel):
+    """첨부 문서 한 건 (업로드·목록 공통)."""
+
+    attachment_id: int
+    filename: str
+    content_type: str | None = None
+    byte_size: int
+    page_count: int = 0
+    chunk_count: int = 0
+    status: str  # pending | indexing | ready | failed
+    error_code: str | None = None
+    uploaded_at: datetime | None = None
+
+
+class AttachmentListResponse(BaseModel):
+    """GET /schools/{id}/attachments 응답."""
+
+    attachments: list[AttachmentItem]
+
+
+class RejectedAttachment(BaseModel):
+    """업로드가 거절된 파일과 사유."""
+
+    filename: str
+    code: str
+    message: str
+
+
+class AttachmentUploadResponse(BaseModel):
+    """POST /schools/{id}/attachments 응답. 색인은 백그라운드에서 이어진다.
+
+    ``rejected`` 는 확장자·크기 검증에서 걸러져 저장하지 않은 파일이다.
+    """
+
+    accepted: list[AttachmentItem] = Field(default_factory=list)
+    rejected: list[RejectedAttachment] = Field(default_factory=list)
 
 
 class RecrawlResponse(BaseModel):
