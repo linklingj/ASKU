@@ -121,6 +121,16 @@ def _ensure_adapter_spec(storage, crawler, request, base_url: str):
     항상 시도한다.
     """
 
+    try:
+        return _provision_adapter_spec(storage, crawler, request, base_url)
+    except Exception:
+        # 규격 확보는 보조 작업이다. 여기서 터지면 수집 자체가 중단돼, 공용 파서로도
+        # 모을 수 있었을 공지를 통째로 잃는다.
+        logger.exception("규격 확보 실패: %s", base_url)
+        return None
+
+
+def _provision_adapter_spec(storage, crawler, request, base_url: str):
     from app.crawler import ADAPTER_REGISTRY
     from app.spec_generator import collect_samples, generate_spec, match_template
 

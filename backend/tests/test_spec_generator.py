@@ -9,7 +9,7 @@ import unittest
 
 from app.adapter_spec import AdapterSpec, DetailSpec, ListingSpec
 from app.llm import SpecDrafter
-from app.spec_generator import PageSample, generate_spec, verify_spec
+from app.spec_generator import PageSample, collect_samples, generate_spec, verify_spec
 
 
 LISTING_URL = "https://new.ac.kr/notice.do"
@@ -378,3 +378,65 @@ class TemplateFirstTests(unittest.TestCase):
 
         self.assertNotEqual(result.origin, "template:k2web")
         self.assertGreater(len(drafter.prompts), 0, "템플릿이 안 맞으면 모델로 넘어간다")
+
+
+class SampleCollectionTests(unittest.TestCase):
+    """표본 수집이 기존 어댑터에만 기대면, 정작 규격이 필요한 학교에서 막힌다."""
+
+    def crawler(self, pages: dict[str, str]):
+        from unittest.mock import MagicMock
+
+        crawler = MagicMock()
+        crawler.robots_allowed.return_value = True
+        crawler._fetch.side_effect = lambda _req, url, _run, **_kw: pages.get(url)
+        return crawler
+
+    def request(self):
+        from unittest.mock import MagicMock
+
+        return MagicMock()
+
+    def test_detail_links_are_guessed_when_adapters_fail(self) -> None:
+        """공용 파서가 못 읽는 목록에서도 링크 패턴으로 상세를 찾는다."""
+
+        rows = "".join(f"<div class='row'><a href='/read.do?no={i}'>공지 제목 {i}번</a></div>" for i in range(5))
+        pages = {"https://x.ac.kr/list.do": f"<body><nav><a href='/menu'>메뉴</a></nav>{rows}</body>"}
+        pages.update({f"https://x.ac.kr/read.do?no={i}": f"<main>본문 {i}</main>" for i in range(5)})
+
+        result = collect_samples(self.crawler(pages), self.request(), "https://x.ac.kr/list.do", 2)
+
+        self.assertIsNotNone(result)
+        _listing, details = result
+        self.assertEqual(len(details), 2)
+        self.assertTrue(all("read.do" in sample.url for sample in details))
+
+    def test_menu_links_are_not_mistaken_for_notices(self) -> None:
+        """같은 패턴이 몇 개 없으면 목록이 아니다."""
+
+        html = "<body><a href='/about'>학교 소개 페이지</a><a href='/map'>오시는 길 안내</a></body>"
+
+        result = collect_samples(self.crawler({"https://x.ac.kr/list.do": html}), self.request(), "https://x.ac.kr/list.do", 2)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1], [])
+
+    def test_listing_only_is_still_returned(self) -> None:
+        """상세를 못 받아도 목록만으로 규격 초안은 만들 수 있다."""
+
+        html = "<table><tbody><tr><td><a href='/v?id=1'>공지</a></td></tr></tbody></table>"
+
+        result = collect_samples(self.crawler({"https://x.ac.kr/list.do": html}), self.request(), "https://x.ac.kr/list.do", 2)
+
+        self.assertIsNotNone(result)
+        listing, details = result
+        self.assertEqual(listing.html, html)
+        self.assertEqual(details, [])
+
+    def test_external_links_are_ignored(self) -> None:
+        """다른 도메인 링크를 상세로 잡으면 남의 사이트를 긁게 된다."""
+
+        rows = "".join(f"<a href='https://other.com/p?id={i}'>바깥 링크 제목 {i}</a>" for i in range(5))
+
+        result = collect_samples(self.crawler({"https://x.ac.kr/list.do": f"<body>{rows}</body>"}), self.request(), "https://x.ac.kr/list.do", 2)
+
+        self.assertEqual(result[1], [])

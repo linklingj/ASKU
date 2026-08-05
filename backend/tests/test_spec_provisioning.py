@@ -240,3 +240,33 @@ class RefreshBrokenSpecTests(unittest.TestCase):
         )
 
         self.storage.upsert_adapter_spec.assert_not_called()
+
+
+class ProvisioningFailureTests(unittest.TestCase):
+    """규격 확보는 보조 작업이다. 실패해도 수집을 막아서는 안 된다."""
+
+    def test_unexpected_error_is_swallowed(self) -> None:
+        """여기서 예외가 새면 공용 파서로도 모을 수 있었을 공지를 통째로 잃는다."""
+
+        storage = MagicMock()
+        storage.get_adapter_spec.return_value = None
+        crawler = MagicMock()
+        crawler.robots_allowed.return_value = True
+        crawler._fetch.side_effect = RuntimeError("예상 못 한 오류")
+
+        spec = _ensure_adapter_spec(storage, crawler, MagicMock(), "https://new.ac.kr/notice.do")
+
+        self.assertIsNone(spec)
+
+    def test_malformed_stored_spec_does_not_raise(self) -> None:
+        """저장된 규격이 스키마와 어긋나도 수집은 계속돼야 한다."""
+
+        storage = MagicMock()
+        storage.get_adapter_spec.return_value = {"host": "new.ac.kr"}  # listing 누락
+        crawler = MagicMock()
+        crawler.robots_allowed.return_value = True
+        crawler._fetch.return_value = None
+
+        spec = _ensure_adapter_spec(storage, crawler, MagicMock(), "https://new.ac.kr/notice.do")
+
+        self.assertIsNone(spec)

@@ -14,8 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import logging
+import re
 from time import sleep
 from typing import Callable
+from urllib.parse import urljoin, urlsplit
+
+from bs4 import BeautifulSoup
 
 from pydantic import ValidationError
 
@@ -169,8 +173,12 @@ def generate_spec(
 def collect_samples(crawler, request, base_url: str, count: int = 2) -> tuple[PageSample, list[PageSample]] | None:
     """규격을 판정할 표본(목록 1장 + 상세 몇 건)을 받는다.
 
-    표본 링크는 전용·공용 어댑터로 찾는다. 규격이 아직 없는 상황이라 완벽할 필요는
-    없고, 상세 페이지 몇 장만 확보하면 된다.
+    상세 링크는 기존 어댑터로 찾되, 못 찾으면 **목록 HTML 안의 링크 패턴**으로
+    추정한다. 기존 어댑터가 읽지 못하는 학교가 바로 규격이 필요한 학교라,
+    어댑터에만 기대면 정작 필요한 곳에서 표본을 못 모은다.
+
+    상세를 한 장도 못 얻으면 목록만 돌려준다. 목록만으로도 규격 초안은 만들 수
+    있고, 상세 선택자는 그 규격으로 링크를 찾아 확인하면 된다.
     """
 
     from app.crawler import CommonNoticeAdapter, CrawlRun, adapter_for
@@ -186,6 +194,8 @@ def collect_samples(crawler, request, base_url: str, count: int = 2) -> tuple[Pa
     items = list(adapter_for(base_url).parse_listing(listing_html, base_url))
     if not items:
         items = list(CommonNoticeAdapter().parse_listing(listing_html, base_url))
+    if not items:
+        items = _guess_detail_links(listing_html, base_url)
 
     details: list[PageSample] = []
     for item in items:
@@ -196,9 +206,40 @@ def collect_samples(crawler, request, base_url: str, count: int = 2) -> tuple[Pa
         html = crawler._fetch(request, item.url, run, referer=base_url)  # noqa: SLF001
         if html is not None:
             details.append(PageSample(item.url, html))
-    if not details:
-        return None
     return PageSample(base_url, listing_html), details
+
+
+def _guess_detail_links(listing_html: str, base_url: str, limit: int = 3) -> list:
+    """목록 HTML 의 링크 패턴으로 상세 링크를 추정한다.
+
+    상세 공지 링크는 **같은 모양이 여러 개 반복된다**. 숫자만 다른 URL 을 묶어
+    가장 큰 무리를 고르면, 선택자를 몰라도 상세 페이지를 찾을 수 있다. 메뉴·배너는
+    같은 패턴이 여러 개 나오지 않는다.
+    """
+
+    from app.crawler import ListingItem
+
+    soup = BeautifulSoup(listing_html, "html.parser")
+    host = urlsplit(base_url).hostname
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for link in soup.select("a[href]"):
+        href = str(link["href"]).strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:")):
+            continue
+        absolute = urljoin(base_url, href)
+        if urlsplit(absolute).hostname != host:
+            continue
+        text = " ".join(link.get_text(" ", strip=True).split())
+        if len(text) < 6:  # 메뉴·아이콘 링크를 걸러낸다
+            continue
+        groups.setdefault(re.sub(r"\d+", "#", absolute), []).append((absolute, text))
+
+    if not groups:
+        return []
+    best = max(groups.values(), key=len)
+    if len(best) < 3:  # 반복이 없으면 목록이 아니다
+        return []
+    return [ListingItem(url=url, title_hint=text) for url, text in best[:limit]]
 
 
 def match_template(
