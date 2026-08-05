@@ -159,11 +159,15 @@ class YonseiNoticeAdapter(CommonNoticeAdapter):
 
 
 class SejongNoticeAdapter(CommonNoticeAdapter):
-    """세종대 K2Web 공지 목록용 학교별 오버라이드."""
+    """세종대 K2Web 공지 목록용 학교별 오버라이드.
+
+    ``tr.b-top-box``는 상단 고정공지에만 붙으므로 행 선택자로 쓰면 일반 공지가
+    통째로 누락된다(실측: 16행 중 6행). 상세 링크가 있는 행 전체를 읽는다.
+    """
 
     def parse_listing(self, html: str, page_url: str) -> Iterable[ListingItem]:
         soup = BeautifulSoup(html, "html.parser")
-        for row in soup.select("tr.b-top-box"):
+        for row in soup.select("table tbody tr"):
             link = row.select_one(".b-title-box a[href*='mode=view'][href*='articleNo']")
             if link is None or not link.get("href"):
                 continue

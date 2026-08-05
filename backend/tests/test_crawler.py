@@ -197,6 +197,29 @@ class CrawlerTests(unittest.TestCase):
             f"{listing_url}?mode=list&articleLimit=10&article.offset=10",
         )
 
+    def test_sejong_override_reads_pinned_and_normal_rows(self) -> None:
+        """``b-top-box``(상단 고정공지)가 아닌 일반 공지 행도 수집한다."""
+        html = """
+        <table><tbody>
+          <tr class='b-top-box'>
+            <td class='b-td-title'><div class='b-title-box'>
+              <a href='?mode=view&amp;articleNo=1'><span class='b-title'>고정 공지</span></a>
+            </div><div class='b-m-con'><span class='b-writer'>총무과</span>
+              <span class='b-date'>2026.07.24</span></div></td>
+          </tr>
+          <tr>
+            <td class='b-td-title'><div class='b-title-box'>
+              <a href='?mode=view&amp;articleNo=2'><span class='b-title'>일반 공지</span></a>
+            </div><div class='b-m-con'><span class='b-writer'>학사팀</span>
+              <span class='b-date'>2026.07.20</span></div></td>
+          </tr>
+        </tbody></table>
+        """
+        items = list(SejongNoticeAdapter().parse_listing(html, "https://www.sejong.ac.kr/kor/intro/notice1.do"))
+
+        self.assertEqual([item.title_hint for item in items], ["고정 공지", "일반 공지"])
+        self.assertEqual(items[1].author_hint, "학사팀")
+
     def test_hongik_override_reads_metadata_and_next_page(self) -> None:
         """홍익대 실제 목록의 메타데이터와 K2Web 페이지네이션을 검증한다."""
         html = """
