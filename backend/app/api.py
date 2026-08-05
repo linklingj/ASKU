@@ -216,8 +216,61 @@ def _record_crawl_quality(storage, school_id: int, crawl_id: str, run, adapter, 
         for report in reports:
             if not report.passed:
                 logger.warning("수집 품질 경고: school_id=%d %s", school_id, report.summary())
+        return reports
     except Exception:
         logger.exception("수집 품질 기록 실패: school_id=%d", school_id)
+        return []
+
+
+def _refresh_broken_spec(storage, crawler, request, base_url: str, spec, reports) -> None:
+    """규격이 깨진 것으로 보이면 다시 만든다.
+
+    학교가 홈페이지를 개편하면 선택자가 어긋나 수집이 0건이 된다. 크롤은 정상
+    종료하므로 지표를 보지 않으면 아무도 알아채지 못하고, 학교가 늘수록 사람이
+    매번 손보기 어렵다.
+
+    사람이 쓴 규격(`source="human"`)은 덮어쓰지 않는다. 손으로 고친 결정을 자동
+    생성이 밀어내면 왜 바뀌었는지 알 수 없게 된다. 경고만 남기고 사람이 판단한다.
+    """
+
+    from app.spec_generator import BLOCKING_CODES, collect_samples, generate_spec, match_template
+
+    broken = [r for r in reports if any(f.code in BLOCKING_CODES for f in r.findings)]
+    if not broken or spec is None:
+        return
+    host = (urlsplit(base_url).hostname or "").lower()
+    if spec.source == "human":
+        logger.warning("사람이 쓴 규격이 어긋났습니다. 자동 교체하지 않습니다: host=%s", host)
+        return
+
+    samples = collect_samples(crawler, request, base_url)
+    if samples is None:
+        logger.warning("규격 재생성용 표본을 얻지 못했습니다: host=%s", host)
+        return
+    listing, details = samples
+
+    matched = match_template(host, listing, details)
+    if matched is not None:
+        name, fresh, report = matched
+        _save_spec(storage, host, fresh, origin=f"template:{name}")
+        logger.info("규격 재생성(템플릿 %s): host=%s %s", name, host, report.summary())
+        return
+
+    if os.getenv("SPEC_AUTOGEN", "").lower() not in ("1", "true", "yes"):
+        logger.warning("규격이 어긋났으나 자동 생성이 꺼져 있습니다: host=%s", host)
+        return
+    try:
+        from app.llm import GeminiProvider
+
+        result = generate_spec(GeminiProvider(), host, listing, details)
+    except Exception:
+        logger.exception("규격 재생성 실패: host=%s", host)
+        return
+    if not result.accepted:
+        logger.warning("규격 재생성이 검증을 통과하지 못했습니다: host=%s %s", host, result.summary())
+        return
+    _save_spec(storage, host, result.spec, origin="regenerated")
+    logger.info("규격 재생성: host=%s %s", host, result.summary())
 
 
 def _crawl_quality(storage, school_id: int) -> CrawlQuality:
@@ -306,7 +359,12 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         # 세종대처럼 공지가 여러 탭으로 쪼개진 학교는 등록된 게시판을 모두 돈다.
         boards = boards_for(base_url, spec)
         run = crawler.crawl_boards(crawl_request, boards, adapter)
-        _record_crawl_quality(storage, school_id, str(crawl_request.crawl_id), run, adapter, boards, spec)
+        reports = _record_crawl_quality(storage, school_id, str(crawl_request.crawl_id), run, adapter, boards, spec)
+        # 사이트 개편으로 규격이 깨졌으면 다음 크롤을 위해 지금 다시 만든다.
+        try:
+            _refresh_broken_spec(storage, crawler, crawl_request, base_url, spec, reports)
+        except Exception:
+            logger.exception("규격 재생성 처리 실패: school_id=%d", school_id)
         pages = crawler.pages_for_extractor(run)
 
         # 전체 방문/수집된 페이지 수

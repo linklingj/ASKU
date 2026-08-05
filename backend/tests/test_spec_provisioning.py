@@ -9,7 +9,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from app.adapter_spec import AdapterSpec, ListingSpec
-from app.api import _ensure_adapter_spec
+from app.api import _ensure_adapter_spec, _refresh_broken_spec
+from app.validation import ValidationReport
 
 
 K2WEB_LISTING = """
@@ -155,3 +156,87 @@ class EnsureAdapterSpecTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RefreshBrokenSpecTests(unittest.TestCase):
+    """사이트 개편으로 규격이 깨졌을 때 다시 만드는 경로."""
+
+    def setUp(self) -> None:
+        self.storage = MagicMock()
+        self.request = MagicMock()
+        self.k2web_pages = {
+            "https://k2.ac.kr/notice.do": K2WEB_LISTING,
+            "https://k2.ac.kr/notice.do?mode=view&articleNo=1": K2WEB_DETAIL,
+            "https://k2.ac.kr/notice.do?mode=view&articleNo=2": K2WEB_DETAIL,
+        }
+
+    def spec(self, source: str = "generated") -> AdapterSpec:
+        return AdapterSpec(
+            host="k2.ac.kr",
+            listing=ListingSpec(row="table.old tbody tr", detail_link="a.old[href]"),
+            source=source,
+        )
+
+    def report(self, *codes: str) -> ValidationReport:
+        report = ValidationReport(target="기본")
+        for code in codes:
+            report.add(code, "테스트")
+        return report
+
+    def test_blocking_finding_triggers_regeneration(self) -> None:
+        crawler = fake_crawler(self.k2web_pages)
+
+        _refresh_broken_spec(
+            self.storage, crawler, self.request, "https://k2.ac.kr/notice.do",
+            self.spec(), [self.report("NO_LISTING_ROWS")],
+        )
+
+        self.storage.upsert_adapter_spec.assert_called_once()
+
+    def test_warning_only_does_not_trigger_regeneration(self) -> None:
+        """날짜 미달 같은 경고로 규격을 갈아엎으면 멀쩡한 규격을 잃는다."""
+
+        crawler = fake_crawler(self.k2web_pages)
+
+        _refresh_broken_spec(
+            self.storage, crawler, self.request, "https://k2.ac.kr/notice.do",
+            self.spec(), [self.report("MISSING_DATES")],
+        )
+
+        self.storage.upsert_adapter_spec.assert_not_called()
+        crawler._fetch.assert_not_called()
+
+    def test_human_written_spec_is_not_overwritten(self) -> None:
+        """손으로 고친 결정을 자동 생성이 밀어내면 왜 바뀌었는지 알 수 없다."""
+
+        crawler = fake_crawler(self.k2web_pages)
+
+        _refresh_broken_spec(
+            self.storage, crawler, self.request, "https://k2.ac.kr/notice.do",
+            self.spec(source="human"), [self.report("NO_LISTING_ROWS")],
+        )
+
+        self.storage.upsert_adapter_spec.assert_not_called()
+
+    def test_regeneration_prefers_templates_over_the_model(self) -> None:
+        crawler = fake_crawler(self.k2web_pages)
+
+        with patch("app.llm.GeminiProvider") as provider:
+            _refresh_broken_spec(
+                self.storage, crawler, self.request, "https://k2.ac.kr/notice.do",
+                self.spec(), [self.report("NO_LISTING_ROWS")],
+            )
+
+        provider.assert_not_called()
+
+    def test_no_spec_means_nothing_to_refresh(self) -> None:
+        """전용 클래스를 쓰는 학교는 규격이 없다. 재생성 대상이 아니다."""
+
+        crawler = fake_crawler(self.k2web_pages)
+
+        _refresh_broken_spec(
+            self.storage, crawler, self.request, "https://k2.ac.kr/notice.do",
+            None, [self.report("NO_LISTING_ROWS")],
+        )
+
+        self.storage.upsert_adapter_spec.assert_not_called()
