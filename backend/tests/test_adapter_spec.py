@@ -10,6 +10,7 @@ import unittest
 
 from app.adapter_spec import (
     AdapterSpec,
+    BoardSpec,
     DetailSpec,
     FormPagination,
     LinkPagination,
@@ -17,13 +18,21 @@ from app.adapter_spec import (
     OffsetPagination,
 )
 from app.crawler import (
+    CommonNoticeAdapter,
     HongikNoticeAdapter,
     SejongNoticeAdapter,
     SkkuNoticeAdapter,
     SpecNoticeAdapter,
     YonseiNoticeAdapter,
+    adapter_for,
+    boards_for,
 )
-from app.extractor import K2WebContentParser, SpecContentParser
+from app.extractor import (
+    CommonContentParser,
+    K2WebContentParser,
+    SpecContentParser,
+    content_parser_for,
+)
 
 
 K2WEB_ROW = """
@@ -210,6 +219,62 @@ class PaginationTests(unittest.TestCase):
         adapter = SpecNoticeAdapter(spec("example.edu", listing))
 
         self.assertIsNone(adapter.next_listing_url("<div>마지막</div>", "https://example.edu/list.do"))
+
+
+class ResolutionOrderTests(unittest.TestCase):
+    """전용 클래스 → 규격 → 공용 파서 순으로 고른다."""
+
+    def listing(self) -> ListingSpec:
+        return ListingSpec(row="li.custom", detail_link="a[href]")
+
+    def test_dedicated_class_wins_over_spec(self) -> None:
+        """손으로 검증한 전용 클래스가 앞선다. 자동 생성 규격이 이상해도 기존 학교는 안전하다."""
+
+        adapter = adapter_for("https://www.sejong.ac.kr/kor/intro/notice1.do", spec("www.sejong.ac.kr", self.listing()))
+
+        self.assertIsInstance(adapter, SejongNoticeAdapter)
+
+    def test_spec_is_used_for_unregistered_host(self) -> None:
+        adapter = adapter_for("https://new.ac.kr/notice.do", spec("new.ac.kr", self.listing()))
+
+        self.assertIsInstance(adapter, SpecNoticeAdapter)
+
+    def test_common_adapter_when_no_spec(self) -> None:
+        adapter = adapter_for("https://new.ac.kr/notice.do")
+
+        self.assertIsInstance(adapter, CommonNoticeAdapter)
+        self.assertNotIsInstance(adapter, SpecNoticeAdapter)
+
+    def test_boards_come_from_spec_for_unregistered_host(self) -> None:
+        spec_with_boards = AdapterSpec(
+            host="new.ac.kr",
+            boards=[BoardSpec(url="https://new.ac.kr/n1.do", label="일반"), BoardSpec(url="https://new.ac.kr/n2.do", label="장학")],
+            listing=self.listing(),
+        )
+
+        boards = boards_for("https://new.ac.kr/n1.do", spec_with_boards)
+
+        self.assertEqual([board.label for board in boards], ["일반", "장학"])
+
+    def test_registered_boards_win_over_spec(self) -> None:
+        spec_with_boards = AdapterSpec(
+            host="www.sejong.ac.kr",
+            boards=[BoardSpec(url="https://www.sejong.ac.kr/x.do", label="엉뚱한 탭")],
+            listing=self.listing(),
+        )
+
+        boards = boards_for("https://www.sejong.ac.kr/kor/intro/notice1.do", spec_with_boards)
+
+        self.assertNotIn("엉뚱한 탭", [board.label for board in boards])
+        self.assertIn("장학", [board.label for board in boards])
+
+    def test_content_parser_resolution_follows_the_same_order(self) -> None:
+        detail = DetailSpec(body=[".custom-body"])
+        generated = AdapterSpec(host="new.ac.kr", listing=self.listing(), detail=detail)
+
+        self.assertIsInstance(content_parser_for("https://www.sejong.ac.kr/n.do", generated), K2WebContentParser)
+        self.assertIsInstance(content_parser_for("https://new.ac.kr/n.do", generated), SpecContentParser)
+        self.assertIsInstance(content_parser_for("https://new.ac.kr/n.do"), CommonContentParser)
 
 
 class SpecContentParserTests(unittest.TestCase):

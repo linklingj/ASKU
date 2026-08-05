@@ -112,7 +112,24 @@ def _error_response(status_code: int, code: str, message: str, details: dict | N
     return JSONResponse(status_code=status_code, content=body.model_dump())
 
 
-def _record_crawl_quality(storage, school_id: int, crawl_id: str, run, adapter, boards) -> None:
+def _adapter_spec(storage, base_url: str):
+    """호스트에 등록된 수집 규격을 읽는다. 없거나 형식이 어긋나면 None.
+
+    규격은 부가 정보다. 읽지 못해도 전용 어댑터·공용 파서로 수집은 계속된다.
+    """
+
+    from app.adapter_spec import AdapterSpec
+
+    host = (urlsplit(base_url).hostname or "").lower()
+    try:
+        raw = storage.get_adapter_spec(host)
+        return AdapterSpec.model_validate(raw) if raw else None
+    except Exception:
+        logger.exception("수집 규격을 읽지 못했습니다: host=%s", host)
+        return None
+
+
+def _record_crawl_quality(storage, school_id: int, crawl_id: str, run, adapter, boards, spec=None) -> None:
     """크롤 직후 수집 품질을 판정해 이력으로 남긴다.
 
     파서가 사이트 구조와 어긋나도 크롤은 0건 성공으로 끝나므로, 지표를 남기지
@@ -129,6 +146,9 @@ def _record_crawl_quality(storage, school_id: int, crawl_id: str, run, adapter, 
             previous_rows=lambda board: storage.get_previous_listing_rows(
                 school_id, board, before_crawl_id=crawl_id
             ),
+            # 운영과 같은 본문 파서로 검사해야 한다. 규격을 빼면 규격 기반 학교에서
+            # 공용 파서로 검사하게 되어 본문이 비어도 통과로 판정한다.
+            spec=spec,
         )
         storage.record_crawl_quality(school_id, crawl_id, reports)
         for report in reports:
@@ -214,11 +234,14 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
             scope=CrawlScope(allowed_hosts=[urlsplit(base_url).hostname or ""]),
         )
         crawler = Crawler.from_storage(storage)
-        adapter = adapter_for(base_url)
+        # 규격은 크롤 시작 때 한 번만 꺼내 파이프라인 전체에 넘긴다. Crawler·Extractor 가
+        # Storage 를 직접 알지 않게 하고, 페이지마다 조회하는 일도 없게 한다.
+        spec = _adapter_spec(storage, base_url)
+        adapter = adapter_for(base_url, spec)
         # 세종대처럼 공지가 여러 탭으로 쪼개진 학교는 등록된 게시판을 모두 돈다.
-        boards = boards_for(base_url)
+        boards = boards_for(base_url, spec)
         run = crawler.crawl_boards(crawl_request, boards, adapter)
-        _record_crawl_quality(storage, school_id, str(crawl_request.crawl_id), run, adapter, boards)
+        _record_crawl_quality(storage, school_id, str(crawl_request.crawl_id), run, adapter, boards, spec)
         pages = crawler.pages_for_extractor(run)
 
         # 전체 방문/수집된 페이지 수
@@ -260,7 +283,7 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
 
         embedder = LocalEmbedder()
         provider = GeminiProvider()
-        extractor = DocumentExtractor(llm_extractor=provider)
+        extractor = DocumentExtractor(llm_extractor=provider, spec=spec)
         builder = GraphBuilder(storage=storage, embedder=embedder)
 
         has_failures = len(run.failures) > 0

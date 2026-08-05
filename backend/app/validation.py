@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Callable, Iterable
 
+from app.adapter_spec import AdapterSpec
 from app.crawler import (
     DEFAULT_BOARD_LABEL,
     Board,
@@ -152,11 +153,16 @@ def validate_crawl(
     *,
     detail_sample: int = 3,
     previous_rows: Callable[[str], int | None] | None = None,
+    spec: "AdapterSpec | None" = None,
 ) -> list[ValidationReport]:
     """끝난 크롤 결과를 게시판별로 판정한다. 추가 요청은 하지 않는다.
 
     상세는 게시판마다 표본 몇 건만 본다. 전수 검사해도 얻는 신호가 같고, 크롤
     직후 파이프라인에서 도는 작업이라 가볍게 유지한다.
+
+    `spec` 은 운영에서 쓰는 것과 **같은** 본문 파서를 고르기 위해 받는다. 넘기지
+    않으면 규격 기반 학교에서 공용 파서로 검사하게 되어, 실제로는 본문이 비어도
+    통과로 판정한다.
     """
 
     reports: list[ValidationReport] = []
@@ -177,7 +183,7 @@ def validate_crawl(
 
         titles = [item.title_hint or "" for item in adapter.parse_listing(listing_html, board.url)]
         for page in pages_by_board.get(label, [])[:detail_sample]:
-            document = content_parser_for(page.canonical_url).parse(page.raw_html)
+            document = content_parser_for(page.canonical_url, spec).parse(page.raw_html)
             others = [title for title in titles if title and title != page.title_hint]
             validate_detail(document, _as_listing_item(page), other_titles=others, report=report)
         reports.append(report)
@@ -187,14 +193,14 @@ def validate_crawl(
 def _group_pages(run: CrawlRun, boards: Iterable[Board]) -> dict[str, list[CrawledPage]]:
     """수집된 페이지를 게시판 라벨로 묶는다.
 
-    라벨이 없는 학교(단일 게시판)는 `category_hint` 가 목록의 분류값이므로 라벨로
-    쓸 수 없다. 그때는 모든 페이지를 기본 게시판에 넣는다.
+    크롤러가 남긴 `board_of` 를 쓴다. `category_hint` 로 되짚으면 목록이 자체 분류를
+    주는 학교(아주대 `기타`·`학사`)에서 라벨과 맞지 않아 페이지가 어느 게시판에도
+    붙지 않고, 상세 검증이 통째로 건너뛰어진다.
     """
 
-    labels = {board.label for board in boards if board.label}
     grouped: dict[str, list[CrawledPage]] = {}
     for page in run.pages:
-        label = page.category_hint if page.category_hint in labels else DEFAULT_BOARD_LABEL
+        label = run.board_of.get(page.canonical_url, DEFAULT_BOARD_LABEL)
         grouped.setdefault(label, []).append(page)
     return grouped
 

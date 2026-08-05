@@ -176,6 +176,7 @@ class CrawlValidationTests(unittest.TestCase):
         run = CrawlRun()
         run.first_listing_html[label or DEFAULT_BOARD_LABEL] = listing_html(rows)
         for index in range(1, rows + 1):
+            run.board_of[f"https://example.edu/notice/view.do?id={index}"] = label or DEFAULT_BOARD_LABEL
             run.pages.append(
                 CrawledPage(
                     crawl_id=uuid4(),
@@ -227,6 +228,24 @@ class CrawlValidationTests(unittest.TestCase):
         )
 
         self.assertIn("LISTING_ROWS_DROPPED", [f.code for f in reports[0].findings])
+
+    def test_details_are_checked_when_listing_supplies_its_own_category(self) -> None:
+        """목록이 자체 분류를 주면 `category_hint` 가 게시판 라벨과 달라진다.
+
+        분류로 페이지를 게시판에 되짚으면(아주대 `기타`·`학사`) 어느 게시판에도
+        붙지 않아 상세 검증이 통째로 건너뛰어지고, 본문이 빈 공지를 놓친다.
+        """
+
+        run = self.run_fixture(rows=2, label="일반공지")
+        for page in run.pages:
+            page.category_hint = "학사"  # 목록이 준 분류. 게시판 라벨과 다르다
+            page.raw_html = "<main><p>짧음</p></main>"  # 본문 미달 → EMPTY_CONTENT 대상
+        boards = (Board(LISTING_URL, "일반공지"),)
+
+        reports = validate_crawl(run, CommonNoticeAdapter(), boards)
+
+        self.assertGreater(reports[0].checked_details, 0, "상세 검증이 건너뛰어졌다")
+        self.assertIn("EMPTY_CONTENT", [f.code for f in reports[0].findings])
 
     def test_first_crawl_has_no_previous_rows_to_compare(self) -> None:
         boards = (Board(LISTING_URL, "일반공지"),)

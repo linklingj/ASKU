@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
-from app.adapter_spec import DetailSpec
+from app.adapter_spec import AdapterSpec, DetailSpec
 from app.llm import Extraction, Extractor as LLMExtractor
 from app.prompts import whitelist_instruction
 from app.schemas import CrawledPage, ExtractedChunk, ExtractedEntity, ExtractedRelation, ExtractionFailure
@@ -141,11 +141,19 @@ CONTENT_PARSER_REGISTRY: dict[str, type[ContentParser]] = {
 }
 
 
-def content_parser_for(url: str) -> ContentParser:
-    """`url` 호스트에 맞는 본문 파서를 만든다."""
+def content_parser_for(url: str, spec: "AdapterSpec | None" = None) -> ContentParser:
+    """`url` 에 맞는 본문 파서를 만든다.
+
+    크롤러의 `adapter_for` 와 같은 순서로 고른다 — ``전용 클래스 → 규격 → 공용``.
+    `spec` 은 호출자가 저장소에서 꺼내 넘긴다.
+    """
 
     host = (urlsplit(url).hostname or "").lower()
-    return CONTENT_PARSER_REGISTRY.get(host, CommonContentParser)()
+    if host in CONTENT_PARSER_REGISTRY:
+        return CONTENT_PARSER_REGISTRY[host]()
+    if spec is not None and spec.detail.body:
+        return SpecContentParser(spec.detail)
+    return CommonContentParser()
 
 
 def _first_node(soup: BeautifulSoup, selectors: tuple[str, ...]):
@@ -244,6 +252,7 @@ class DocumentExtractor:
         llm_extractor: LLMExtractor,
         *,
         parsers: dict[int, ContentParser] | None = None,
+        spec: AdapterSpec | None = None,
         max_retries: int = 2,
         chunk_chars: int = DEFAULT_CHUNK_CHARS,
         overlap_chars: int = DEFAULT_OVERLAP_CHARS,
@@ -255,6 +264,9 @@ class DocumentExtractor:
             raise ValueError("chunk_chars/overlap_chars 범위가 올바르지 않다")
         self.llm_extractor = llm_extractor
         self.parsers = parsers or {}
+        # 이 학교의 수집 규격. 호출자가 저장소에서 꺼내 넘긴다(Extractor 는 Storage 를
+        # 직접 알지 않는다). 전용 파서가 없는 호스트에서만 쓰인다.
+        self.spec = spec
         self.max_retries = max_retries
         self.chunk_chars = chunk_chars
         self.overlap_chars = overlap_chars
@@ -331,7 +343,7 @@ class DocumentExtractor:
     def _parse_page(self, page: CrawledPage) -> CleanedDocument:
         # 명시 주입(school_id) 이 있으면 그것을, 없으면 호스트로 고른다. 호스트 기준이
         # 기본값이라 새 학교를 추가할 때 레지스트리 한 곳만 등록하면 된다.
-        parser = self.parsers.get(page.school_id) or content_parser_for(page.canonical_url)
+        parser = self.parsers.get(page.school_id) or content_parser_for(page.canonical_url, self.spec)
         try:
             return parser.parse(page.raw_html)
         except Exception as error:  # 전용 파서 실패 시 공통 파서로 안전하게 폴백

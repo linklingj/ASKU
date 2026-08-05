@@ -230,16 +230,26 @@ ADAPTER_REGISTRY: dict[str, type[CommonNoticeAdapter]] = {
 }
 
 
-def adapter_for(base_url: str) -> CommonNoticeAdapter:
-    """`base_url` 호스트에 맞는 어댑터를 만든다.
+def adapter_for(base_url: str, spec: AdapterSpec | None = None) -> CommonNoticeAdapter:
+    """`base_url` 에 맞는 어댑터를 만든다.
+
+    ``전용 클래스 → 규격 → 공용 파서`` 순으로 고른다. 손으로 검증한 전용 클래스가
+    규격보다 앞서므로, 자동 생성한 규격이 이상해도 기존 학교는 영향을 받지 않는다.
 
     공용 파서는 `table tbody tr` 기반이라 연세대(`ul > li`)·성균관대(`dl`)처럼
-    구조가 다른 게시판에서는 목록을 한 줄도 읽지 못한다. 등록된 학교는 반드시
-    전용 어댑터로 내려보내야 한다.
+    구조가 다른 게시판에서는 목록을 한 줄도 읽지 못한다. 어느 단계로도 잡히지
+    않는 학교는 수집이 0건이 되므로 검증기(`app.validation`)가 걸러야 한다.
+
+    `spec` 은 호출자가 저장소에서 꺼내 넘긴다. Crawler 가 Storage 를 직접 알지
+    않도록 하기 위해서다.
     """
 
-    host = urlsplit(base_url).hostname or ""
-    return ADAPTER_REGISTRY.get(host.lower(), CommonNoticeAdapter)()
+    host = (urlsplit(base_url).hostname or "").lower()
+    if host in ADAPTER_REGISTRY:
+        return ADAPTER_REGISTRY[host]()
+    if spec is not None:
+        return SpecNoticeAdapter(spec)
+    return CommonNoticeAdapter()
 
 
 # 라벨 없는 단일 게시판을 지표에 표기할 때 쓰는 이름.
@@ -274,11 +284,15 @@ BOARD_REGISTRY: dict[str, tuple[Board, ...]] = {
 }
 
 
-def boards_for(base_url: str) -> tuple[Board, ...]:
-    """`base_url` 호스트가 등록돼 있으면 하위 게시판 전체를, 아니면 그 URL 하나를 준다."""
+def boards_for(base_url: str, spec: AdapterSpec | None = None) -> tuple[Board, ...]:
+    """수집할 게시판 목록. ``등록 목록 → 규격 → 기준 URL 하나`` 순으로 고른다."""
 
     host = (urlsplit(base_url).hostname or "").lower()
-    return BOARD_REGISTRY.get(host) or (Board(base_url),)
+    if host in BOARD_REGISTRY:
+        return BOARD_REGISTRY[host]
+    if spec is not None and spec.boards:
+        return tuple(Board(board.url, board.label) for board in spec.boards)
+    return (Board(base_url),)
 
 
 class SpecNoticeAdapter(CommonNoticeAdapter):
@@ -391,6 +405,10 @@ class CrawlRun:
     # 게시판별 첫 목록 페이지 HTML. 수집 품질 검증이 파서를 다시 돌려 보기 위해
     # 남긴다(`app.validation`). 목록 전체를 들고 있지는 않는다.
     first_listing_html: dict[str, str] = field(default_factory=dict)
+    # 상세 URL → 게시판 라벨. 어느 게시판에서 나온 공지인지 기록한다.
+    # `category_hint` 로 되짚을 수 없다. 목록이 자체 분류를 주면 게시판 라벨 대신
+    # 그 값이 들어가, 검증이 페이지를 게시판에 붙이지 못하고 조용히 건너뛴다.
+    board_of: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -621,6 +639,7 @@ class Crawler:
             else:
                 status = "new"
             cursor.collected += 1
+            run.board_of[canonical_url] = board.label or DEFAULT_BOARD_LABEL
             page_had_items = True
             page_had_updates = page_had_updates or status != "unchanged"
 
