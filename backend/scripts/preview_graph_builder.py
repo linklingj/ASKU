@@ -15,7 +15,7 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 from app.crawler import Crawler
-from app.extractor import DocumentExtractor, SejongContentParser
+from app.extractor import DocumentExtractor
 from app.graph_builder import GraphBuilder
 from app.llm import Embedder, GeminiProvider
 from app.models import EMBEDDING_DIM
@@ -102,8 +102,8 @@ def main() -> None:
     )
     crawler = Crawler(hash_exists=lambda *_args: False)
     pages = crawler.pages_for_extractor(crawler.crawl(request, school.adapter_factory()))
-    parsers = {0: SejongContentParser()} if args.school == "sejong" else None
-    extractor = DocumentExtractor(GeminiProvider(), parsers=parsers)
+    # 본문 파서는 상세 URL의 호스트로 자동 선택된다(`content_parser_for`).
+    extractor = DocumentExtractor(GeminiProvider())
     storage = MemoryStorage()
     builder = GraphBuilder(storage, PreviewEmbedder())
 

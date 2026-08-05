@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 import unittest
 
-from app.extractor import DocumentExtractor, SejongContentParser
+from app.extractor import DocumentExtractor, K2WebContentParser
 from app.llm import Extraction, Extractor as LLMExtractor
 from app.schemas import Attachment, CrawledPage, ExtractedEntity, ExtractedRelation, ExtractionFailure
 
@@ -20,10 +20,15 @@ class FakeLLM(LLMExtractor):
         return response
 
 
-def page(*, html: str = "<main><h1>장학금 안내</h1><p>본문 내용</p></main>", status: str = "new") -> CrawledPage:
+def page(
+    *,
+    html: str = "<main><h1>장학금 안내</h1><p>본문 내용</p></main>",
+    status: str = "new",
+    canonical_url: str = "https://example.edu/notices/1",
+) -> CrawledPage:
     return CrawledPage(
         crawl_id=uuid4(), school_id=1, source_url="https://example.edu/notices/1",
-        canonical_url="https://example.edu/notices/1", title_hint="목록 제목", category_hint="장학",
+        canonical_url=canonical_url, title_hint="목록 제목", category_hint="장학",
         author_hint="학생지원팀", published_at_hint=datetime(2026, 7, 1, tzinfo=timezone.utc),
         raw_html=html, attachments=[Attachment(url="https://example.edu/form.hwp", name_hint="신청서")],
         content_hash="hash", fetched_at=datetime(2026, 7, 2, tzinfo=timezone.utc), crawl_status=status,
@@ -90,7 +95,7 @@ class ExtractorTests(unittest.TestCase):
         """
         llm = FakeLLM([self.valid()])
 
-        out = DocumentExtractor(llm, parsers={1: SejongContentParser()}, sleeper=lambda _: None).process(page(html=html))
+        out = DocumentExtractor(llm, parsers={1: K2WebContentParser()}, sleeper=lambda _: None).process(page(html=html))
 
         self.assertEqual(out[0].content, "모집분야: 계약직원\n지원 방법: 이메일 접수")
         self.assertNotIn("세종소개", llm.calls[0])
@@ -98,11 +103,37 @@ class ExtractorTests(unittest.TestCase):
 
     def test_sejong_parser_falls_back_to_common_parser_when_selector_changes(self) -> None:
         llm = FakeLLM([self.valid()])
-        out = DocumentExtractor(llm, parsers={1: SejongContentParser()}, sleeper=lambda _: None).process(
+        out = DocumentExtractor(llm, parsers={1: K2WebContentParser()}, sleeper=lambda _: None).process(
             page(html="<main><p>선택자 변경 뒤에도 읽을 수 있는 본문</p></main>")
         )
 
         self.assertEqual(out[0].content, "선택자 변경 뒤에도 읽을 수 있는 본문")
+
+    def test_k2web_parser_is_chosen_by_host_and_drops_next_article_titles(self) -> None:
+        """홍익대는 본문 바로 아래에 다음 글 목록이 붙는다. 공용 파서는 이를 본문에 섞는다."""
+
+        html = """
+            <main>
+              <div class="b-content-box"><div class="fr-view"><p>중단일시: 8월 8일</p></div></div>
+              <ul class="b-list">
+                <li><a href="/kr/newscenter/notice.do?articleNo=2">다음 글 제목</a></li>
+              </ul>
+            </main>
+        """
+        llm = FakeLLM([self.valid()])
+        url = "https://www.hongik.ac.kr/kr/newscenter/notice.do?articleNo=1"
+
+        out = DocumentExtractor(llm, sleeper=lambda _: None).process(page(html=html, canonical_url=url))
+
+        self.assertEqual(out[0].content, "중단일시: 8월 8일")
+        self.assertNotIn("다음 글 제목", llm.calls[0])
+
+    def test_unregistered_host_still_uses_common_parser(self) -> None:
+        llm = FakeLLM([self.valid()])
+
+        out = DocumentExtractor(llm, sleeper=lambda _: None).process(page())
+
+        self.assertIn("본문 내용", out[0].content)
 
     def test_crawler_category_is_preserved_when_llm_omits_it(self) -> None:
         llm = FakeLLM([Extraction(
