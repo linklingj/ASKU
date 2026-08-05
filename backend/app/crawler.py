@@ -19,6 +19,7 @@ import requests
 from bs4 import BeautifulSoup
 from protego import Protego
 
+from app.adapter_spec import AdapterSpec
 from app.schemas import Attachment, CrawledPage, CrawlFailure, CrawlRequest
 
 
@@ -278,6 +279,96 @@ def boards_for(base_url: str) -> tuple[Board, ...]:
 
     host = (urlsplit(base_url).hostname or "").lower()
     return BOARD_REGISTRY.get(host) or (Board(base_url),)
+
+
+class SpecNoticeAdapter(CommonNoticeAdapter):
+    """규격(`AdapterSpec`)을 읽어 목록을 파싱하는 어댑터.
+
+    학교마다 클래스를 만드는 대신 선택자를 데이터로 받는다. 동작은 전용 어댑터와
+    같아야 하며, 그 동일성은 학교별 회귀 테스트로 확인한다.
+    """
+
+    def __init__(self, spec: "AdapterSpec") -> None:
+        listing = spec.listing
+        super().__init__(
+            row_selector=listing.row,
+            detail_link_selector=listing.detail_link,
+            attachment_selector=spec.detail.attachment or CommonNoticeAdapter().attachment_selector,
+        )
+        self.spec = spec
+
+    def parse_listing(self, html: str, page_url: str) -> Iterable[ListingItem]:
+        listing = self.spec.listing
+        soup = BeautifulSoup(html, "html.parser")
+        for row in soup.select(listing.row):
+            link = row.select_one(listing.detail_link)
+            if link is None or not link.get("href"):
+                continue
+            yield ListingItem(
+                url=urljoin(page_url, str(link["href"])),
+                # 제목 선택자가 없으면 링크 텍스트를 쓴다. 링크 안에 제목이 그대로
+                # 들어 있는 게시판이 흔하다.
+                title_hint=_pick(row, listing.title) or _text_or_none(link),
+                category_hint=_drop_if_matches(_pick(row, listing.category), listing.category_ignore),
+                author_hint=_pick(row, listing.author),
+                published_at_hint=_parse_date(_pick(row, listing.date) or ""),
+            )
+
+    def next_listing_url(self, html: str, page_url: str) -> str | None:
+        pagination = self.spec.listing.pagination
+        if pagination is None:
+            return super().next_listing_url(html, page_url)
+        if pagination.type == "link":
+            link = BeautifulSoup(html, "html.parser").select_one(pagination.selector)
+            if link is None or not link.get("href"):
+                return None
+            return urljoin(page_url, str(link["href"]))
+        if pagination.type == "offset":
+            return _advance_offset(page_url, pagination.param, pagination.step)
+        return _form_next_url(html, page_url, pagination)
+
+
+def _drop_if_matches(value: str | None, pattern: str | None) -> str | None:
+    """분류 자리에 분류가 아닌 값(글 번호 등)이 오면 버린다."""
+
+    if value is None or pattern is None:
+        return value
+    return None if re.fullmatch(pattern, value.strip()) else value
+
+
+def _pick(row, selector: str | None) -> str | None:
+    """행 안에서 선택자로 텍스트를 뽑는다. 선택자가 없으면 None."""
+
+    return _text_or_none(row.select_one(selector)) if selector else None
+
+
+def _advance_offset(page_url: str, param: str, step: int) -> str:
+    """목록 URL 의 offset 파라미터를 한 페이지만큼 늘린다."""
+
+    split = urlsplit(page_url)
+    query = dict(parse_qsl(split.query, keep_blank_values=True))
+    current = query.get(param, "0")
+    query[param] = str((int(current) if current.isdigit() else 0) + step)
+    return urlunsplit((split.scheme, split.netloc, split.path, urlencode(query), split.fragment))
+
+
+def _form_next_url(html: str, page_url: str, pagination) -> str | None:
+    """폼의 hidden input 을 모아 다음 페이지 URL 을 만든다(연세대 K2Web)."""
+
+    soup = BeautifulSoup(html, "html.parser")
+    next_link = soup.select_one(pagination.next_selector)
+    page_form = soup.select_one(pagination.form_selector)
+    if next_link is None or page_form is None or not page_form.get("action"):
+        return None
+    match = re.search(pagination.page_pattern, str(next_link.get("href") or ""))
+    if match is None:
+        return None
+    params = {
+        str(tag["name"]): str(tag.get("value", ""))
+        for tag in page_form.select("input[name]")
+    }
+    params[pagination.page_param] = match.group(1)
+    return f"{urljoin(page_url, str(page_form['action']))}?{urlencode(params)}"
 
 
 HashExists = Callable[[int, str, str], bool]

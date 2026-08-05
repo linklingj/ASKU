@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
+from app.adapter_spec import DetailSpec
 from app.llm import Extraction, Extractor as LLMExtractor
 from app.prompts import whitelist_instruction
 from app.schemas import CrawledPage, ExtractedChunk, ExtractedEntity, ExtractedRelation, ExtractionFailure
@@ -106,6 +107,29 @@ class K2WebContentParser:
         body = _first_node(soup, self._CONTENT_SELECTORS)
         if body is None:
             raise ValueError("k2web content selector not found")
+        return CleanedDocument(title=title, content=_body_text(body))
+
+
+class SpecContentParser:
+    """규격(`AdapterSpec.detail`)을 읽어 본문을 선택하는 파서.
+
+    학교마다 클래스를 만드는 대신 선택자를 데이터로 받는다. 선택자를 못 찾으면
+    예외를 던져 `DocumentExtractor` 가 공통 파서로 폴백하게 한다 — 규격이 어긋난
+    채 페이지 전체를 본문으로 저장하는 것보다 낫다.
+    """
+
+    def __init__(self, detail: "DetailSpec") -> None:
+        self.detail = detail
+
+    def parse(self, html: str) -> CleanedDocument:
+        soup = BeautifulSoup(html, "html.parser")
+        for node in soup.select(CommonContentParser._REMOVE_SELECTORS):
+            node.decompose()
+
+        title = _first_text(soup, tuple(self.detail.title) or CommonContentParser._TITLE_SELECTORS)
+        body = _first_node(soup, tuple(self.detail.body))
+        if body is None:
+            raise ValueError("spec body selector not found")
         return CleanedDocument(title=title, content=_body_text(body))
 
 
