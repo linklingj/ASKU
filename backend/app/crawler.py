@@ -14,10 +14,10 @@ import re
 from time import sleep
 from typing import Callable, Iterable, Protocol
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
-from urllib.robotparser import RobotFileParser
 
 import requests
 from bs4 import BeautifulSoup
+from protego import Protego
 
 from app.schemas import Attachment, CrawledPage, CrawlFailure, CrawlRequest
 
@@ -26,6 +26,8 @@ TRACKING_QUERY_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
 DETAIL_CONTEXT_QUERY_KEYS = {"article.offset", "articlelimit"}
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 USER_AGENT = "ASKU-Crawler/0.1 (+https://github.com/linklingj/ASKU)"
+# robots.txt 의 User-agent 줄과 대조할 제품 토큰. 헤더 UA 의 버전·URL 부분은 뺀다.
+ROBOTS_USER_AGENT = "ASKU-Crawler"
 
 
 @dataclass(frozen=True)
@@ -236,6 +238,31 @@ class CrawlRun:
     failures: list[CrawlFailure] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class RobotsPolicy:
+    """오리진 하나의 robots.txt 판정 결과. 성공·거부 모두 캐시해 재요청을 막는다.
+
+    ``parser`` 가 ``None`` 이면 그 오리진 전체가 금지다(응답을 얻지 못했거나 401/403·5xx).
+    그때 ``denial_code`` 가 실패 이력에 남길 사유를 들고 있다.
+    """
+
+    parser: Protego | None
+    denial_code: str | None = None
+
+    def allows(self, url: str) -> bool:
+        if self.parser is None:
+            return False
+        return self.parser.can_fetch(url, ROBOTS_USER_AGENT)
+
+    def crawl_delay(self) -> float | None:
+        """robots.txt 가 선언한 요청 간격(초). 선언이 없으면 None."""
+
+        if self.parser is None:
+            return None
+        declared = self.parser.crawl_delay(ROBOTS_USER_AGENT)
+        return float(declared) if declared is not None else None
+
+
 class Crawler:
     """정적 HTML 기반 공지 수집기.
 
@@ -266,7 +293,7 @@ class Crawler:
             self.session.headers.update({"User-Agent": USER_AGENT})
         self.sleeper = sleeper
         self.robots_allowed = robots_allowed or self._robots_allowed
-        self._robots_by_origin: dict[str, RobotFileParser] = {}
+        self._policy_by_origin: dict[str, RobotsPolicy] = {}
 
     @classmethod
     def from_storage(cls, storage: CrawlStorage, **kwargs: object) -> "Crawler":
@@ -280,9 +307,6 @@ class Crawler:
 
     def crawl(self, request: CrawlRequest, adapter: NoticeAdapter) -> CrawlRun:
         run = CrawlRun()
-        if not self.robots_allowed(request.base_url):
-            self._policy_failure(request, request.base_url, run)
-            return run
         scope = request.scope
         max_listing_pages = scope.max_listing_pages if scope else 10
         max_items = scope.max_items if scope else 300
@@ -295,6 +319,11 @@ class Crawler:
             if canonical_listing_url in visited_listing_urls:
                 break
             visited_listing_urls.add(canonical_listing_url)
+            # 첫 페이지(base_url)뿐 아니라 다음 목록 페이지도 매번 검사한다. 페이지네이션
+            # URL 만 막아 둔 robots.txt 를 2페이지부터 그냥 통과시키면 안 된다.
+            if not self.robots_allowed(listing_url):
+                self._policy_failure(request, listing_url, run)
+                break
             listing_html = self._fetch(request, listing_url, run)
             if listing_html is None:
                 break
@@ -355,8 +384,10 @@ class Crawler:
             try:
                 headers = {"Referer": referer} if referer else None
                 response = self.session.get(url, timeout=self.settings.timeout_seconds, headers=headers)
+                # 응답을 받았으면 상태 코드와 무관하게 간격을 지킨다. 200 일 때만 쉬면
+                # 죽은 링크가 늘어선 목록에서 무지연으로 연타하게 된다.
+                self.sleeper(self._crawl_delay(url))
                 if response.status_code == 200:
-                    self.sleeper(self.settings.request_delay_seconds)
                     return response.text
                 retryable = response.status_code in RETRYABLE_STATUS_CODES
                 error_code = f"HTTP_{response.status_code}"
@@ -381,36 +412,94 @@ class Crawler:
         return None
 
     def _robots_allowed(self, url: str) -> bool:
-        split = urlsplit(url)
-        origin = f"{split.scheme}://{split.netloc}"
-        parser = self._robots_by_origin.get(origin)
-        if parser is None:
-            try:
-                response = self.session.get(f"{origin}/robots.txt", timeout=self.settings.timeout_seconds)
-            except requests.RequestException:
-                return False  # 정책을 확인할 수 없으면 수집하지 않는다.
-            self.sleeper(self.settings.request_delay_seconds)
-            if response.status_code in {401, 403}:
-                return False
-            parser = RobotFileParser()
-            parser.set_url(f"{origin}/robots.txt")
-            parser.parse(response.text.splitlines() if response.status_code == 200 else [])
-            self._robots_by_origin[origin] = parser
-        return parser.can_fetch("ASKU-Crawler", url)
+        """robots.txt 판정. 정책을 확인할 수 없으면 수집하지 않는다(보수적 기본값).
 
-    @staticmethod
-    def _policy_failure(request: CrawlRequest, url: str, run: CrawlRun) -> None:
+        표준 ``urllib.robotparser`` 대신 ``protego`` 를 쓴다. 표준 파서는 경로 안
+        와일드카드(``Disallow: /*?mode=view``)와 ``$`` 앵커를 지원하지 않아 금지된
+        URL 을 허용으로 판정하고, Allow/Disallow 우선순위도 RFC 9309 의 최장 일치가
+        아니라 파일에 쓰인 순서로 정해 허용된 게시판을 통째로 금지로 판정한다.
+        """
+
+        return self._robots_policy(url).allows(url)
+
+    def _crawl_delay(self, url: str) -> float:
+        """요청 간 대기 시간. robots.txt 의 ``Crawl-delay`` 와 설정값 중 긴 쪽을 쓴다.
+
+        이미 받아둔 판정만 참고하고 여기서 robots.txt 를 새로 가져오지는 않는다.
+        정상 흐름에서는 수집 전에 robots 검사를 거쳐 캐시가 채워져 있고, 호출자가
+        ``robots_allowed`` 를 직접 주입했다면 참고할 robots.txt 자체가 없다.
+        """
+
+        policy = self._policy_by_origin.get(_origin(url))
+        declared = policy.crawl_delay() if policy is not None else None
+        if declared is None:
+            return self.settings.request_delay_seconds
+        return max(self.settings.request_delay_seconds, declared)
+
+    def _robots_policy(self, url: str) -> RobotsPolicy:
+        """오리진의 robots.txt 판정을 얻는다. 성공·거부 모두 한 번만 가져와 캐시한다.
+
+        거부 결과를 캐시하지 않으면 robots.txt 가 401/403 인 사이트에 URL 마다 다시
+        요청하게 된다 — 수집을 거부한 서버를 오히려 수백 번 두드리는 꼴이다.
+        """
+
+        origin = _origin(url)
+        cached = self._policy_by_origin.get(origin)
+        if cached is not None:
+            return cached
+
+        try:
+            response = self.session.get(f"{origin}/robots.txt", timeout=self.settings.timeout_seconds)
+        except requests.RequestException:
+            policy = RobotsPolicy(parser=None, denial_code="ROBOTS_UNREACHABLE")
+        else:
+            self.sleeper(self.settings.request_delay_seconds)
+            policy = _policy_from_status(response)
+
+        self._policy_by_origin[origin] = policy
+        return policy
+
+    def _policy_failure(self, request: CrawlRequest, url: str, run: CrawlRun) -> None:
+        # 오리진 전체가 막힌 경우에는 그 사유를, 개별 경로가 막힌 경우에는 기본 사유를 남긴다.
+        policy = self._policy_by_origin.get(_origin(url))
+        error_code = policy.denial_code if policy is not None and policy.denial_code else "ROBOTS_DISALLOWED"
         run.failures.append(
             CrawlFailure(
                 crawl_id=request.crawl_id,
                 school_id=request.school_id,
                 source_url=url,
                 stage="policy",
-                error_code="ROBOTS_DISALLOWED",
-                retryable=False,
+                # 네트워크·서버 오류로 robots.txt 를 못 읽은 것은 정책 거부와 달리 나중에 풀린다.
+                error_code=error_code,
+                retryable=error_code != "ROBOTS_DISALLOWED",
                 occurred_at=datetime.now(timezone.utc),
             )
         )
+
+
+def _origin(url: str) -> str:
+    """robots.txt 는 오리진(스킴+호스트+포트) 단위로 적용된다."""
+
+    split = urlsplit(url)
+    return f"{split.scheme}://{split.netloc}"
+
+
+def _policy_from_status(response: requests.Response) -> RobotsPolicy:
+    """robots.txt 응답 상태를 RFC 9309 §2.3.1 대로 판정으로 옮긴다.
+
+    - 200: 규칙을 그대로 따른다.
+    - 401·403(접근 거부): 오리진 전체 금지.
+    - 그 밖의 4xx(404 등, "robots.txt 없음"): 전면 허용.
+    - 5xx: 일시적 전면 금지. 빈 규칙으로 읽어 전면 허용하면 서버가 아플 때
+      오히려 더 많이 긁게 된다.
+    """
+
+    status = response.status_code
+    if status in {401, 403}:
+        return RobotsPolicy(parser=None, denial_code="ROBOTS_DISALLOWED")
+    if status >= 500:
+        return RobotsPolicy(parser=None, denial_code="ROBOTS_UNREACHABLE")
+    return RobotsPolicy(parser=Protego.parse(response.text if status == 200 else ""))
 
 
 def normalize_url(url: str) -> str:
