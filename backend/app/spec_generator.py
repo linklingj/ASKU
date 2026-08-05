@@ -25,6 +25,7 @@ from app.extractor import SpecContentParser
 from app.html_digest import digest_html
 from app.llm import SpecDrafter
 from app.prompts import spec_draft_instruction
+from app.spec_templates import templates_for
 from app.validation import Finding, ValidationReport, validate_detail, validate_listing
 
 
@@ -44,6 +45,20 @@ DEFAULT_PROVIDER_RETRIES = 4
 # 전체가 이러면 규격 문제지만, 일부면 그 공지의 사정이다.
 SAMPLE_LEVEL_CODES = frozenset({"EMPTY_CONTENT", "TITLE_MISMATCH", "NEIGHBOUR_LEAK", "BODY_SELECTOR_NOT_FOUND"})
 
+# 이것이 걸리면 규격을 쓸 수 없다. 목록을 못 읽거나 제목이 없으면 수집·검색이
+# 성립하지 않는다.
+BLOCKING_CODES = frozenset({
+    "NO_LISTING_ROWS",
+    "MISSING_TITLES",
+    "LISTING_FETCH_FAILED",
+    "DETAIL_NOT_IN_LISTING",
+    "NO_BODY_SELECTOR",
+})
+
+# 나머지(날짜 미달·페이지네이션 이상 등)는 아쉽지만 쓸 수 있다. 날짜를 아예 주지
+# 않는 게시판이 실제로 있고, 페이지네이션이 안 되면 1페이지만 수집될 뿐이다.
+# 이것 때문에 학교를 통째로 버리면 손해가 더 크므로 경고로만 남긴다.
+
 
 @dataclass
 class SpecDraftResult:
@@ -53,6 +68,8 @@ class SpecDraftResult:
     attempts: int = 0
     reports: list[ValidationReport] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    # 어디서 온 규격인지. 템플릿으로 끝나면 LLM 을 부르지 않았다는 뜻이다.
+    origin: str = "generated"
 
     @property
     def accepted(self) -> bool:
@@ -96,6 +113,16 @@ def generate_spec(
     """
 
     result = SpecDraftResult()
+
+    matched = match_template(host, listing, details)
+    if matched is not None:
+        name, spec, report = matched
+        result.spec, result.origin = spec, f"template:{name}"
+        result.reports.append(report)
+        result.findings = list(report.findings)  # 통과해도 남은 지적은 경고로 알린다
+        LOGGER.info("템플릿 적용(host=%s, %s): %s", host, name, report.summary())
+        return result
+
     listing_digest = digest_html(listing.html)
     detail_digests = [(sample.url, digest_html(sample.html)) for sample in details]
     feedback: list[str] = []
@@ -128,7 +155,7 @@ def generate_spec(
         result.reports.append(report)
         if _acceptable(report, len(details)):
             result.spec = spec
-            result.findings = [f for f in report.findings if f.code in SAMPLE_LEVEL_CODES]
+            result.findings = list(report.findings)  # 통과해도 남은 지적은 경고로 알린다
             return result
 
         result.findings = list(report.findings)
@@ -139,17 +166,41 @@ def generate_spec(
     return result
 
 
-def _acceptable(report: ValidationReport, sample_count: int) -> bool:
-    """규격을 받아들일지 판정한다.
+def match_template(
+    host: str, listing: PageSample, details: list[PageSample]
+) -> tuple[str, AdapterSpec, ValidationReport] | None:
+    """알려진 게시판 제품의 규격을 대보고, 통과하는 첫 번째를 돌려준다.
 
-    목록 관련 지적은 하나라도 있으면 규격이 틀린 것이다. 반면 상세 표본의 지적은
-    그 공지의 사정일 수 있다 — 본문이 이미지뿐인 공지가 실제로 있다. 표본의 절반을
-    넘게 걸리면 규격 문제로 보고, 그보다 적으면 경고로만 남긴다.
+    국내 대학은 같은 게시판 제품을 널리 쓴다. 이미 아는 규격으로 되는 학교에
+    LLM 을 부르면 토큰과 시간을 낭비하고, 제공자 과부하에도 걸린다.
+
+    채택 기준은 자동 생성 규격과 같다. 기준이 다르면 어느 쪽이 나은지 비교할 수
+    없고, 템플릿만 느슨하게 통과하는 일이 생긴다.
     """
 
+    for name, spec in templates_for(host):
+        report = verify_spec(spec, listing, details)
+        if _acceptable(report, len(details)):
+            return name, spec, report
+        LOGGER.debug("템플릿 불일치(host=%s, %s): %s", host, name, report.summary())
+    return None
+
+
+def _acceptable(report: ValidationReport, sample_count: int) -> bool:
+    """규격을 받아들일지 판정한다. 지적의 무게가 서로 다르다.
+
+    - 차단: 목록을 못 읽거나 제목이 없다. 수집·검색이 성립하지 않는다.
+    - 표본: 본문 없음·제목 불일치 등. 그 공지의 사정일 수 있어 절반까지 봐준다.
+    - 경고: 날짜 미달·페이지네이션 이상. 아쉽지만 쓸 수 있다.
+
+    전부 똑같이 막으면 날짜를 안 주는 게시판 하나 때문에 학교를 통째로 버린다.
+    """
+
+    if any(finding.code in BLOCKING_CODES for finding in report.findings):
+        return False
     sample_findings = [f for f in report.findings if f.code in SAMPLE_LEVEL_CODES]
-    if len(sample_findings) != len(report.findings):
-        return False  # 목록 선택자·페이지네이션 문제가 섞여 있다
+    if not sample_findings:
+        return True
     return bool(sample_count) and len(sample_findings) <= sample_count // 2
 
 

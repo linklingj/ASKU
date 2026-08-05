@@ -266,15 +266,115 @@ class SampleLevelFindingTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
 
-    def test_listing_problems_are_never_tolerated(self) -> None:
-        """목록 선택자가 틀리면 표본 비율과 무관하게 규격 문제다."""
+    def test_unreadable_listing_is_never_tolerated(self) -> None:
+        """목록을 한 줄도 못 읽으면 표본 비율과 무관하게 규격 문제다."""
 
         broken = good_spec()
-        broken["listing"]["date"] = "td.nope"
+        broken["listing"]["row"] = "ul.menu li"
         listing, details = self.two_details()
         drafter = FakeDrafter([json.dumps(broken)] * 3)
 
         result = generate_spec(drafter, "new.ac.kr", listing, details)
 
         self.assertFalse(result.accepted)
+        self.assertIn("NO_LISTING_ROWS", [f.code for f in result.findings])
+
+    def test_missing_titles_block_the_spec(self) -> None:
+        """제목이 없으면 검색이 성립하지 않는다.
+
+        제목 선택자가 빗나가도 링크 텍스트로 폴백하므로, 링크 자체가 비어 있어야
+        비로소 제목이 없는 상태가 된다(이미지 링크 게시판 등).
+        """
+
+        blank = """
+        <table><tbody>
+          <tr><td class='subject'><a href='/view.do?id=1'><img src='/t.png'></a></td></tr>
+          <tr><td class='subject'><a href='/view.do?id=2'><img src='/t.png'></a></td></tr>
+        </tbody></table>
+        """
+        _, details = self.two_details()
+        drafter = FakeDrafter([json.dumps(good_spec())] * 3)
+
+        result = generate_spec(drafter, "new.ac.kr", PageSample(LISTING_URL, blank), details)
+
+        self.assertFalse(result.accepted)
+        self.assertIn("MISSING_TITLES", [f.code for f in result.findings])
+
+    def test_missing_dates_are_a_warning_not_a_blocker(self) -> None:
+        """날짜를 아예 주지 않는 게시판이 있다. 이것으로 학교를 버리면 손해가 크다."""
+
+        no_date = good_spec()
+        no_date["listing"]["date"] = "td.nope"
+        listing, details = self.two_details()
+        drafter = FakeDrafter([json.dumps(no_date)])
+
+        result = generate_spec(drafter, "new.ac.kr", listing, details)
+
+        self.assertTrue(result.accepted, result.summary())
         self.assertIn("MISSING_DATES", [f.code for f in result.findings])
+        self.assertIn("경고", result.summary())
+
+
+K2WEB_LISTING = """
+<table><tbody>
+  <tr class='b-top-box'><td class='b-td-left'><div class='b-title-box'>
+      <a href='?mode=view&articleNo=1'><span class='b-title'>장학금 신청 안내</span></a>
+    </div><div class='b-m-con'><span class='b-writer'>학생지원과</span>
+      <span class='b-date'>2026.08.04</span></div></td></tr>
+  <tr><td class='b-td-left'><div class='b-title-box'>
+      <a href='?mode=view&articleNo=2'><span class='b-title'>등록금 납부 안내</span></a>
+    </div><div class='b-m-con'><span class='b-writer'>재무과</span>
+      <span class='b-date'>2026.08.01</span></div></td></tr>
+</tbody></table>
+<div class='b-paging'><ul><li class='next'><a href='?article.offset=10'>다음</a></li></ul></div>
+"""
+
+K2WEB_DETAIL = """
+<main><span class='b-title'>장학금 신청 안내</span>
+  <div class='b-content-box'><div class='fr-view'>
+    <p>신청 기간은 8월 10일까지이며 제출 서류는 아래와 같습니다.
+       성적증명서와 가족관계증명서를 학생지원과로 제출하시기 바랍니다.</p>
+  </div></div>
+</main>
+"""
+
+
+class TemplateFirstTests(unittest.TestCase):
+    """알려진 게시판 제품은 LLM 없이 규격을 얻는다."""
+
+    def k2web_samples(self):
+        return (
+            PageSample("https://k2.ac.kr/notice.do", K2WEB_LISTING),
+            [PageSample("https://k2.ac.kr/notice.do?mode=view&articleNo=1", K2WEB_DETAIL)],
+        )
+
+    def test_matching_template_skips_the_model(self) -> None:
+        drafter = FakeDrafter([])  # 부르면 IndexError 가 난다
+
+        result = generate_spec(drafter, "k2.ac.kr", *self.k2web_samples())
+
+        self.assertTrue(result.accepted, result.summary())
+        self.assertEqual(len(drafter.prompts), 0, "템플릿이 맞으면 모델을 부르지 않는다")
+        self.assertEqual(result.origin, "template:k2web")
+        self.assertEqual(result.spec.host, "k2.ac.kr")
+
+    def test_unknown_markup_falls_through_to_the_model(self) -> None:
+        drafter = FakeDrafter([json.dumps(good_spec())])
+
+        result = generate_spec(drafter, "new.ac.kr", *samples())
+
+        self.assertTrue(result.accepted, result.summary())
+        self.assertEqual(result.origin, "generated")
+        self.assertEqual(len(drafter.prompts), 1)
+
+    def test_template_is_judged_by_the_same_validator(self) -> None:
+        """템플릿이라고 느슨하게 통과시키면 어느 쪽이 나은지 비교할 수 없다."""
+
+        listing, details = self.k2web_samples()
+        broken = [PageSample(details[0].url, "<main><div class='b-content-box'></div></main>")]
+        drafter = FakeDrafter([json.dumps(good_spec())] * 3)
+
+        result = generate_spec(drafter, "k2.ac.kr", listing, broken)
+
+        self.assertNotEqual(result.origin, "template:k2web")
+        self.assertGreater(len(drafter.prompts), 0, "템플릿이 안 맞으면 모델로 넘어간다")

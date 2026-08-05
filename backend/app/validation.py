@@ -245,6 +245,12 @@ def _ratio(items: list[ListingItem], predicate) -> float:
     return sum(1 for item in items if predicate(item)) / len(items) if items else 0.0
 
 
+# 제목 칸에 함께 들어가는 장식·메타데이터. 선택자로 떼어낼 수 없어 비교 전에 지운다.
+# 연세대 목록은 제목 뒤에 '새글', 상세는 '분류 … 작성자 … 조회수 …' 를 같은 요소에
+# 담는다. 이를 그대로 비교하면 같은 글도 다르다고 판정한다.
+_TITLE_NOISE = re.compile(r"(새글|NEW|N|공지|첨부파일|분류|작성자|조회수|등록일)", re.IGNORECASE)
+
+
 def _titles_match(listing_title: str, document: CleanedDocument, content: str) -> bool:
     """목록 제목과 상세 페이지가 같은 글을 가리키는지 본다.
 
@@ -254,14 +260,19 @@ def _titles_match(listing_title: str, document: CleanedDocument, content: str) -
     돌리게 된다.
     """
 
-    listing = _squash(listing_title)
+    listing = _squash(_TITLE_NOISE.sub(" ", listing_title))
     if not listing:
         return True
-    if listing in _squash(f"{document.title or ''} {content}"):
+    haystack = _squash(f"{document.title or ''} {content}")
+    if listing in haystack:
         return True
-    detail_title = _squash(document.title or "")
+    detail_title = _squash(_TITLE_NOISE.sub(" ", document.title or ""))
     # 짧은 제목이 우연히 포함되는 것을 막는다. 말머리를 뗀 제목은 충분히 길다.
-    return len(detail_title) >= 8 and detail_title in listing
+    if len(detail_title) >= 8 and detail_title in listing:
+        return True
+    # 상세 제목 요소에 메타데이터가 함께 들어간 경우(연세대 '… 분류 [학사] 작성자 …').
+    # 목록 제목이 그 앞부분과 일치하면 같은 글이다.
+    return len(listing) >= 8 and detail_title.startswith(listing)
 
 
 def _squash(value: str) -> str:

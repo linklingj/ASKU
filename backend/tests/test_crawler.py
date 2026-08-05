@@ -824,3 +824,26 @@ class CrawlBudgetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DateParsingTests(unittest.TestCase):
+    """게시판마다 날짜 표기가 갈린다. 못 읽으면 규격이 통째로 실패한다."""
+
+    def parse(self, text: str):
+        html = f"<table><tbody><tr><td><a href='/v.do'>공지</a></td><td>부서</td><td>{text}</td></tr></tbody></table>"
+        item = next(iter(CommonNoticeAdapter().parse_listing(html, "https://x/")))
+        return item.published_at_hint
+
+    def test_four_digit_year_formats(self) -> None:
+        for text in ("2026-08-05", "2026.08.05", "2026/08/05"):
+            with self.subTest(text=text):
+                self.assertEqual(self.parse(text), datetime(2026, 8, 5, tzinfo=timezone.utc))
+
+    def test_two_digit_year(self) -> None:
+        """아주대는 같은 행의 모바일 요소에 `26.08.05` 를 넣는다."""
+
+        self.assertEqual(self.parse("26.08.05"), datetime(2026, 8, 5, tzinfo=timezone.utc))
+
+    def test_invalid_date_is_none(self) -> None:
+        self.assertIsNone(self.parse("등록일 없음"))
+        self.assertIsNone(self.parse("26.13.45"))

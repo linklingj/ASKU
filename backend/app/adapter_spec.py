@@ -10,9 +10,22 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+
+
+def _as_selector_list(value: str | list[str] | None) -> list[str]:
+    """선택자를 목록으로 정규화한다. 문자열 하나도 받아들인다."""
+
+    if value is None:
+        return []
+    return [value] if isinstance(value, str) else list(value)
+
+
+# 선택자 후보 목록. JSON 에는 문자열 하나로 적어도 되고 여러 개를 나열해도 된다.
+# 규격을 사람이 손으로 쓰는 경우가 많아 단순한 형태를 계속 허용한다.
+SelectorList = Annotated[list[str], BeforeValidator(_as_selector_list)]
 
 
 class BoardSpec(BaseModel):
@@ -67,12 +80,19 @@ class ListingSpec(BaseModel):
     `detail_link` 만 필수이고 메타데이터는 게시판이 제공하지 않으면 비운다.
     """
 
-    row: str
+    # 행 선택자도 후보를 나열할 수 있다. **행이 하나라도 잡히는 첫 후보**를 쓴다.
+    # 같은 게시판 제품이라도 학교가 목록을 표로 그리기도 하고 `ul > li` 로 그리기도
+    # 한다(건국대 대 연세대). 후보를 두면 템플릿 하나로 둘 다 덮는다.
+    row: SelectorList
     detail_link: str
-    title: str | None = None
-    author: str | None = None
-    date: str | None = None
-    category: str | None = None
+    # 메타데이터 선택자는 여러 개를 두고 **값이 나올 때까지** 앞에서부터 시도한다.
+    # 같은 게시판 제품을 써도 학교마다 채우는 자리가 다르다 — 아주대는 `.b-date`
+    # 요소가 모바일용이라 비어 있고 실제 날짜는 마지막 칸에 있는 반면, 세종대는
+    # `.b-date` 에 값이 있다. 후보를 나열하면 규격 하나로 둘 다 덮는다.
+    title: SelectorList = Field(default_factory=list)
+    author: SelectorList = Field(default_factory=list)
+    date: SelectorList = Field(default_factory=list)
+    category: SelectorList = Field(default_factory=list)
     # 분류 칸에 분류가 아닌 값이 들어오는 게시판을 위한 제외 패턴(정규식).
     # 성균관대는 같은 자리에 고정공지면 '공지', 일반 글이면 'No.2149' 를 넣는다.
     # 이를 거르지 않으면 글 번호가 분류로 저장돼 검색 결과에 섞인다.
@@ -87,8 +107,8 @@ class DetailSpec(BaseModel):
     다른 컨테이너를 쓰는 경우가 있다.
     """
 
-    body: list[str] = Field(default_factory=list)
-    title: list[str] = Field(default_factory=list)
+    body: SelectorList = Field(default_factory=list)
+    title: SelectorList = Field(default_factory=list)
     attachment: str | None = None
 
 

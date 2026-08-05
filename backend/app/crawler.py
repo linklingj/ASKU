@@ -314,7 +314,7 @@ class SpecNoticeAdapter(CommonNoticeAdapter):
     def parse_listing(self, html: str, page_url: str) -> Iterable[ListingItem]:
         listing = self.spec.listing
         soup = BeautifulSoup(html, "html.parser")
-        for row in soup.select(listing.row):
+        for row in _first_matching(soup, listing.row):
             link = row.select_one(listing.detail_link)
             if link is None or not link.get("href"):
                 continue
@@ -342,6 +342,20 @@ class SpecNoticeAdapter(CommonNoticeAdapter):
         return _form_next_url(html, page_url, pagination)
 
 
+def _first_matching(soup, selectors: list[str]) -> list:
+    """행이 하나라도 잡히는 첫 후보의 결과를 쓴다.
+
+    같은 게시판 제품이라도 목록을 표로 그리는 학교와 `ul > li` 로 그리는 학교가
+    있다. 후보를 순서대로 대보면 규격 하나로 둘 다 덮는다.
+    """
+
+    for selector in selectors:
+        rows = soup.select(selector)
+        if rows:
+            return rows
+    return []
+
+
 def _drop_if_matches(value: str | None, pattern: str | None) -> str | None:
     """분류 자리에 분류가 아닌 값(글 번호 등)이 오면 버린다."""
 
@@ -350,10 +364,19 @@ def _drop_if_matches(value: str | None, pattern: str | None) -> str | None:
     return None if re.fullmatch(pattern, value.strip()) else value
 
 
-def _pick(row, selector: str | None) -> str | None:
-    """행 안에서 선택자로 텍스트를 뽑는다. 선택자가 없으면 None."""
+def _pick(row, selectors: list[str]) -> str | None:
+    """행 안에서 후보 선택자를 훑어 **값이 나오는 첫 번째** 결과를 쓴다.
 
-    return _text_or_none(row.select_one(selector)) if selector else None
+    요소가 있어도 비어 있으면 다음 후보로 넘어간다. 아주대는 `.b-date` 요소가
+    모바일용이라 존재하되 비어 있고, 실제 날짜는 마지막 칸에 있다. 요소 유무만
+    보면 빈 값을 잡고 멈춘다.
+    """
+
+    for selector in selectors:
+        value = _text_or_none(row.select_one(selector))
+        if value:
+            return value
+    return None
 
 
 def _advance_offset(page_url: str, param: str, step: int) -> str:
@@ -876,9 +899,25 @@ def html_hash(html: str) -> str:
 
 
 def _parse_date(value: str) -> datetime | None:
+    """게시판 날짜 표기를 읽는다. 두 자리 연도(`26.08.05`)도 받는다.
+
+    같은 페이지 안에서도 표기가 갈린다 — 아주대는 데스크톱 칸이 `2026-08-05`,
+    모바일 요소가 `26.08.05` 다. 두 자리를 못 읽으면 어느 선택자를 고르느냐에
+    따라 날짜가 통째로 비어 규격이 실패한다.
+    """
+
     match = re.search(r"\d{4}[./-]\d{1,2}[./-]\d{1,2}", value)
     if match is not None:
         value = match.group(0)
+    else:
+        # 두 자리 연도. 게시판 날짜에 과거 세기가 나올 일은 없으므로 2000년대로 읽는다.
+        short = re.search(r"\b(\d{2})[./-](\d{1,2})[./-](\d{1,2})\b", value)
+        if short is not None:
+            year, month, day = (int(part) for part in short.groups())
+            try:
+                return datetime(2000 + year, month, day, tzinfo=timezone.utc)
+            except ValueError:
+                return None
     for pattern in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d"):
         try:
             return datetime.strptime(value, pattern).replace(tzinfo=timezone.utc)

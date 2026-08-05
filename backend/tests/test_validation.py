@@ -286,3 +286,38 @@ class CrawlValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TitleNoiseTests(unittest.TestCase):
+    """제목 칸에 함께 들어가는 장식은 선택자로 뗄 수 없다."""
+
+    def doc(self, title: str):
+        return CleanedDocument(title=title, content="본문을 충분히 채운 공지 문단입니다. " * 3)
+
+    def test_new_badge_in_listing_title(self) -> None:
+        """연세대 목록은 제목 뒤에 '새글' 을 붙인다."""
+
+        report = validate_detail(
+            self.doc("2026년 8월 학위수여식 안내"),
+            item("2026년 8월 학위수여식 안내 새글"),
+        )
+
+        self.assertNotIn("TITLE_MISMATCH", [f.code for f in report.findings])
+
+    def test_metadata_appended_to_detail_title(self) -> None:
+        """연세대 상세 제목 요소에는 분류·작성자·조회수가 함께 들어간다."""
+
+        report = validate_detail(
+            self.doc("2026년 8월 학위수여식 안내 분류 [학사] 작성자 교무처 교무팀 조회수 160"),
+            item("2026년 8월 학위수여식 안내 새글"),
+        )
+
+        self.assertNotIn("TITLE_MISMATCH", [f.code for f in report.findings])
+
+    def test_genuinely_different_titles_are_still_reported(self) -> None:
+        report = validate_detail(
+            self.doc("장학금 신청 안내 분류 [장학] 조회수 12"),
+            item("졸업 사정 결과 발표 새글"),
+        )
+
+        self.assertIn("TITLE_MISMATCH", [f.code for f in report.findings])
