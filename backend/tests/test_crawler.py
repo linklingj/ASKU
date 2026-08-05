@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from uuid import uuid4
 import unittest
 
+import requests
+
 from app.crawler import (
     CommonNoticeAdapter,
     Crawler,
@@ -294,6 +296,229 @@ class CrawlerTests(unittest.TestCase):
 
         self.assertIsNone(item.category_hint)
         self.assertEqual(item.author_hint, "교무팀")
+
+
+class RecordingSleeper:
+    """호출된 대기 시간을 기록해 요청 간격을 검증한다."""
+
+    def __init__(self) -> None:
+        self.waits: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.waits.append(seconds)
+
+
+class RobotsSession(FakeSession):
+    """robots.txt 를 따로 응답하고 그 요청 횟수를 셀 수 있는 세션."""
+
+    def __init__(self, robots, pages: dict[str, FakeResponse] | None = None) -> None:
+        super().__init__(pages or {})
+        self.robots = robots
+
+    def get(self, url: str, timeout: float, headers: dict[str, str] | None = None):
+        if url.endswith("/robots.txt"):
+            self.calls.append(url)
+            self.request_headers.append(headers)
+            if isinstance(self.robots, Exception):
+                raise self.robots
+            return self.robots
+        return super().get(url, timeout, headers)
+
+    def robots_fetch_count(self) -> int:
+        return sum(1 for call in self.calls if call.endswith("/robots.txt"))
+
+
+def robots_crawler(robots, **kwargs) -> Crawler:
+    """실제 ``_robots_allowed`` 를 타는 크롤러 (robots_allowed 를 주입하지 않는다)."""
+
+    kwargs.setdefault("sleeper", lambda _seconds: None)
+    return Crawler(hash_exists=lambda *_args: False, session=RobotsSession(robots), **kwargs)
+
+
+class RobotsPolicyTests(unittest.TestCase):
+    """실제 robots.txt 판정 경로 검증. 기존 테스트는 robots_allowed 를 주입해 이 경로를 우회한다."""
+
+    URL = "https://example.edu/notice/view.do?mode=view&id=1"
+
+    def _allows(self, body: str, url: str | None = None) -> bool:
+        return robots_crawler(FakeResponse(200, body))._robots_allowed(url or self.URL)
+
+    def test_wildcard_disallow_is_honoured(self) -> None:
+        """표준 robotparser 는 경로 안 와일드카드를 못 다뤄 금지를 허용으로 오판했다."""
+
+        self.assertFalse(self._allows("User-agent: *\nDisallow: /*?mode=view"))
+
+    def test_dollar_anchor_is_honoured(self) -> None:
+        body = "User-agent: *\nDisallow: /*.pdf$"
+
+        self.assertFalse(self._allows(body, "https://example.edu/files/guide.pdf"))
+        self.assertTrue(self._allows(body, "https://example.edu/files/guide.pdf.html"))
+
+    def test_longest_match_wins_regardless_of_line_order(self) -> None:
+        """Disallow 가 먼저 쓰여 있어도 더 구체적인 Allow 가 이긴다(RFC 9309)."""
+
+        body = "User-agent: *\nDisallow: /\nAllow: /notice/"
+
+        self.assertTrue(self._allows(body, "https://example.edu/notice/view.do?id=1"))
+        self.assertFalse(self._allows(body, "https://example.edu/admin/"))
+
+    def test_crawler_specific_group_beats_wildcard_group(self) -> None:
+        body = "User-agent: ASKU-Crawler\nDisallow: /secret\n\nUser-agent: *\nDisallow: /"
+
+        self.assertTrue(self._allows(body, "https://example.edu/notice/view.do?id=1"))
+        self.assertFalse(self._allows(body, "https://example.edu/secret/x"))
+
+    def test_missing_robots_allows_everything(self) -> None:
+        self.assertTrue(robots_crawler(FakeResponse(404))._robots_allowed(self.URL))
+
+    def test_forbidden_robots_blocks_the_whole_origin(self) -> None:
+        self.assertFalse(robots_crawler(FakeResponse(403))._robots_allowed(self.URL))
+
+    def test_server_error_blocks_instead_of_allowing_everything(self) -> None:
+        """5xx 를 빈 규칙으로 읽으면 서버가 아플 때 오히려 더 긁는다."""
+
+        self.assertFalse(robots_crawler(FakeResponse(503))._robots_allowed(self.URL))
+
+    def test_denial_is_cached_so_robots_is_fetched_once(self) -> None:
+        """거부를 캐시하지 않으면 수집을 거부한 서버에 URL 마다 다시 요청하게 된다."""
+
+        crawler = robots_crawler(FakeResponse(403))
+
+        for index in range(5):
+            crawler._robots_allowed(f"https://example.edu/notice/view.do?id={index}")
+
+        self.assertEqual(crawler.session.robots_fetch_count(), 1)
+
+    def test_unreachable_robots_is_cached_and_blocks(self) -> None:
+        crawler = robots_crawler(requests.ConnectionError("boom"))
+
+        self.assertFalse(crawler._robots_allowed(self.URL))
+        self.assertFalse(crawler._robots_allowed("https://example.edu/notice/view.do?id=2"))
+        self.assertEqual(crawler.session.robots_fetch_count(), 1)
+
+    def test_each_origin_is_evaluated_separately(self) -> None:
+        crawler = robots_crawler(FakeResponse(200, "User-agent: *\nDisallow: /"))
+
+        crawler._robots_allowed("https://example.edu/a")
+        crawler._robots_allowed("https://other.edu/a")
+
+        self.assertEqual(crawler.session.robots_fetch_count(), 2)
+
+
+class CrawlDelayTests(unittest.TestCase):
+    def _delay_for(self, body: str, configured: float) -> float:
+        crawler = robots_crawler(
+            FakeResponse(200, body), settings=CrawlSettings(request_delay_seconds=configured)
+        )
+        crawler._robots_allowed("https://example.edu/a")
+        return crawler._crawl_delay("https://example.edu/a")
+
+    def test_declared_crawl_delay_overrides_the_configured_interval(self) -> None:
+        self.assertEqual(self._delay_for("User-agent: *\nCrawl-delay: 10\nDisallow:", 1.0), 10.0)
+
+    def test_configured_interval_wins_when_it_is_longer(self) -> None:
+        """robots.txt 가 더 짧게 선언해도 우리 쪽 하한을 내리지는 않는다."""
+
+        self.assertEqual(self._delay_for("User-agent: *\nCrawl-delay: 0.1\nDisallow:", 2.0), 2.0)
+
+    def test_falls_back_to_settings_without_a_declaration(self) -> None:
+        self.assertEqual(self._delay_for("User-agent: *\nDisallow:", 1.5), 1.5)
+
+    def test_unknown_origin_falls_back_to_settings(self) -> None:
+        """robots 를 아직 읽지 않았거나 호출자가 robots_allowed 를 주입한 경우."""
+
+        crawler = robots_crawler(FakeResponse(404), settings=CrawlSettings(request_delay_seconds=1.5))
+
+        self.assertEqual(crawler._crawl_delay("https://unknown.edu/a"), 1.5)
+
+    def test_crawl_applies_the_declared_delay_to_every_response(self) -> None:
+        listing = "https://example.edu/notice/list.do"
+        sleeper = RecordingSleeper()
+        session = RobotsSession(
+            FakeResponse(200, "User-agent: *\nCrawl-delay: 5\nDisallow:"),
+            {
+                listing: FakeResponse(200, LISTING_HTML),
+                "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>본문</main>"),
+                "https://example.edu/notice/view.do?id=2": FakeResponse(404),  # 죽은 링크도 간격을 지킨다
+                "https://example.edu/notice/view.do?id=3": FakeResponse(404),
+            },
+        )
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            session=session,
+            settings=CrawlSettings(request_delay_seconds=1.0, max_retries=0),
+            sleeper=sleeper,
+        )
+
+        crawler.crawl(
+            CrawlRequest(
+                crawl_id=uuid4(),
+                school_id=1,
+                base_url=listing,
+                mode="initial",
+                scope=CrawlScope(allowed_hosts=["example.edu"], path_prefixes=["/notice"], max_listing_pages=1),
+            ),
+            CommonNoticeAdapter(),
+        )
+
+        self.assertEqual(sleeper.waits[0], 1.0)  # robots.txt 직후는 설정값
+        page_waits = sleeper.waits[1:]
+        self.assertEqual(page_waits, [5.0] * 4)  # 목록 1 + 상세 3 (404 포함)
+
+
+class ListingPolicyTests(unittest.TestCase):
+    def test_pagination_url_blocked_by_robots_stops_the_crawl(self) -> None:
+        """2페이지부터 robots 검사를 건너뛰면 막아 둔 페이지네이션을 그냥 긁는다."""
+
+        listing = "https://example.edu/notice/list.do"
+        next_listing = f"{listing}?article.offset=10"
+        paginated_html = f"{LISTING_HTML}<a rel='next' href='{next_listing}'>다음</a>"
+        session = RobotsSession(
+            FakeResponse(200, "User-agent: *\nDisallow: /*article.offset="),
+            {
+                listing: FakeResponse(200, paginated_html),
+                "https://example.edu/notice/view.do?id=1": FakeResponse(200, "<main>1</main>"),
+                "https://example.edu/notice/view.do?id=2": FakeResponse(200, "<main>2</main>"),
+                "https://example.edu/notice/view.do?id=3": FakeResponse(200, "<main>3</main>"),
+            },
+        )
+        crawler = Crawler(
+            hash_exists=lambda *_args: False,
+            session=session,
+            settings=CrawlSettings(request_delay_seconds=0, max_retries=0),
+            sleeper=lambda _seconds: None,
+        )
+
+        run = crawler.crawl(
+            CrawlRequest(
+                crawl_id=uuid4(),
+                school_id=1,
+                base_url=listing,
+                mode="initial",
+                scope=CrawlScope(allowed_hosts=["example.edu"], path_prefixes=["/notice"], max_listing_pages=5),
+            ),
+            CommonNoticeAdapter(),
+        )
+
+        self.assertNotIn(next_listing, session.calls)  # 금지된 2페이지는 요청하지 않는다
+        self.assertEqual(len(run.pages), 3)  # 1페이지 수집분은 유지
+        self.assertEqual([failure.error_code for failure in run.failures], ["ROBOTS_DISALLOWED"])
+
+    def test_unreachable_robots_is_recorded_as_retryable(self) -> None:
+        """네트워크 오류를 정책 거부로 기록하면 원인 진단이 어긋나고 재시도 대상에서도 빠진다."""
+
+        listing = "https://example.edu/notice/list.do"
+        session = RobotsSession(requests.ConnectionError("boom"), {listing: FakeResponse(200, LISTING_HTML)})
+        crawler = Crawler(hash_exists=lambda *_args: False, session=session, sleeper=lambda _seconds: None)
+
+        run = crawler.crawl(
+            CrawlRequest(crawl_id=uuid4(), school_id=1, base_url=listing, mode="initial"),
+            CommonNoticeAdapter(),
+        )
+
+        self.assertEqual(run.pages, [])
+        self.assertEqual(run.failures[0].error_code, "ROBOTS_UNREACHABLE")
+        self.assertTrue(run.failures[0].retryable)
 
 
 if __name__ == "__main__":
