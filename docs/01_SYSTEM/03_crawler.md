@@ -46,12 +46,18 @@ Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_ur
     "allowed_hosts": ["university.example.edu"],
     "path_prefixes": ["/notice", "/academic"],
     "max_listing_pages": 10,
-    "max_items": 300
+    "max_items": 300,
+    "max_requests": 500,
+    "max_duration_seconds": 600
   }
 }
 ```
 
 필수 필드는 `crawl_id`, `school_id`, `base_url`, `mode`다. MVP 최초 수집은 최근 목록 10페이지(`max_listing_pages: 10`)를 순회한다. 한 페이지의 공지 수가 사이트마다 다른 점을 고려해 상세 공지는 총 300건(`max_items: 300`)에서만 중단한다. 두 값은 학교별 운영 정책으로 조정할 수 있다.
+
+`max_listing_pages`·`max_items`는 **게시판 하나에** 적용된다. 하위 게시판(탭)이 여러 개면 그만큼 곱해지므로, 크롤 1회 전체는 `max_requests`·`max_duration_seconds` 예산이 묶는다(§4-2).
+
+Backend API는 `allowed_hosts`만 학교의 `base_url` 호스트로 채우고 `path_prefixes`는 비워 둔다. 홍익대처럼 공지 목록에 같은 학교의 다른 게시판(`/kr/education/`) 링크가 섞이는 경우를 놓치지 않기 위해서다. 외부 도메인 이탈은 `allowed_hosts`가 막는다.
 
 ### 출력: `CrawledPage`
 
@@ -78,25 +84,47 @@ Crawler는 Storage의 공개 조회 인터페이스 `doc_hash_exists`와 `doc_ur
 실패 시에는 다음 `CrawlFailure`를 실행 이력에 남긴다.
 
 ```json
-{"crawl_id":"uuid","school_id":1,"source_url":"https://...","stage":"policy | fetch | render","error_code":"...","retryable":true,"occurred_at":"ISO-8601"}
+{"crawl_id":"uuid","school_id":1,"source_url":"https://...","stage":"policy | fetch | render | budget","error_code":"...","retryable":true,"occurred_at":"ISO-8601"}
 ```
 
 ## 4. 처리 흐름
 
 1. Backend API 또는 Scheduler가 `CrawlRequest`를 만든다.
-2. 기준 URL의 허용 범위·`robots.txt`·요청 제한을 확인한다.
-3. 목록 페이지에서 상세 URL과 메타데이터를 수집하고, 다음 목록 링크를 따라 최대 `max_listing_pages`까지 순회한다. 국내 대학의 서버 렌더링 `.do` 게시판은 공통 목록/상세 선택자와 학교별 오버라이드(현재 연세대·세종대·홍익대·성균관대 K2Web 목록)로 처리한다.
-4. URL을 정규화하고 같은 실행 안에서 이미 방문했으면 건너뛴다. 상세 URL에서는 목록 페이지 문맥(예: `article.offset`)을 제거해 고정 공지 중복을 막는다. 상세 URL이 `max_items`에 도달하면 수집을 끝낸다.
-5. 상세 HTML을 수집하고 본문 해시를 계산한다. 목록에서 상세로 이동하는 요청에는 현재 목록 URL을 `Referer`로 전달해 브라우저 클릭 흐름을 요구하는 사이트를 지원한다. 정적 수집이 불완전한 경우에만 렌더링 수집기로 전환한다.
-6. `doc_hash_exists(school_id, source_url, content_hash)`와 `doc_url_exists(school_id, source_url)`로 이전 처리본과 비교한다.
-7. `new`·`changed`인 `CrawledPage`만 Extractor에 전달한다. `unchanged`는 실행 상태만 기록한다.
-8. 실행 완료 시 성공·변경·실패·미관측 URL 통계를 저장한다.
+2. `base_url` 호스트로 학교별 어댑터와 수집할 게시판 목록을 정한다(§4-1).
+3. 기준 URL의 허용 범위·`robots.txt`·요청 제한을 확인한다.
+4. 목록 페이지에서 상세 URL과 메타데이터를 수집하고, 다음 목록 링크를 따라 최대 `max_listing_pages`까지 순회한다. 국내 대학의 서버 렌더링 `.do` 게시판은 공통 목록/상세 선택자와 학교별 오버라이드(현재 연세대·세종대·홍익대·성균관대 K2Web 목록)로 처리한다.
+5. URL을 정규화하고 같은 실행 안에서 이미 방문했으면 건너뛴다. 상세 URL에서는 목록 페이지 문맥(예: `article.offset`)을 제거해 고정 공지 중복을 막는다. 수집 건수가 `max_items`에 도달하면 그 게시판을 끝낸다.
+6. 상세 HTML을 수집하고 본문 해시를 계산한다. 목록에서 상세로 이동하는 요청에는 현재 목록 URL을 `Referer`로 전달해 브라우저 클릭 흐름을 요구하는 사이트를 지원한다. 정적 수집이 불완전한 경우에만 렌더링 수집기로 전환한다.
+7. `doc_hash_exists(school_id, source_url, content_hash)`와 `doc_url_exists(school_id, source_url)`로 이전 처리본과 비교한다.
+8. `new`·`changed`인 `CrawledPage`만 Extractor에 전달한다. `unchanged`는 실행 상태만 기록한다.
+9. 실행 완료 시 성공·변경·실패·미관측 URL 통계를 저장한다.
 
 ```text
 frontier URL -> 정책 검사 -> 목록/상세 수집 -> URL 정규화 + 해시 계산
              -> 동일 해시이면 상태만 기록
              -> 신규/변경이면 CrawledPage를 Extractor로 전달
 ```
+
+## 4-1. 학교별 어댑터와 게시판 선택
+
+어댑터는 `base_url`의 **호스트**로 고른다(`adapter_for`). 등록되지 않은 호스트만 공통 파서로 내려간다. 공통 파서는 `table tbody tr` 기반이라 연세대(`ul > li`)·성균관대(`dl`)처럼 목록 구조가 다른 게시판에서는 한 줄도 읽지 못하므로, 학교를 추가할 때는 어댑터와 호스트를 함께 등록해야 한다.
+
+한 학교의 공지가 여러 탭으로 쪼개진 경우(세종대 `notice1~10.do`) 게시판 목록을 등록하고 `crawl_boards`로 전부 순회한다. 등록이 없는 호스트는 `base_url` 하나만 수집한다.
+
+- **게시판 목록은 자동 탐색하지 않는다.** 세종대는 같은 메뉴에 `qna1~8.do`(Q&A)가 섞여 있고 `robots.txt`가 이를 막고 있어, URL 패턴만으로는 공지 게시판을 가려낼 수 없다.
+- 게시판 라벨(`장학`, `채용·모집` 등)은 목록이 분류를 주지 않을 때만 `category_hint`로 전달한다. 홍익대처럼 행마다 분류가 붙는 학교의 값을 탭 이름으로 덮어쓰지 않는다.
+- 예산과 중복 URL 집합은 게시판 사이에서 **공유**한다. 게시판마다 새로 잡으면 탭이 늘어난 만큼 총 요청량이 늘고, 여러 탭에 함께 걸린 공지를 중복 수집한다.
+- 반면 `max_items`는 게시판마다 **따로** 센다. 공유하면 공지가 많은 첫 탭이 상한을 다 써서 뒤쪽 탭이 한 건도 수집되지 않는다.
+
+## 4-2. 수집 예산과 조기 종료
+
+`max_requests`·`max_duration_seconds`는 게시판 수와 무관하게 크롤 1회 전체를 묶는 상한이다. 재시도도 서버에 대한 요청이므로 시도마다 예산을 쓴다.
+
+예산이 바닥나면 예외를 던지지 않고 **수집을 멈추되 그때까지 모은 페이지는 유지한다.** 부분 수집이 전량 실패보다 낫다. 중단 사유는 `stage: "budget"`, `error_code: "REQUEST_BUDGET_EXCEEDED" | "TIME_BUDGET_EXCEEDED"`로 남긴다. 기록이 없으면 목록이 원래 짧은 것인지 상한에 걸린 것인지 구분되지 않는다. 다음 크롤에서 이어받으면 되므로 재시도 대상으로 표시한다.
+
+재크롤(`mode: "recrawl"`)에서는 목록 한 페이지가 통째로 `unchanged`이면 그 게시판을 끝낸다. 목록은 최신순이라 더 오래된 페이지도 마찬가지다. 초기 수집에는 적용하지 않는다.
+
+> `robots.txt` 요청은 예산에서 세지 않는다. 오리진당 한 번만 가져와 캐시하므로 크롤 1회에 1~2건이다.
 
 ## 5. 다른 시스템과의 연동
 
@@ -158,3 +186,5 @@ PYTHONPATH=backend python3 backend/scripts/preview_crawl.py hongik
 ```
 
 기본 수집량은 목록 1페이지·상세 공지 5건이며, 필요하면 최대 30건까지 `--max-items`를 지정할 수 있다.
+
+> **미리보기는 목록 1페이지만 본다.** `--max-items`를 올려도 첫 페이지의 공지 수(사이트에 따라 10~26건)를 넘지 못하고, 스크립트가 학교별로 좁은 `path_prefixes`를 걸어 다른 게시판으로 나가는 링크도 제외한다. 이 때문에 실제 서비스보다 수집량이 적게 나오는 것이 정상이며, 서비스 수집량을 가늠하는 용도로는 쓸 수 없다.
