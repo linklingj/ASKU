@@ -122,7 +122,7 @@ class DetailValidationTests(unittest.TestCase):
         self.assertTrue(report.passed, report.findings)
 
     def test_empty_body_is_reported(self) -> None:
-        """성균관대는 상세 HTML 에 본문이 없어 목록만 돌아온다."""
+        """본문 대신 안내 문구나 목록만 잡힌 껍데기 문서를 걸러낸다."""
 
         report = validate_detail(self.document("공지사항"), item())
 
