@@ -336,6 +336,22 @@ class Storage:
             ).mappings().one()
         return School(**row)
 
+    def update_school_registration(self, school_id: int, *, name: str, base_url: str) -> School:
+        """학교 등록 정보만 갱신한다.
+
+        시드 작업처럼 이미 등록된 학교의 이름·공지 목록 URL을 맞출 때 쓴다.
+        수집 상태와 주기는 운영 중 설정일 수 있으므로 여기서 건드리지 않는다.
+        """
+
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                schools.update()
+                .where(schools.c.school_id == school_id)
+                .values(name=name, base_url=base_url, updated_at=func.now())
+                .returning(*schools.c)
+            ).mappings().one()
+        return School(**row)
+
     def get_school(self, school_id: int) -> School | None:
         """학교 ID로 단일 학교를 조회한다."""
 

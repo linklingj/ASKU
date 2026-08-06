@@ -98,7 +98,27 @@ LLM 생성은 기본으로 꺼져 있다(`SPEC_AUTOGEN`). 호출당 약 4만 토
       Playwright 또는 Crawl4AI. 도커 이미지가 수백 MB 늘고 수집이 느려지므로,
       대상 학교가 몇 곳인지 세어 보고 결정한다.
 
-## 4. 확인되지 않은 것
+## 4. DB 초기 등록
+
+검증을 통과한 위 11개 학교는 다음 명령으로 `schools` 테이블에 등록한다.
+이 명령은 **크롤링·Gemini 호출을 시작하지 않으며**, 이미 같은 호스트가 있으면
+중복 행을 만들지 않고 이름·기준 URL만 갱신한다.
+
+```bash
+# 등록 대상만 확인
+PYTHONPATH=backend python3 backend/scripts/seed_schools.py --dry-run
+
+# 로컬 또는 운영 DB 등록
+PYTHONPATH=backend python3 backend/scripts/seed_schools.py
+
+# Docker 배포 환경에서 등록
+docker compose exec api python -m app.seed_schools
+```
+
+운영 배포 시에는 DB가 준비된 뒤 이 명령을 한 번 실행한다. 수집은 그 다음 API의
+등록/재크롤 요청 또는 Scheduler를 통해 별도로 시작한다.
+
+## 5. 확인되지 않은 것
 
 - **엔티티 추출 → 그래프 → 검색**: 공지 1건으로만 확인했다(아주대). 나머지는
   Gemini 무료 티어 할당량(429)에 막혔다. 학교 하나에 공지 수백 건이면 건당
