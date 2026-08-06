@@ -262,6 +262,25 @@ class StripNoiseTests(unittest.TestCase):
         self.assertEqual(soup.select_one("div.txt").get_text(strip=True), "공지 본문입니다.")
         self.assertIsNone(soup.select_one("input"))
 
+    def test_neighbour_navigation_is_removed_even_without_a_label(self) -> None:
+        """국민대는 '이전글' 같은 라벨 없이 옆 글 제목만 넣는다.
+
+        본문이 비어 상위 컨테이너로 폴백하면 옆 공지가 이 글의 내용이 된다.
+        """
+
+        soup = BeautifulSoup(
+            "<div class='board_view'><div class='view_cont'></div>"
+            "<div class='view_bottom'><ul>"
+            "<li class='prev'><a>이전 공지 제목</a></li>"
+            "<li class='next'><a>다음 공지 제목</a></li>"
+            "</ul></div></div>",
+            "html.parser",
+        )
+
+        strip_noise(soup, CommonContentParser._REMOVE_SELECTORS)
+
+        self.assertEqual(soup.get_text(strip=True), "")
+
     def test_plain_control_is_removed_with_its_label_text(self) -> None:
         soup = BeautifulSoup("<div><label>검색어</label><input><p>본문</p></div>", "html.parser")
 

@@ -62,17 +62,24 @@ class ContentParser(Protocol):
     def parse(self, html: str) -> CleanedDocument: ...
 
 
+# 자식을 가질 수 없는 빈 요소. 여기에 자식이 있다면 마크업이 아니라 파서의 산물이다.
+_VOID_TAGS = frozenset({"input", "img", "br", "hr", "meta", "link", "source", "embed"})
+
+
 def strip_noise(soup, selectors: str) -> None:
     """잡음 요소를 지우되, 잘못 중첩된 요소가 본문을 데려가지 않게 한다.
 
     `<input>` 은 빈 요소라 자식이 있을 수 없다. 그런데 html.parser 는 사이트가
     닫는 태그를 흘리면 뒤따르는 내용을 입력 요소 **안쪽**으로 넣어 버린다 —
     고려대 상세 페이지가 그렇다. 그대로 `decompose()` 하면 게시글 본문까지
-    사라진다. 그래서 다른 요소를 품고 있으면 껍데기만 벗겨 낸다.
+    사라진다. 그래서 이 경우에만 껍데기를 벗겨 자식을 살린다.
+
+    `li.prev` 처럼 원래 자식을 갖는 요소는 통째로 지운다. 옆 글 제목을 살려 두면
+    이 글의 본문으로 저장된다.
     """
 
     for node in soup.select(selectors):
-        if node.find(True) is not None:
+        if node.name in _VOID_TAGS and node.find(True) is not None:
             node.unwrap()
         else:
             node.decompose()
@@ -88,9 +95,13 @@ class CommonContentParser:
     _TITLE_SELECTORS = ("h1", ".board-view-title", ".view-title", ".title")
     # `form` 을 통째로 지우지 않는다. 페이지 전체를 폼으로 감싸는 게시판이 있어
     # (국민대) 본문까지 함께 사라진다. 검색창·버튼 같은 입력 요소만 걷어낸다.
+    # 이전글·다음글은 클래스로도 걷어낸다. 텍스트로만 거르면(`_is_ui_block`)
+    # '이전글' 같은 라벨 없이 옆 글 제목만 넣는 게시판을 놓친다 — 국민대가 그렇다.
+    # 본문이 비어 상위 컨테이너로 폴백하면 옆 공지가 이 글의 내용으로 저장된다.
     _REMOVE_SELECTORS = (
         "script, style, noscript, nav, header, footer, aside, iframe, "
-        "input, select, textarea, button, label"
+        "input, select, textarea, button, label, "
+        "li.prev, li.next, .prev-next"
     )
 
     def parse(self, html: str) -> CleanedDocument:
