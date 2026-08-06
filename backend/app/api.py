@@ -133,6 +133,7 @@ def _ensure_adapter_spec(storage, crawler, request, base_url: str):
 def _provision_adapter_spec(storage, crawler, request, base_url: str):
     from app.crawler import ADAPTER_REGISTRY
     from app.spec_generator import collect_samples, discover_boards, generate_spec, match_template
+    from app.spec_templates import host_spec
 
     host = (urlsplit(base_url).hostname or "").lower()
     if host in ADAPTER_REGISTRY:
@@ -142,11 +143,24 @@ def _provision_adapter_spec(storage, crawler, request, base_url: str):
     if existing is not None:
         return existing
 
+    seeded = host_spec(host)
     samples = collect_samples(crawler, request, base_url)
     if samples is None:
         logger.warning("규격 판정용 표본을 얻지 못했습니다: %s", base_url)
-        return None
+        # 표본이 없어도 손으로 쓴 규격은 살린다. 하위 게시판만 못 찾을 뿐,
+        # 공용 폴백으로 떨어지는 것보다 낫다.
+        if seeded is not None:
+            _save_spec(storage, host, seeded, origin="host")
+        return seeded
     listing, details = samples
+
+    if seeded is not None:
+        # 손으로 쓴 규격이 템플릿 대조보다 먼저다. 이 학교를 보고 쓴 것이라
+        # 느슨한 제품 템플릿이 우연히 통과하는 것보다 정확하다.
+        seeded = discover_boards(seeded, listing, crawler, request)
+        _save_spec(storage, host, seeded, origin="host")
+        logger.info("호스트 규격 적용: host=%s 게시판=%d", host, len(seeded.boards) or 1)
+        return seeded
 
     matched = match_template(host, listing, details)
     if matched is not None:

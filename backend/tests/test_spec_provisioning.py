@@ -82,6 +82,35 @@ class EnsureAdapterSpecTests(unittest.TestCase):
         self.assertIsInstance(spec, AdapterSpec)
         crawler._fetch.assert_not_called()
 
+    def test_host_spec_is_used_without_the_model(self) -> None:
+        """손으로 쓴 학교별 규격은 템플릿 대조보다 먼저다."""
+
+        listing = "<table><tbody><tr><td class='td-title alignL'>" \
+            "<a href='#1' onclick=\"jf_view('61085','1','ko');\">공지 하나</a></td>" \
+            "<td class='td-date'>2026-08-06</td></tr></tbody></table>"
+        url = "https://www.korea.ac.kr/ko/566/subview.do"
+        crawler = fake_crawler({
+            url: listing,
+            "https://www.korea.ac.kr/portalBoard/ko/1/61085/portalBoardView.do": "<div class='txt'>본문</div>",
+        })
+
+        with patch("app.llm.GeminiProvider") as provider:
+            spec = _ensure_adapter_spec(self.storage, crawler, self.request, url)
+
+        provider.assert_not_called()
+        self.assertEqual(spec.host, "www.korea.ac.kr")
+        self.assertEqual(spec.listing.detail_link_attr, "onclick")
+        self.assertEqual(self.storage.upsert_adapter_spec.call_args.kwargs["source"], "human")
+
+    def test_host_spec_survives_a_failed_sample(self) -> None:
+        """표본을 못 얻어도 손으로 쓴 규격은 살린다. 공용 폴백보다 낫다."""
+
+        spec = _ensure_adapter_spec(
+            self.storage, fake_crawler({}), self.request, "https://www.korea.ac.kr/ko/566/subview.do"
+        )
+
+        self.assertEqual(spec.host, "www.korea.ac.kr")
+
     def test_known_board_product_is_matched_without_the_model(self) -> None:
         crawler = fake_crawler({
             "https://k2.ac.kr/notice.do": K2WEB_LISTING,

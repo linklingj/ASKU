@@ -316,10 +316,13 @@ class SpecNoticeAdapter(CommonNoticeAdapter):
         soup = BeautifulSoup(html, "html.parser")
         for row in _first_matching(soup, listing.row):
             link = row.select_one(listing.detail_link)
-            if link is None or not link.get("href"):
+            if link is None:
+                continue
+            detail_url = _detail_url(link, listing, page_url)
+            if detail_url is None:
                 continue
             yield ListingItem(
-                url=urljoin(page_url, str(link["href"])),
+                url=detail_url,
                 # 제목 선택자가 없으면 링크 텍스트를 쓴다. 링크 안에 제목이 그대로
                 # 들어 있는 게시판이 흔하다.
                 title_hint=_pick(row, listing.title) or _text_or_none(link),
@@ -340,6 +343,25 @@ class SpecNoticeAdapter(CommonNoticeAdapter):
         if pagination.type == "offset":
             return _advance_offset(page_url, pagination.param, pagination.step, pagination.start)
         return _form_next_url(html, page_url, pagination)
+
+
+def _detail_url(link, listing, page_url: str) -> str | None:
+    """목록 행의 링크에서 상세 URL 을 만든다.
+
+    조립 규칙이 없으면 `href` 를 그대로 쓴다. 규칙이 있으면 지정한 속성에서 번호를
+    뽑아 템플릿에 끼운다 — 상세 링크를 자바스크립트 호출로만 주는 게시판이 있어,
+    `href` 만 보면 `#1` 이나 `javascript:` 를 따라가게 된다.
+    """
+
+    if not (listing.detail_link_pattern and listing.detail_link_template):
+        href = link.get("href")
+        return urljoin(page_url, str(href)) if href else None
+
+    source = str(link.get(listing.detail_link_attr or "href") or "")
+    match = re.search(listing.detail_link_pattern, source)
+    if match is None:
+        return None
+    return urljoin(page_url, listing.detail_link_template.format(*match.groups()))
 
 
 def _first_matching(soup, selectors: list[str]) -> list:

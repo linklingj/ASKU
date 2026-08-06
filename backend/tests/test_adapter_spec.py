@@ -297,5 +297,59 @@ class SpecContentParserTests(unittest.TestCase):
             parser.parse(self.HTML)
 
 
+class DetailLinkTemplateTests(unittest.TestCase):
+    """상세 링크를 자바스크립트 호출로만 주는 게시판."""
+
+    KOREA_ROW = """
+    <table><tbody><tr>
+      <td class='td-title alignL'>
+        <a href='#1' onclick="jf_view('000060000000061085','1','ko');">교육성과 지원금 안내</a>
+      </td>
+      <td class='td-date'>2026-08-06</td>
+    </tr></tbody></table>
+    """
+    KOREA_URL = "https://www.korea.ac.kr/ko/566/subview.do"
+
+    def korea_listing(self) -> ListingSpec:
+        return ListingSpec(
+            row="table tbody tr",
+            detail_link="td.td-title a",
+            detail_link_attr="onclick",
+            detail_link_pattern=r"jf_view\('([^']+)','([^']+)','([^']+)'",
+            detail_link_template="/portalBoard/{2}/{1}/{0}/portalBoardView.do",
+            title="td.td-title a",
+            date="td.td-date",
+        )
+
+    def test_builds_detail_url_from_onclick(self) -> None:
+        """`href` 는 `#1` 이라 따라갈 수 없다. 글 번호는 `onclick` 에만 있다."""
+
+        adapter = SpecNoticeAdapter(spec("www.korea.ac.kr", self.korea_listing()))
+
+        items = list(adapter.parse_listing(self.KOREA_ROW, self.KOREA_URL))
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(
+            items[0].url,
+            "https://www.korea.ac.kr/portalBoard/ko/1/000060000000061085/portalBoardView.do",
+        )
+
+    def test_row_without_the_pattern_is_skipped(self) -> None:
+        """조립할 번호가 없으면 `#1` 을 상세로 착각하는 대신 그 행을 버린다."""
+
+        html = "<table><tbody><tr><td class='td-title alignL'><a href='#1'>제목</a></td></tr></tbody></table>"
+        adapter = SpecNoticeAdapter(spec("www.korea.ac.kr", self.korea_listing()))
+
+        self.assertEqual(list(adapter.parse_listing(html, self.KOREA_URL)), [])
+
+    def test_plain_href_still_wins_when_no_template(self) -> None:
+        listing = ListingSpec(row="tr", detail_link="a")
+        adapter = SpecNoticeAdapter(spec("www.korea.ac.kr", listing))
+
+        items = list(adapter.parse_listing("<tr><a href='/view.do?id=3'>제목</a></tr>", self.KOREA_URL))
+
+        self.assertEqual(items[0].url, "https://www.korea.ac.kr/view.do?id=3")
+
+
 if __name__ == "__main__":
     unittest.main()

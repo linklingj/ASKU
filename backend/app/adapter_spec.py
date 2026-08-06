@@ -90,6 +90,18 @@ class ListingSpec(BaseModel):
     # 한다(건국대 대 연세대). 후보를 두면 템플릿 하나로 둘 다 덮는다.
     row: SelectorList
     detail_link: str
+    # 상세 링크를 `href` 로 주지 않는 게시판을 위한 조립 규칙.
+    #
+    # 고려대는 `onclick="jf_view('000060000000061085','1','ko')"`, 경희대는
+    # `href="javascript:view('322701','')"` 처럼 자바스크립트 호출에만 글 번호가
+    # 있다. `href` 는 `#1` 이거나 `javascript:` 라 그대로 따라갈 수 없다.
+    #
+    # `pattern` 으로 번호를 뽑고 `template` 에 끼워 상세 URL 을 만든다.
+    # 템플릿의 `{0}` 이 첫 번째 포획 그룹이고, 상대 경로면 목록 URL 기준으로
+    # 절대 경로가 된다.
+    detail_link_attr: str | None = None      # 번호가 담긴 속성(기본: href)
+    detail_link_pattern: str | None = None   # 번호를 뽑는 정규식
+    detail_link_template: str | None = None  # 예: "?mode=view&idx={0}"
     # 메타데이터 선택자는 여러 개를 두고 **값이 나올 때까지** 앞에서부터 시도한다.
     # 같은 게시판 제품을 써도 학교마다 채우는 자리가 다르다 — 아주대는 `.b-date`
     # 요소가 모바일용이라 비어 있고 실제 날짜는 마지막 칸에 있는 반면, 세종대는

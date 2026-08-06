@@ -13,7 +13,17 @@
 
 from __future__ import annotations
 
-from app.adapter_spec import AdapterSpec, DetailSpec, FormPagination, LinkPagination, ListingSpec
+from app.adapter_spec import (
+    AdapterSpec,
+    DetailSpec,
+    FormPagination,
+    LinkPagination,
+    ListingSpec,
+    OffsetPagination,
+)
+
+# 첨부 링크는 대부분 확장자로 알아본다.
+_FILE_LINKS = "a[href$='.pdf'], a[href$='.hwp'], a[href$='.hwpx'], a[href$='.doc'], a[href$='.docx']"
 
 
 # K2Web 계열(세종대·홍익대·아주대 등). `b-` 접두 클래스가 특징이다.
@@ -71,3 +81,96 @@ def templates_for(host: str) -> list[tuple[str, AdapterSpec]]:
     """호스트에 적용할 템플릿 후보를 만든다."""
 
     return [(name, spec.model_copy(update={"host": host.lower()})) for name, spec in TEMPLATES]
+
+
+# 학교 하나만 쓰는 규격. 위 템플릿이 **제품별**이라면 이쪽은 **학교별**이다.
+#
+# 알려진 게시판 제품을 쓰지 않아 손으로 쓴 규격들이다. 여기에 두는 이유는 저장이
+# DB 에만 남으면 그 지식이 사람 손에만 존재하기 때문이다 — DB 를 새로 만들거나
+# 다른 환경에 올리면 학교들이 전부 공용 폴백으로 떨어진다.
+#
+# 같은 게시판 제품을 쓰는 학교가 뒤에 또 나오면 그때 `TEMPLATES` 로 올린다.
+HOST_SPECS: dict[str, AdapterSpec] = {
+    # 서울대. 목록·상세 모두 평범한 표 구조다.
+    "www.snu.ac.kr": AdapterSpec(
+        host="www.snu.ac.kr",
+        listing=ListingSpec(
+            row="table tbody tr",
+            detail_link="td.col-title a[href]",
+            title=[".txt"],
+            date=["td.col-date"],
+            pagination=OffsetPagination(param="page", step=1, start=1),
+        ),
+        detail=DetailSpec(
+            body=[".board-view", ".content"],
+            title=["h3.title", ".board-view h3"],
+            attachment=_FILE_LINKS,
+        ),
+    ),
+    # 국민대. 목록이 표가 아니라 `ul > li` 이고 페이지 번호가 1 부터다.
+    "www.kookmin.ac.kr": AdapterSpec(
+        host="www.kookmin.ac.kr",
+        listing=ListingSpec(
+            row="div.board_list > ul > li",
+            detail_link="a[href*='view.do']",
+            title=["p.title"],
+            author=[".board_etc span:nth-of-type(2)"],
+            date=[".board_etc span:nth-of-type(1)"],
+            category=[".ctg_name"],
+            pagination=OffsetPagination(param="currentPageNo", step=1, start=1),
+        ),
+        detail=DetailSpec(
+            body=[".view_cont", ".board_view"],
+            title=[".board_view .title", ".board_view"],
+            attachment=_FILE_LINKS,
+        ),
+    ),
+    # 고려대. 상세 링크가 `href="#1"` 이고 글 번호는 `onclick` 에만 있다.
+    "www.korea.ac.kr": AdapterSpec(
+        host="www.korea.ac.kr",
+        listing=ListingSpec(
+            row="table tbody tr",
+            detail_link="td.td-title a",
+            detail_link_attr="onclick",
+            detail_link_pattern=r"jf_view\('([^']+)','([^']+)','([^']+)'",
+            detail_link_template="/portalBoard/{2}/{1}/{0}/portalBoardView.do",
+            title=["td.td-title a"],
+            author=["td.td-write"],
+            date=["td.td-date"],
+            pagination=OffsetPagination(param="page", step=1, start=1),
+        ),
+        detail=DetailSpec(
+            body=["div.txt", "#content"],
+            title=[".title strong"],
+            # 첨부는 확장자가 아니라 포털 게시판 링크로 나간다.
+            attachment=f"a[href*='/ctt/bb/bulletin'], {_FILE_LINKS}",
+        ),
+    ),
+    # 경희대. 글 번호가 `href="javascript:view('322701','')"` 에 있다.
+    "www.khu.ac.kr": AdapterSpec(
+        host="www.khu.ac.kr",
+        listing=ListingSpec(
+            row="table tbody tr",
+            detail_link="td.tal a",
+            detail_link_pattern=r"view\('(\d+)'",
+            detail_link_template="view.do?boardId={0}",
+            title=["td.tal a p", "td.tal a"],
+            # 작성자·등록일 칸에는 클래스가 없어 자리로 짚는다.
+            author=["td:nth-of-type(3)"],
+            date=["td:nth-of-type(4)"],
+            category=["span.category"],
+            pagination=OffsetPagination(param="pageIndex", step=1, start=1),
+        ),
+        detail=DetailSpec(
+            body=["div.row.contents", "div.board02"],
+            title=["div.board02 div.tit p.txt06"],
+            attachment="div.addFile a",
+        ),
+    ),
+}
+
+
+def host_spec(host: str) -> AdapterSpec | None:
+    """이 학교만 쓰는 규격. 없으면 None 이고 템플릿 대조로 넘어간다."""
+
+    return HOST_SPECS.get(host.lower())

@@ -62,6 +62,22 @@ class ContentParser(Protocol):
     def parse(self, html: str) -> CleanedDocument: ...
 
 
+def strip_noise(soup, selectors: str) -> None:
+    """잡음 요소를 지우되, 잘못 중첩된 요소가 본문을 데려가지 않게 한다.
+
+    `<input>` 은 빈 요소라 자식이 있을 수 없다. 그런데 html.parser 는 사이트가
+    닫는 태그를 흘리면 뒤따르는 내용을 입력 요소 **안쪽**으로 넣어 버린다 —
+    고려대 상세 페이지가 그렇다. 그대로 `decompose()` 하면 게시글 본문까지
+    사라진다. 그래서 다른 요소를 품고 있으면 껍데기만 벗겨 낸다.
+    """
+
+    for node in soup.select(selectors):
+        if node.find(True) is not None:
+            node.unwrap()
+        else:
+            node.decompose()
+
+
 class CommonContentParser:
     """서버 렌더링 공지의 제목·본문을 보수적으로 정제하는 기본 파서."""
 
@@ -79,8 +95,7 @@ class CommonContentParser:
 
     def parse(self, html: str) -> CleanedDocument:
         soup = BeautifulSoup(html, "html.parser")
-        for node in soup.select(self._REMOVE_SELECTORS):
-            node.decompose()
+        strip_noise(soup, self._REMOVE_SELECTORS)
 
         title = _first_text(soup, self._TITLE_SELECTORS)
         selected_body = _first_node(soup, self._BODY_SELECTORS)
@@ -105,8 +120,7 @@ class K2WebContentParser:
 
     def parse(self, html: str) -> CleanedDocument:
         soup = BeautifulSoup(html, "html.parser")
-        for node in soup.select(CommonContentParser._REMOVE_SELECTORS):
-            node.decompose()
+        strip_noise(soup, CommonContentParser._REMOVE_SELECTORS)
 
         title = _first_text(soup, self._TITLE_SELECTORS)
         body = _first_node(soup, self._CONTENT_SELECTORS)
@@ -133,8 +147,7 @@ class SpecContentParser:
         # 잃고 목록과 대조할 수 없게 된다.
         title = _first_text(soup, tuple(self.detail.title) or CommonContentParser._TITLE_SELECTORS)
 
-        for node in soup.select(CommonContentParser._REMOVE_SELECTORS):
-            node.decompose()
+        strip_noise(soup, CommonContentParser._REMOVE_SELECTORS)
         content = _first_body_text(soup, tuple(self.detail.body))
         if content is None:
             raise ValueError("spec body selector not found")
