@@ -338,7 +338,7 @@ class SpecNoticeAdapter(CommonNoticeAdapter):
                 return None
             return urljoin(page_url, str(link["href"]))
         if pagination.type == "offset":
-            return _advance_offset(page_url, pagination.param, pagination.step)
+            return _advance_offset(page_url, pagination.param, pagination.step, pagination.start)
         return _form_next_url(html, page_url, pagination)
 
 
@@ -379,13 +379,18 @@ def _pick(row, selectors: list[str]) -> str | None:
     return None
 
 
-def _advance_offset(page_url: str, param: str, step: int) -> str:
-    """목록 URL 의 offset 파라미터를 한 페이지만큼 늘린다."""
+def _advance_offset(page_url: str, param: str, step: int, start: int = 0) -> str:
+    """목록 URL 의 페이지 파라미터를 한 페이지만큼 늘린다.
+
+    파라미터가 없으면 `start` 를 현재 값으로 본다. 페이지 번호를 쓰는 게시판은
+    1페이지가 `1` 이라, 0 에서 더하면 같은 페이지를 다시 요청하게 된다.
+    """
 
     split = urlsplit(page_url)
     query = dict(parse_qsl(split.query, keep_blank_values=True))
-    current = query.get(param, "0")
-    query[param] = str((int(current) if current.isdigit() else 0) + step)
+    current = query.get(param)
+    base = int(current) if current and current.isdigit() else start
+    query[param] = str(base + step)
     return urlunsplit((split.scheme, split.netloc, split.path, urlencode(query), split.fragment))
 
 

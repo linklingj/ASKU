@@ -53,6 +53,11 @@ class OffsetPagination(BaseModel):
     type: Literal["offset"] = "offset"
     param: str
     step: int = Field(default=10, ge=1)
+    # 파라미터가 URL 에 없을 때의 현재 값. 게시판마다 기준이 다르다 — 건너뛴 글
+    # 수를 세는 방식(`article.offset`)은 0 에서 시작하고, 페이지 번호를 쓰는 방식
+    # (`currentPageNo`)은 1 에서 시작한다. 0 으로 두면 후자에서 1페이지를 다시
+    # 요청해 제자리에 머문다.
+    start: int = 0
 
 
 class FormPagination(BaseModel):

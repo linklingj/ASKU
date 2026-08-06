@@ -70,7 +70,12 @@ class CommonContentParser:
         ".view-content", ".view-content-wrap", "#content", ".content",
     )
     _TITLE_SELECTORS = ("h1", ".board-view-title", ".view-title", ".title")
-    _REMOVE_SELECTORS = "script, style, noscript, nav, header, footer, aside, form, iframe"
+    # `form` 을 통째로 지우지 않는다. 페이지 전체를 폼으로 감싸는 게시판이 있어
+    # (국민대) 본문까지 함께 사라진다. 검색창·버튼 같은 입력 요소만 걷어낸다.
+    _REMOVE_SELECTORS = (
+        "script, style, noscript, nav, header, footer, aside, iframe, "
+        "input, select, textarea, button, label"
+    )
 
     def parse(self, html: str) -> CleanedDocument:
         soup = BeautifulSoup(html, "html.parser")
@@ -127,10 +132,10 @@ class SpecContentParser:
             node.decompose()
 
         title = _first_text(soup, tuple(self.detail.title) or CommonContentParser._TITLE_SELECTORS)
-        body = _first_node(soup, tuple(self.detail.body))
-        if body is None:
+        content = _first_body_text(soup, tuple(self.detail.body))
+        if content is None:
             raise ValueError("spec body selector not found")
-        return CleanedDocument(title=title, content=_body_text(body))
+        return CleanedDocument(title=title, content=content)
 
 
 # 호스트별 본문 파서. 미등록 호스트는 `CommonContentParser` 로 폴백한다.
@@ -154,6 +159,27 @@ def content_parser_for(url: str, spec: "AdapterSpec | None" = None) -> ContentPa
     if spec is not None and spec.detail.body:
         return SpecContentParser(spec.detail)
     return CommonContentParser()
+
+
+def _first_body_text(soup: BeautifulSoup, selectors: tuple[str, ...]) -> str | None:
+    """본문 후보를 훑어 **내용이 있는 첫 결과**를 쓴다. 하나도 없으면 None.
+
+    요소가 있어도 비어 있으면 다음 후보로 넘어간다. 같은 게시판 안에서도 글에 따라
+    본문 컨테이너가 갈리는 경우가 있다 — 국민대는 대개 `.view_cont` 에 본문이 있지만
+    비어 있는 글이 있고, 그때는 상위 `.board_view` 에 내용이 담긴다. 요소 유무만
+    보면 빈 값을 잡고 멈춘다.
+    """
+
+    found = False
+    for selector in selectors:
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        found = True
+        text = _body_text(node)
+        if text.strip():
+            return text
+    return "" if found else None
 
 
 def _first_node(soup: BeautifulSoup, selectors: tuple[str, ...]):
