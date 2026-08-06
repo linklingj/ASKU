@@ -113,6 +113,13 @@ class GeminiProvider(Generator, Extractor, SpecDrafter):
             contents=f"{EXTRACT_JSON_INSTRUCTION}\n\n본문:\n{text}",
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
+        # 응답이 아예 비는 경우가 있다 — 길이 제한에 걸려 잘리거나, 안전 필터에
+        # 막히거나, 한도에 가까울 때다. 그대로 스키마 검증에 넘기면 '모델이 형식을
+        # 어겼다'로 분류돼 재시도 없이 끝난다. 형식 오류와 달리 이쪽은 다시 부르면
+        # 되는 일시적 실패다.
+        if not resp.text:
+            reason = getattr(resp.candidates[0], "finish_reason", None) if resp.candidates else None
+            raise RuntimeError(f"빈 응답 (finish_reason={reason})")
         return Extraction.model_validate_json(resp.text)
 
     def draft_spec(self, prompt: str) -> str:
