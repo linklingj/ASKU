@@ -128,10 +128,13 @@ class SpecContentParser:
 
     def parse(self, html: str) -> CleanedDocument:
         soup = BeautifulSoup(html, "html.parser")
+        # 제목은 잡음을 걷어내기 전에 뽑는다. 글 제목을 `<header>` 안에 두는
+        # 게시판이 있어(서울대 `.board-view header h3.title`), 먼저 지우면 제목을
+        # 잃고 목록과 대조할 수 없게 된다.
+        title = _first_text(soup, tuple(self.detail.title) or CommonContentParser._TITLE_SELECTORS)
+
         for node in soup.select(CommonContentParser._REMOVE_SELECTORS):
             node.decompose()
-
-        title = _first_text(soup, tuple(self.detail.title) or CommonContentParser._TITLE_SELECTORS)
         content = _first_body_text(soup, tuple(self.detail.body))
         if content is None:
             raise ValueError("spec body selector not found")

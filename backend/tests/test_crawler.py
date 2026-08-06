@@ -847,3 +847,9 @@ class DateParsingTests(unittest.TestCase):
     def test_invalid_date_is_none(self) -> None:
         self.assertIsNone(self.parse("등록일 없음"))
         self.assertIsNone(self.parse("26.13.45"))
+
+    def test_spaced_date_format(self) -> None:
+        """서울대는 `2026. 7. 31.` 처럼 구분자 뒤를 띄어 쓴다."""
+
+        self.assertEqual(self.parse("2026. 7. 31."), datetime(2026, 7, 31, tzinfo=timezone.utc))
+        self.assertEqual(self.parse("2026. 07. 31."), datetime(2026, 7, 31, tzinfo=timezone.utc))

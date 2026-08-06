@@ -911,9 +911,14 @@ def _parse_date(value: str) -> datetime | None:
     따라 날짜가 통째로 비어 규격이 실패한다.
     """
 
-    match = re.search(r"\d{4}[./-]\d{1,2}[./-]\d{1,2}", value)
+    # 구분자 뒤 공백을 허용한다. 서울대는 `2026. 7. 31.` 처럼 띄어 쓴다.
+    match = re.search(r"(\d{4})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})", value)
     if match is not None:
-        value = match.group(0)
+        year, month, day = (int(part) for part in match.groups())
+        try:
+            return datetime(year, month, day, tzinfo=timezone.utc)
+        except ValueError:
+            return None
     else:
         # 두 자리 연도. 게시판 날짜에 과거 세기가 나올 일은 없으므로 2000년대로 읽는다.
         short = re.search(r"\b(\d{2})[./-](\d{1,2})[./-](\d{1,2})\b", value)

@@ -19,7 +19,7 @@ from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
-from app.crawler import Board, NoticeAdapter
+from app.crawler import Board, NoticeAdapter, normalize_url
 from app.validation import MIN_TITLE_RATIO, validate_listing
 
 
@@ -53,15 +53,38 @@ def find_boards(
     """
 
     boards = [Board(base_url, _own_label(listing_html, base_url))]
+    # 기준 게시판의 지문도 넣는다. 정렬·필터 파라미터를 붙여 자기 자신을 다시
+    # 가리키는 링크가 흔하다(서울대 `?sc=y`).
+    seen = {normalize_url(base_url), _listing_fingerprint(listing_html, base_url, adapter)}
     for url, label in _candidates(listing_html, base_url, adapter, max_candidates):
+        canonical = normalize_url(url)
+        if canonical in seen:
+            continue  # 같은 게시판을 정렬·필터 파라미터만 달리해 가리키는 링크
         html = fetch(url)
         if html is None:
             continue
-        if _looks_like_board(html, url, adapter):
-            boards.append(Board(url, label))
-        else:
+        if not _looks_like_board(html, url, adapter):
             LOGGER.debug("게시판이 아님(목록이 읽히지 않음): %s (%s)", url, label)
+            continue
+        # 목록 내용이 같으면 같은 게시판이다. 서울대는 `?sc=y` 를 붙인 링크를
+        # 따로 두는데, 그대로 받아들이면 같은 게시판을 두 번 돌게 된다.
+        fingerprint = _listing_fingerprint(html, url, adapter)
+        if fingerprint in seen:
+            continue
+        seen.add(canonical)
+        seen.add(fingerprint)
+        boards.append(Board(url, label))
     return tuple(boards)
+
+
+def _listing_fingerprint(html: str, url: str, adapter: NoticeAdapter) -> str:
+    """목록의 첫 상세 링크들. 같은 게시판인지 판별하는 지문으로 쓴다."""
+
+    try:
+        items = list(adapter.parse_listing(html, url))[:3]
+    except Exception:
+        return url
+    return "|".join(normalize_url(item.url) for item in items)
 
 
 def _candidates(listing_html: str, base_url: str, adapter: NoticeAdapter, limit: int) -> list[tuple[str, str]]:

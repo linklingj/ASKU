@@ -14,9 +14,13 @@ from app.crawler import CommonNoticeAdapter
 BASE = "https://x.ac.kr/notice.do"
 
 
-def board_html(rows: int = 5) -> str:
+def board_html(rows: int = 5, prefix: str = "n") -> str:
+    """게시판마다 다른 글이 실리도록 접두사를 둔다. 내용이 같으면 같은 게시판으로
+    판정되는데, 실제 사이트에서는 게시판마다 글이 다르다."""
+
     body = "".join(
-        f"<tr><td><a href='/v.do?id={i}'>공지 제목 {i}</a></td><td>학사팀</td><td>2026-08-0{i % 9}</td></tr>"
+        f"<tr><td><a href='/v.do?id={prefix}{i}'>공지 제목 {i}</a></td>"
+        f"<td>학사팀</td><td>2026-08-0{i % 9}</td></tr>"
         for i in range(1, rows + 1)
     )
     return f"<table><tbody>{body}</tbody></table>"
@@ -33,7 +37,7 @@ class FindBoardsTests(unittest.TestCase):
 
     def test_real_boards_are_added(self) -> None:
         html = listing_with_menu(("장학공지", "/scholarship.do"), ("채용공고", "/jobs.do"))
-        pages = {"https://x.ac.kr/scholarship.do": board_html(), "https://x.ac.kr/jobs.do": board_html()}
+        pages = {"https://x.ac.kr/scholarship.do": board_html(prefix="s"), "https://x.ac.kr/jobs.do": board_html(prefix="j")}
 
         boards = find_boards(html, BASE, CommonNoticeAdapter(), self.fetch_map(pages))
 
@@ -86,7 +90,7 @@ class FindBoardsTests(unittest.TestCase):
 
     def test_unreachable_candidate_is_skipped(self) -> None:
         html = listing_with_menu(("장학공지", "/scholarship.do"), ("채용공고", "/jobs.do"))
-        pages = {"https://x.ac.kr/jobs.do": board_html()}  # 장학은 받지 못한다
+        pages = {"https://x.ac.kr/jobs.do": board_html(prefix="j")}  # 장학은 받지 못한다
 
         boards = find_boards(html, BASE, CommonNoticeAdapter(), self.fetch_map(pages))
 
@@ -101,7 +105,7 @@ class FindBoardsTests(unittest.TestCase):
 
         def fetch(url: str) -> str | None:
             requested.append(url)
-            return board_html()
+            return board_html(prefix=url)
 
         find_boards(html, BASE, CommonNoticeAdapter(), fetch, max_candidates=5)
 
@@ -110,3 +114,29 @@ class FindBoardsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DuplicateBoardTests(unittest.TestCase):
+    """같은 게시판을 파라미터만 달리해 가리키는 링크가 흔하다."""
+
+    def test_same_board_with_extra_query_is_not_added_twice(self) -> None:
+        """서울대는 `?sc=y` 를 붙인 링크를 따로 둔다. 두 번 돌면 요청이 배가 된다."""
+
+        html = listing_with_menu(("장학공지", "/scholarship.do"), ("장학 공지", "/scholarship.do?sc=y"))
+        requested: list[str] = []
+
+        def fetch(url: str) -> str | None:
+            requested.append(url)
+            return board_html(prefix="s")  # 두 URL 이 같은 게시판을 가리킨다
+
+        boards = find_boards(html, BASE, CommonNoticeAdapter(), fetch)
+
+        self.assertEqual([b.label for b in boards], ["공지사항", "장학공지"])
+        self.assertEqual(len(requested), 2)  # 두 번째는 지문이 같아 채택되지 않는다
+
+    def test_link_back_to_the_base_url_is_ignored(self) -> None:
+        html = listing_with_menu(("공지사항", "/notice.do?sc=y"))
+
+        boards = find_boards(html, BASE, CommonNoticeAdapter(), lambda _u: board_html())
+
+        self.assertEqual(len(boards), 1)
