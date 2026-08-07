@@ -56,7 +56,7 @@ LLM과 Graph RAG를 결합해 학교 정보를 수집하고, 근거를 포함한
    │   [그래프 빌더]     ── 노드·엣지 생성, 임베딩 생성
    │        │
    │        ▼
-   │   [저장소]          ── Graph DB + Vector DB + 원문 저장
+   │   [저장소]          ── Postgres(pgvector) — 그래프·벡터·원문 통합
    │
    ├──► [Graph RAG 엔진] ── 그래프 순회 + 벡터 검색 + 답변 생성
    │        │
@@ -77,13 +77,13 @@ LLM과 Graph RAG를 결합해 학교 정보를 수집하고, 근거를 포함한
 3. 각 페이지를 청크 단위로 분할.
 4. LLM이 청크에서 엔티티·관계·핵심 정보 추출.
 5. 그래프 빌더가 노드·엣지 생성, 각 청크를 임베딩.
-6. Graph DB와 Vector DB에 저장, 학교 인덱스에 등록.
+6. Postgres(pgvector)에 저장, 학교 인덱스에 등록.
 
 ### 5.2 질의 (답변 생성)
 
 1. 사용자가 학교 선택 후 질문 입력.
 2. 질문을 임베딩하고 핵심 엔티티 추출.
-3. 그래프에서 관련 노드를 순회(local search)하고, 벡터 DB에서 유사 청크 검색.
+3. 벡터 DB에서 유사 청크를 검색하고, 매칭된 엔티티의 1-hop 이웃을 확장.
 4. 검색 결과로 컨텍스트 구성.
 5. 선택된 LLM이 답변 생성.
 6. 근거가 된 원문 링크·문서를 답변과 함께 반환.
@@ -97,20 +97,25 @@ Graph RAG는 엔티티 간 관계를 명시적으로 다뤄 복합 질문에 강
 
 ### 6.1 엔티티 예시
 
-학과, 부서, 공지, 학사일정, 장학금, 담당자, 연락처, 규정, 시설, 신청 절차.
+학과, 부서, 담당자, 공지, 장학금, 프로그램·사업, 채용·모집, 행사, 학사일정, 규정, 시설, 대상·자격, 연락처 등.
+
+> 전체 엔티티·관계 타입 화이트리스트: [`01_SYSTEM/04_extractor.md`](../01_SYSTEM/04_extractor.md) §2
 
 ### 6.2 관계 예시
 
-- `공지` —소속→ `학과`
-- `장학금` —마감일→ `날짜`
+- `공지` —안내→ `장학금`
+- `장학금` —담당→ `부서`
 - `담당자` —연락처→ `전화/이메일`
 - `절차` —선행조건→ `절차`
 
-### 6.3 검색 전략
+> `마감일`·`금액` 등 값은 관계가 아니라 엔티티 속성으로 담는다.
 
-- **Local search**: 특정 엔티티 주변을 탐색. "○○장학금 마감일" 같은 구체 질문에 사용.
-- **Global search**: 커뮤니티 요약을 활용. "장학금 종류 전체" 같은 포괄 질문에 사용.
-- **Hybrid**: 그래프 순회 결과 + 벡터 유사도 결과를 결합해 컨텍스트 구성.
+### 6.3 검색 전략 (확정)
+
+- **Hybrid 단일 전략**: 벡터 top-k 검색 + 질문에서 추출한 엔티티의 1-hop 이웃 확장을 결합해 컨텍스트 구성.
+- Local/Global 라우팅, 커뮤니티 탐지·요약(Global search)은 하지 않는다. 대학 공지 데이터는 원자적 정보 비중이 높아 이득 대비 구현·운영 비용이 크다고 판단해 제외했다(향후 과제로 유보, §12 참고).
+
+> 상세: [`01_SYSTEM/07_graph-rag-engine.md`](../01_SYSTEM/07_graph-rag-engine.md)
 
 ---
 
@@ -123,7 +128,6 @@ Graph RAG는 엔티티 간 관계를 명시적으로 다뤄 복합 질문에 강
 | school_id | 고유 ID |
 | name | 학교명 |
 | base_url | 공지·학사 기준 URL |
-| graph_ref | 지식그래프 참조 |
 | created_at / updated_at | 생성·갱신 시각 |
 | crawl_schedule | 재크롤링 주기 |
 
@@ -134,32 +138,35 @@ Graph RAG는 엔티티 간 관계를 명시적으로 다뤄 복합 질문에 강
 | doc_id | 고유 ID |
 | school_id | 소속 학교 |
 | source_url | 원문 링크 (근거 제공용) |
-| title / content | 제목·본문 |
+| title / content | 제목·본문 (청크 단위) |
 | crawled_at | 크롤링 시각 |
-| embedding_ref | 벡터 참조 |
+| embedding | 벡터 (pgvector 컬럼) |
 
 ### 7.3 그래프 노드·엣지
 
-- 노드: `type`, `name`, `attributes`, `source_doc_ids`
+- 노드: `type`, `name`, `norm_key`(중복 병합 키), `attributes`, `source_doc_ids`
 - 엣지: `source`, `target`, `relation`, `source_doc_ids`
 
 > 모든 노드·엣지는 `source_doc_ids`로 원문과 연결되어 근거 추적이 가능하다.
+> 상세: [`01_SYSTEM/10_data-model.md`](../01_SYSTEM/10_data-model.md), [`01_SYSTEM/06_storage.md`](../01_SYSTEM/06_storage.md)
 
 ---
 
-## 8. 기술 스택 (제안)
+## 8. 기술 스택
 
-| 영역 | 후보 |
-|------|------|
-| 크롤링 | Playwright, Scrapy, BeautifulSoup |
-| Graph DB | Neo4j |
-| Vector DB | Qdrant, Chroma, pgvector |
-| 임베딩 | sentence-transformers, OpenAI Embeddings |
-| 로컬 LLM | Ollama (Llama, Qwen 등) |
-| API LLM | OpenAI, Anthropic |
-| 백엔드 | FastAPI |
-| 스케줄러 | Celery + Redis, APScheduler |
-| 프론트 | React / Next.js |
+| 영역 | 선택 | 상태 |
+|------|------|------|
+| 크롤링 | Playwright, Scrapy, BeautifulSoup 중 택1 | 미정 |
+| 저장소 (그래프+벡터+원문) | Postgres + pgvector, 엣지는 테이블로 | 확정 |
+| 임베딩 | bge-m3 (로컬) | 확정 |
+| 정보 추출 LLM | API (Claude / GPT) | 확정 |
+| 답변 생성 LLM | API 또는 로컬(Ollama), 단계별 전환 가능 | 확정 |
+| 백엔드 | FastAPI | 미정 |
+| 스케줄러 | FastAPI lifespan + asyncio 루프 (MVP). Celery/APScheduler는 멀티워커 시 재검토 | 확정(MVP) |
+| 프론트 | React / Next.js | 미정 |
+
+> Neo4j·Qdrant/Chroma 별도 도입은 보류. 그래프 순회가 실제 병목으로 측정되면 재검토.
+> 상세: [`01_SYSTEM/06_storage.md`](../01_SYSTEM/06_storage.md), [`01_SYSTEM/08_llm-provider.md`](../01_SYSTEM/08_llm-provider.md)
 
 ---
 
@@ -171,16 +178,17 @@ Graph RAG는 엔티티 간 관계를 명시적으로 다뤄 복합 질문에 강
 LLMProvider (인터페이스)
  ├─ generate(prompt, context) → answer
  ├─ embed(text) → vector
- └─ extract_entities(text) → entities, relations
+ └─ extract(text) → entities, relations   # JSON 강제 출력
 
 구현체:
- ├─ OllamaProvider  (로컬)
- ├─ OpenAIProvider  (API)
- └─ AnthropicProvider (API)
+ ├─ AnthropicProvider / OpenAIProvider    (API)
+ └─ LocalEmbedder(bge-m3) / OllamaProvider (로컬)
 ```
 
-사용자 설정에서 제공자를 전환한다.
-추출·임베딩·답변 단계별로 다른 제공자를 지정할 수도 있다.
+**기본 구성 (확정)**: 추출 = API(Claude/GPT), 임베딩 = 로컬(bge-m3), 답변 = API 또는 로컬.
+단계별로 다른 제공자를 지정할 수 있다.
+
+> 상세: [`01_SYSTEM/08_llm-provider.md`](../01_SYSTEM/08_llm-provider.md)
 
 ---
 
@@ -228,7 +236,7 @@ LLMProvider (인터페이스)
 | 3. 멀티 학교 | 학교 등록·검색, 데이터 격리 |
 | 4. 자동 갱신 | 스케줄러, 증분 업데이트 |
 | 5. LLM 선택 | 로컬/API 추상화, 설정 UI |
-| 6. 고도화 | Global/Local 검색 최적화, 평가·품질 관리 |
+| 6. 고도화 | 포괄 질문 대응(커뮤니티 요약 등), multi-hop 순회, 평가·품질 관리 |
 
 ---
 
