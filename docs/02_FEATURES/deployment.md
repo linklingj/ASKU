@@ -106,7 +106,41 @@ cat backup.sql | docker compose exec -T db psql -U asku asku
 - 데이터는 `pgdata`(DB)·`models`(임베딩 캐시) 볼륨에 남으므로 컨테이너를 지워도 유지된다. `docker compose down -v`는 **볼륨까지 삭제**하니 주의.
 - 재부팅 후 자동 기동: `restart: unless-stopped`로 설정돼 있음.
 
-## 7. 한계 / 다음 단계
+## 7. 대안 배포: Railway (VM 없이 Git 배포)
+
+VM·방화벽을 직접 다루지 않고 Git 연동으로 올리고 싶을 때의 선택지. 구조(로컬 bge-m3 · 인프로세스 스케줄러 · Postgres 하나)는 그대로 두되, **Compose 파일은 못 쓰고 서비스 2개(db·api)를 각각 만든다**.
+
+> **RAM 과금 주의.** Railway는 메모리를 GB·시간 단위로 과금한다. bge-m3 상주로 api가 ~4GB를 쓰므로 상시 가동이면 대략 월 수십 달러가 붙는다. **시연 기간에만 켜두는** 운용이 맞고, 상시 무료가 목표면 Oracle(§1~6)이나 저가 VPS(Hetzner 등)가 낫다.
+
+**1) db 서비스** — `pgvector/pgvector:pg16` 이미지로 생성
+- 변수: `POSTGRES_USER=asku`, `POSTGRES_PASSWORD=<값>`, `POSTGRES_DB=asku`
+- 변수 `PGDATA=/var/lib/postgresql/data/pgdata` 를 **반드시** 준다. Railway 볼륨은 포맷된 파일시스템이라 마운트 지점에 `lost+found` 가 있어, `PGDATA` 를 마운트 루트로 두면 `initdb` 가 `directory "…/data" exists but is not empty` 로 거부한다(Compose의 빈 명명 볼륨에선 안 나던 문제). 하위 폴더로 옮기면 그 폴더가 비어 있어 통과한다.
+- 볼륨 하나를 `/var/lib/postgresql/data` 에 마운트(데이터 영속). 공개 도메인은 만들지 않고 private 네트워킹만 쓴다.
+
+**2) api 서비스** — 이 레포 연결, Root Directory `backend`(루트 `backend/Dockerfile` 자동 감지)
+- 변수:
+  - `DATABASE_URL=postgresql+psycopg://asku:${{db.POSTGRES_PASSWORD}}@${{db.RAILWAY_PRIVATE_DOMAIN}}:5432/asku`
+    - 코드가 `postgresql+psycopg://` 드라이버 접두어를 요구한다(`storage.py`). Railway 기본 Postgres 플러그인이 주는 `postgresql://` URL을 그대로 넣으면 안 되므로, 위처럼 pgvector 이미지로 직접 띄우고 URL도 손으로 구성한다.
+  - `GEMINI_API_KEY` · `GEMINI_MODEL`(§3 표와 동일), 필요 시 `SPEC_AUTOGEN`.
+- 볼륨 하나를 `/models` 에 마운트 — bge-m3 캐시(`HF_HOME`). 없으면 재배포마다 ~2.3GB를 다시 받는다.
+- 네트워킹: 공개 도메인을 만들고 **target port 를 8000** 으로 지정(Dockerfile이 8000 고정). 이 도메인이 프론트의 API 베이스 URL이 된다.
+- 리소스: bge-m3가 3~4GB를 쓰므로 서비스 메모리 상한이 그보다 낮지 않은지 확인.
+
+**3) 기동·검증**
+- db가 먼저 뜬 뒤 api가 기동하고, api `lifespan` 이 `create_schema()` 로 스키마·pgvector 확장을 자동 생성한다(수동 마이그레이션 없음 — VM과 동일).
+- 검증 완료 11개 학교 등록 — Railway CLI로 컨테이너에 붙어 실행:
+
+  ```bash
+  railway ssh --service api
+  python -m app.seed_schools        # 컨테이너 안에서
+  ```
+
+  CLI 접속이 안 되면 공개 API(`POST /schools`)로 등록해도 된다. 단 이 경로는 등록과 동시에 크롤을 시작한다(시드는 등록만 하고 크롤을 돌리지 않는다).
+- 나머지(`/schools` 200 확인, 첫 질의 워밍업)는 §5 와 같다.
+
+스케줄러의 워커 1개 제약은 단일 컨테이너라 자연히 충족된다. 유휴 시 잠드는 티어가 아니므로 상시 가동 요건도 만족한다.
+
+## 8. 한계 / 다음 단계
 
 - **HTTPS 없음**: 지금은 평문 `:8000`. 도메인 + HTTPS가 필요하면 Caddy/nginx 리버스 프록시를 앞단에 두면 된다(선택, 시연엔 불필요).
 - **워커 1개 고정**: 스케줄러 중복 방지 때문. 처리량이 문제되면 스케줄러를 별도 프로세스로 분리하는 리팩터가 선행돼야 한다.
