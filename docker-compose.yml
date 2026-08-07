@@ -24,7 +24,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://asku:${POSTGRES_PASSWORD:-asku}@db:5432/asku
       GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY 를 .env 에 설정하세요}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
     volumes:
       - models:/models   # bge-m3 캐시 — 첫 질의 때 받은 모델을 재시작 후에도 재사용
     ports:

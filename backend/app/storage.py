@@ -60,6 +60,21 @@ schools = Table(
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
 )
 
+# 호스트별 수집 규격(`app.adapter_spec.AdapterSpec`). 학교를 추가할 때 파이썬
+# 어댑터를 짜는 대신 여기에 규격을 넣는다. 코드가 아니라 데이터라 재배포 없이
+# 반영되고, 나중에 자동 생성한 규격도 같은 자리에 들어간다.
+adapter_specs = Table(
+    "adapter_specs",
+    metadata,
+    Column("spec_id", BIGINT, primary_key=True),
+    Column("host", TEXT, nullable=False, unique=True),
+    Column("spec", JSONB, nullable=False),
+    # human: 사람이 작성 / generated: 자동 생성. 검증 게이트를 통과한 것만 저장한다.
+    Column("source", TEXT, nullable=False, server_default=text("'human'")),
+    Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
+)
+
 # 크롤 실행마다 남기는 수집 품질 지표. 학교당 한 행만 두지 않고 이력으로 쌓는다.
 # 직전 실행과 비교해야 "사이트 개편으로 수집량이 급감했다"를 판정할 수 있다.
 crawl_quality = Table(
@@ -321,6 +336,22 @@ class Storage:
             ).mappings().one()
         return School(**row)
 
+    def update_school_registration(self, school_id: int, *, name: str, base_url: str) -> School:
+        """학교 등록 정보만 갱신한다.
+
+        시드 작업처럼 이미 등록된 학교의 이름·공지 목록 URL을 맞출 때 쓴다.
+        수집 상태와 주기는 운영 중 설정일 수 있으므로 여기서 건드리지 않는다.
+        """
+
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                schools.update()
+                .where(schools.c.school_id == school_id)
+                .values(name=name, base_url=base_url, updated_at=func.now())
+                .returning(*schools.c)
+            ).mappings().one()
+        return School(**row)
+
     def get_school(self, school_id: int) -> School | None:
         """학교 ID로 단일 학교를 조회한다."""
 
@@ -415,6 +446,35 @@ class Storage:
                 "attachment_count": attachment_count,
                 "last_crawled_at": last_crawled_at,
             }
+
+    # ── 수집 규격 ────────────────────────────────────────────────────
+
+    def get_adapter_spec(self, host: str) -> dict | None:
+        """호스트의 수집 규격 JSON. 없으면 None."""
+
+        with self._engine.connect() as connection:
+            return connection.execute(
+                select(adapter_specs.c.spec).where(adapter_specs.c.host == host.lower())
+            ).scalar_one_or_none()
+
+    def upsert_adapter_spec(self, host: str, spec: dict, *, source: str = "human") -> None:
+        """호스트의 수집 규격을 넣거나 갱신한다. 호스트당 한 건만 둔다."""
+
+        statement = insert(adapter_specs).values(host=host.lower(), spec=spec, source=source)
+        with self._engine.begin() as connection:
+            connection.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[adapter_specs.c.host],
+                    set_={"spec": statement.excluded.spec, "source": statement.excluded.source},
+                )
+            )
+
+    def list_adapter_specs(self) -> list[dict]:
+        """등록된 규격 전체. 운영 점검용."""
+
+        with self._engine.connect() as connection:
+            rows = connection.execute(select(adapter_specs).order_by(adapter_specs.c.host)).mappings()
+            return [dict(row) for row in rows]
 
     def record_crawl_quality(self, school_id: int, crawl_id: str, reports: Sequence[Any]) -> None:
         """크롤 실행의 게시판별 수집 품질 지표를 이력으로 남긴다."""

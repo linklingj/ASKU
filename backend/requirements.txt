@@ -5,6 +5,7 @@ protego>=0.3          # robots.txt 파서: 표준 robotparser 는 와일드카�
 SQLAlchemy>=2.0
 psycopg[binary]>=3.1
 pgvector>=0.3
+python-dotenv>=1.0   # 개발용 스크립트가 backend/.env 를 읽는다(운영은 컨테이너 환경변수)
 
 # 첨부 문서 인제스트 (사용자 업로드 — app/attachment_ingest.py)
 pdfplumber>=0.11      # PDF 페이지별 텍스트 추출

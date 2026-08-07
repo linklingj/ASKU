@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Callable, Iterable
 
+from app.adapter_spec import AdapterSpec
 from app.crawler import (
     DEFAULT_BOARD_LABEL,
     Board,
@@ -131,10 +132,8 @@ def validate_detail(
         report.add("EMPTY_CONTENT", f"본문이 {len(content)}자뿐이다(기준 {MIN_CONTENT_CHARS}자)")
 
     # 목록의 제목이 상세 본문·제목 어디에도 없으면 링크를 잘못 잡았을 가능성이 크다.
-    if item.title_hint:
-        haystack = _squash(f"{document.title or ''} {content}")
-        if _squash(item.title_hint) not in haystack:
-            report.add("TITLE_MISMATCH", f"목록 제목이 상세 페이지에 없다: {item.title_hint[:40]}")
+    if item.title_hint and not _titles_match(item.title_hint, document, content):
+        report.add("TITLE_MISMATCH", f"목록 제목이 상세 페이지에 없다: {item.title_hint[:40]}")
 
     leaked = [title for title in (other_titles or []) if _squash(title) in _squash(content)]
     if leaked:
@@ -152,11 +151,16 @@ def validate_crawl(
     *,
     detail_sample: int = 3,
     previous_rows: Callable[[str], int | None] | None = None,
+    spec: "AdapterSpec | None" = None,
 ) -> list[ValidationReport]:
     """끝난 크롤 결과를 게시판별로 판정한다. 추가 요청은 하지 않는다.
 
     상세는 게시판마다 표본 몇 건만 본다. 전수 검사해도 얻는 신호가 같고, 크롤
     직후 파이프라인에서 도는 작업이라 가볍게 유지한다.
+
+    `spec` 은 운영에서 쓰는 것과 **같은** 본문 파서를 고르기 위해 받는다. 넘기지
+    않으면 규격 기반 학교에서 공용 파서로 검사하게 되어, 실제로는 본문이 비어도
+    통과로 판정한다.
     """
 
     reports: list[ValidationReport] = []
@@ -177,7 +181,7 @@ def validate_crawl(
 
         titles = [item.title_hint or "" for item in adapter.parse_listing(listing_html, board.url)]
         for page in pages_by_board.get(label, [])[:detail_sample]:
-            document = content_parser_for(page.canonical_url).parse(page.raw_html)
+            document = content_parser_for(page.canonical_url, spec).parse(page.raw_html)
             others = [title for title in titles if title and title != page.title_hint]
             validate_detail(document, _as_listing_item(page), other_titles=others, report=report)
         reports.append(report)
@@ -187,14 +191,14 @@ def validate_crawl(
 def _group_pages(run: CrawlRun, boards: Iterable[Board]) -> dict[str, list[CrawledPage]]:
     """수집된 페이지를 게시판 라벨로 묶는다.
 
-    라벨이 없는 학교(단일 게시판)는 `category_hint` 가 목록의 분류값이므로 라벨로
-    쓸 수 없다. 그때는 모든 페이지를 기본 게시판에 넣는다.
+    크롤러가 남긴 `board_of` 를 쓴다. `category_hint` 로 되짚으면 목록이 자체 분류를
+    주는 학교(아주대 `기타`·`학사`)에서 라벨과 맞지 않아 페이지가 어느 게시판에도
+    붙지 않고, 상세 검증이 통째로 건너뛰어진다.
     """
 
-    labels = {board.label for board in boards if board.label}
     grouped: dict[str, list[CrawledPage]] = {}
     for page in run.pages:
-        label = page.category_hint if page.category_hint in labels else DEFAULT_BOARD_LABEL
+        label = run.board_of.get(page.canonical_url, DEFAULT_BOARD_LABEL)
         grouped.setdefault(label, []).append(page)
     return grouped
 
@@ -239,6 +243,36 @@ def _check_pagination(adapter: NoticeAdapter, html: str, listing_url: str, repor
 
 def _ratio(items: list[ListingItem], predicate) -> float:
     return sum(1 for item in items if predicate(item)) / len(items) if items else 0.0
+
+
+# 제목 칸에 함께 들어가는 장식·메타데이터. 선택자로 떼어낼 수 없어 비교 전에 지운다.
+# 연세대 목록은 제목 뒤에 '새글', 상세는 '분류 … 작성자 … 조회수 …' 를 같은 요소에
+# 담는다. 이를 그대로 비교하면 같은 글도 다르다고 판정한다.
+_TITLE_NOISE = re.compile(r"(새글|NEW|N|공지|첨부파일|분류|작성자|조회수|등록일)", re.IGNORECASE)
+
+
+def _titles_match(listing_title: str, document: CleanedDocument, content: str) -> bool:
+    """목록 제목과 상세 페이지가 같은 글을 가리키는지 본다.
+
+    양쪽 포함 관계를 모두 본다. 목록에는 상세에 없는 말머리가 붙는 경우가 있고
+    (아주대 `[공지] [생활관] …` 대 `[생활관] …`), 이는 목록 제목 셀 안에 들어
+    있어 선택자로 떼어낼 수 없다. 한 방향만 보면 고칠 수 없는 문제를 규격 탓으로
+    돌리게 된다.
+    """
+
+    listing = _squash(_TITLE_NOISE.sub(" ", listing_title))
+    if not listing:
+        return True
+    haystack = _squash(f"{document.title or ''} {content}")
+    if listing in haystack:
+        return True
+    detail_title = _squash(_TITLE_NOISE.sub(" ", document.title or ""))
+    # 짧은 제목이 우연히 포함되는 것을 막는다. 말머리를 뗀 제목은 충분히 길다.
+    if len(detail_title) >= 8 and detail_title in listing:
+        return True
+    # 상세 제목 요소에 메타데이터가 함께 들어간 경우(연세대 '… 분류 [학사] 작성자 …').
+    # 목록 제목이 그 앞부분과 일치하면 같은 글이다.
+    return len(listing) >= 8 and detail_title.startswith(listing)
 
 
 def _squash(value: str) -> str:

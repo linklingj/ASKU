@@ -51,7 +51,10 @@ nano .env
 |---|---|
 | `POSTGRES_PASSWORD` | DB 비밀번호. DB 컨테이너와 `DATABASE_URL`에 함께 쓰임 |
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey)에서 발급 |
-| `GEMINI_MODEL` | 기본 `gemini-2.5-flash` (저비용). 필요 시 변경 |
+| `GEMINI_MODEL` | 기본 `gemini-3.5-flash` (저비용). 필요 시 변경. `gemini-2.5-flash` 는 신규 키로 호출하면 404 다 |
+| `SPEC_AUTOGEN` | 알려진 템플릿과 맞지 않는 학교의 수집 규격을 LLM 으로 생성할지. 기본 꺼짐(`1`·`true`·`yes` 로 켬) |
+
+`SPEC_AUTOGEN` 을 켜면 새 학교를 등록할 때마다 호출당 약 4만 토큰이 나갈 수 있다. 무료 티어는 학교 몇 개면 한도에 걸린다. 알려진 게시판 제품은 이 설정과 무관하게 LLM 없이 처리되므로, 먼저 꺼 둔 채로 등록해 보고 템플릿에 걸리지 않는 학교가 나올 때 켜는 편이 안전하다([`03_crawler.md`](../01_SYSTEM/03_crawler.md) §7-2).
 
 `DATABASE_URL`은 compose가 `db` 서비스명으로 자동 구성하므로 직접 넣지 않는다.
 

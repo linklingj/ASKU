@@ -19,6 +19,7 @@ import requests
 from bs4 import BeautifulSoup
 from protego import Protego
 
+from app.adapter_spec import AdapterSpec
 from app.schemas import Attachment, CrawledPage, CrawlFailure, CrawlRequest
 
 
@@ -229,16 +230,26 @@ ADAPTER_REGISTRY: dict[str, type[CommonNoticeAdapter]] = {
 }
 
 
-def adapter_for(base_url: str) -> CommonNoticeAdapter:
-    """`base_url` 호스트에 맞는 어댑터를 만든다.
+def adapter_for(base_url: str, spec: AdapterSpec | None = None) -> CommonNoticeAdapter:
+    """`base_url` 에 맞는 어댑터를 만든다.
+
+    ``전용 클래스 → 규격 → 공용 파서`` 순으로 고른다. 손으로 검증한 전용 클래스가
+    규격보다 앞서므로, 자동 생성한 규격이 이상해도 기존 학교는 영향을 받지 않는다.
 
     공용 파서는 `table tbody tr` 기반이라 연세대(`ul > li`)·성균관대(`dl`)처럼
-    구조가 다른 게시판에서는 목록을 한 줄도 읽지 못한다. 등록된 학교는 반드시
-    전용 어댑터로 내려보내야 한다.
+    구조가 다른 게시판에서는 목록을 한 줄도 읽지 못한다. 어느 단계로도 잡히지
+    않는 학교는 수집이 0건이 되므로 검증기(`app.validation`)가 걸러야 한다.
+
+    `spec` 은 호출자가 저장소에서 꺼내 넘긴다. Crawler 가 Storage 를 직접 알지
+    않도록 하기 위해서다.
     """
 
-    host = urlsplit(base_url).hostname or ""
-    return ADAPTER_REGISTRY.get(host.lower(), CommonNoticeAdapter)()
+    host = (urlsplit(base_url).hostname or "").lower()
+    if host in ADAPTER_REGISTRY:
+        return ADAPTER_REGISTRY[host]()
+    if spec is not None:
+        return SpecNoticeAdapter(spec)
+    return CommonNoticeAdapter()
 
 
 # 라벨 없는 단일 게시판을 지표에 표기할 때 쓰는 이름.
@@ -273,11 +284,155 @@ BOARD_REGISTRY: dict[str, tuple[Board, ...]] = {
 }
 
 
-def boards_for(base_url: str) -> tuple[Board, ...]:
-    """`base_url` 호스트가 등록돼 있으면 하위 게시판 전체를, 아니면 그 URL 하나를 준다."""
+def boards_for(base_url: str, spec: AdapterSpec | None = None) -> tuple[Board, ...]:
+    """수집할 게시판 목록. ``등록 목록 → 규격 → 기준 URL 하나`` 순으로 고른다."""
 
     host = (urlsplit(base_url).hostname or "").lower()
-    return BOARD_REGISTRY.get(host) or (Board(base_url),)
+    if host in BOARD_REGISTRY:
+        return BOARD_REGISTRY[host]
+    if spec is not None and spec.boards:
+        return tuple(Board(board.url, board.label) for board in spec.boards)
+    return (Board(base_url),)
+
+
+class SpecNoticeAdapter(CommonNoticeAdapter):
+    """규격(`AdapterSpec`)을 읽어 목록을 파싱하는 어댑터.
+
+    학교마다 클래스를 만드는 대신 선택자를 데이터로 받는다. 동작은 전용 어댑터와
+    같아야 하며, 그 동일성은 학교별 회귀 테스트로 확인한다.
+    """
+
+    def __init__(self, spec: "AdapterSpec") -> None:
+        listing = spec.listing
+        super().__init__(
+            row_selector=listing.row,
+            detail_link_selector=listing.detail_link,
+            attachment_selector=spec.detail.attachment or CommonNoticeAdapter().attachment_selector,
+        )
+        self.spec = spec
+
+    def parse_listing(self, html: str, page_url: str) -> Iterable[ListingItem]:
+        listing = self.spec.listing
+        soup = BeautifulSoup(html, "html.parser")
+        for row in _first_matching(soup, listing.row):
+            link = row.select_one(listing.detail_link)
+            if link is None:
+                continue
+            detail_url = _detail_url(link, listing, page_url)
+            if detail_url is None:
+                continue
+            yield ListingItem(
+                url=detail_url,
+                # 제목 선택자가 없으면 링크 텍스트를 쓴다. 링크 안에 제목이 그대로
+                # 들어 있는 게시판이 흔하다.
+                title_hint=_pick(row, listing.title) or _text_or_none(link),
+                category_hint=_drop_if_matches(_pick(row, listing.category), listing.category_ignore),
+                author_hint=_pick(row, listing.author),
+                published_at_hint=_parse_date(_pick(row, listing.date) or ""),
+            )
+
+    def next_listing_url(self, html: str, page_url: str) -> str | None:
+        pagination = self.spec.listing.pagination
+        if pagination is None:
+            return super().next_listing_url(html, page_url)
+        if pagination.type == "link":
+            link = BeautifulSoup(html, "html.parser").select_one(pagination.selector)
+            if link is None or not link.get("href"):
+                return None
+            return urljoin(page_url, str(link["href"]))
+        if pagination.type == "offset":
+            return _advance_offset(page_url, pagination.param, pagination.step, pagination.start)
+        return _form_next_url(html, page_url, pagination)
+
+
+def _detail_url(link, listing, page_url: str) -> str | None:
+    """목록 행의 링크에서 상세 URL 을 만든다.
+
+    조립 규칙이 없으면 `href` 를 그대로 쓴다. 규칙이 있으면 지정한 속성에서 번호를
+    뽑아 템플릿에 끼운다 — 상세 링크를 자바스크립트 호출로만 주는 게시판이 있어,
+    `href` 만 보면 `#1` 이나 `javascript:` 를 따라가게 된다.
+    """
+
+    if not (listing.detail_link_pattern and listing.detail_link_template):
+        href = link.get("href")
+        return urljoin(page_url, str(href)) if href else None
+
+    source = str(link.get(listing.detail_link_attr or "href") or "")
+    match = re.search(listing.detail_link_pattern, source)
+    if match is None:
+        return None
+    return urljoin(page_url, listing.detail_link_template.format(*match.groups()))
+
+
+def _first_matching(soup, selectors: list[str]) -> list:
+    """행이 하나라도 잡히는 첫 후보의 결과를 쓴다.
+
+    같은 게시판 제품이라도 목록을 표로 그리는 학교와 `ul > li` 로 그리는 학교가
+    있다. 후보를 순서대로 대보면 규격 하나로 둘 다 덮는다.
+    """
+
+    for selector in selectors:
+        rows = soup.select(selector)
+        if rows:
+            return rows
+    return []
+
+
+def _drop_if_matches(value: str | None, pattern: str | None) -> str | None:
+    """분류 자리에 분류가 아닌 값(글 번호 등)이 오면 버린다."""
+
+    if value is None or pattern is None:
+        return value
+    return None if re.fullmatch(pattern, value.strip()) else value
+
+
+def _pick(row, selectors: list[str]) -> str | None:
+    """행 안에서 후보 선택자를 훑어 **값이 나오는 첫 번째** 결과를 쓴다.
+
+    요소가 있어도 비어 있으면 다음 후보로 넘어간다. 아주대는 `.b-date` 요소가
+    모바일용이라 존재하되 비어 있고, 실제 날짜는 마지막 칸에 있다. 요소 유무만
+    보면 빈 값을 잡고 멈춘다.
+    """
+
+    for selector in selectors:
+        value = _text_or_none(row.select_one(selector))
+        if value:
+            return value
+    return None
+
+
+def _advance_offset(page_url: str, param: str, step: int, start: int = 0) -> str:
+    """목록 URL 의 페이지 파라미터를 한 페이지만큼 늘린다.
+
+    파라미터가 없으면 `start` 를 현재 값으로 본다. 페이지 번호를 쓰는 게시판은
+    1페이지가 `1` 이라, 0 에서 더하면 같은 페이지를 다시 요청하게 된다.
+    """
+
+    split = urlsplit(page_url)
+    query = dict(parse_qsl(split.query, keep_blank_values=True))
+    current = query.get(param)
+    base = int(current) if current and current.isdigit() else start
+    query[param] = str(base + step)
+    return urlunsplit((split.scheme, split.netloc, split.path, urlencode(query), split.fragment))
+
+
+def _form_next_url(html: str, page_url: str, pagination) -> str | None:
+    """폼의 hidden input 을 모아 다음 페이지 URL 을 만든다(연세대 K2Web)."""
+
+    soup = BeautifulSoup(html, "html.parser")
+    next_link = soup.select_one(pagination.next_selector)
+    page_form = soup.select_one(pagination.form_selector)
+    if next_link is None or page_form is None or not page_form.get("action"):
+        return None
+    match = re.search(pagination.page_pattern, str(next_link.get("href") or ""))
+    if match is None:
+        return None
+    params = {
+        str(tag["name"]): str(tag.get("value", ""))
+        for tag in page_form.select("input[name]")
+    }
+    params[pagination.page_param] = match.group(1)
+    return f"{urljoin(page_url, str(page_form['action']))}?{urlencode(params)}"
 
 
 HashExists = Callable[[int, str, str], bool]
@@ -300,6 +455,10 @@ class CrawlRun:
     # 게시판별 첫 목록 페이지 HTML. 수집 품질 검증이 파서를 다시 돌려 보기 위해
     # 남긴다(`app.validation`). 목록 전체를 들고 있지는 않는다.
     first_listing_html: dict[str, str] = field(default_factory=dict)
+    # 상세 URL → 게시판 라벨. 어느 게시판에서 나온 공지인지 기록한다.
+    # `category_hint` 로 되짚을 수 없다. 목록이 자체 분류를 주면 게시판 라벨 대신
+    # 그 값이 들어가, 검증이 페이지를 게시판에 붙이지 못하고 조용히 건너뛴다.
+    board_of: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -530,6 +689,7 @@ class Crawler:
             else:
                 status = "new"
             cursor.collected += 1
+            run.board_of[canonical_url] = board.label or DEFAULT_BOARD_LABEL
             page_had_items = True
             page_had_updates = page_had_updates or status != "unchanged"
 
@@ -766,9 +926,30 @@ def html_hash(html: str) -> str:
 
 
 def _parse_date(value: str) -> datetime | None:
-    match = re.search(r"\d{4}[./-]\d{1,2}[./-]\d{1,2}", value)
+    """게시판 날짜 표기를 읽는다. 두 자리 연도(`26.08.05`)도 받는다.
+
+    같은 페이지 안에서도 표기가 갈린다 — 아주대는 데스크톱 칸이 `2026-08-05`,
+    모바일 요소가 `26.08.05` 다. 두 자리를 못 읽으면 어느 선택자를 고르느냐에
+    따라 날짜가 통째로 비어 규격이 실패한다.
+    """
+
+    # 구분자 뒤 공백을 허용한다. 서울대는 `2026. 7. 31.` 처럼 띄어 쓴다.
+    match = re.search(r"(\d{4})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})", value)
     if match is not None:
-        value = match.group(0)
+        year, month, day = (int(part) for part in match.groups())
+        try:
+            return datetime(year, month, day, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    else:
+        # 두 자리 연도. 게시판 날짜에 과거 세기가 나올 일은 없으므로 2000년대로 읽는다.
+        short = re.search(r"\b(\d{2})[./-](\d{1,2})[./-](\d{1,2})\b", value)
+        if short is not None:
+            year, month, day = (int(part) for part in short.groups())
+            try:
+                return datetime(2000 + year, month, day, tzinfo=timezone.utc)
+            except ValueError:
+                return None
     for pattern in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d"):
         try:
             return datetime.strptime(value, pattern).replace(tzinfo=timezone.utc)

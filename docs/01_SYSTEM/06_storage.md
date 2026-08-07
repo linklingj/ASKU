@@ -37,6 +37,36 @@ CREATE TABLE schools (
   updated_at        TIMESTAMPTZ DEFAULT now()
 );
 
+-- 호스트별 수집 규격. 학교를 추가할 때 파이썬 어댑터를 짜는 대신 여기에 넣는다.
+-- 코드가 아니라 데이터라 재배포 없이 다음 크롤부터 적용된다.
+-- 규격 형식은 app/adapter_spec.py 의 AdapterSpec, 선택 순서는 03_crawler.md §4-1.
+CREATE TABLE adapter_specs (
+  spec_id     BIGSERIAL PRIMARY KEY,
+  host        TEXT NOT NULL UNIQUE,   -- 학교 도메인. 규격은 호스트 단위로 하나만 둔다
+  spec        JSONB NOT NULL,         -- AdapterSpec
+  source      TEXT NOT NULL DEFAULT 'human',  -- human|generated
+  created_at  TIMESTAMPTZ DEFAULT now(),
+  updated_at  TIMESTAMPTZ DEFAULT now()
+);
+
+-- 크롤 실행마다 남기는 수집 품질 지표(03_crawler.md §6-2).
+-- 학교당 한 행만 두지 않고 이력으로 쌓는다. 직전 실행과 비교해야
+-- "사이트 개편으로 수집량이 급감했다"를 판정할 수 있다.
+CREATE TABLE crawl_quality (
+  quality_id      BIGSERIAL PRIMARY KEY,
+  school_id       BIGINT NOT NULL REFERENCES schools(school_id),
+  crawl_id        TEXT NOT NULL,
+  board           TEXT NOT NULL,      -- 게시판 라벨. 단일 게시판이면 '기본'
+  listing_rows    INT NOT NULL DEFAULT 0,
+  title_ratio     DOUBLE PRECISION NOT NULL DEFAULT 0,
+  date_ratio      DOUBLE PRECISION NOT NULL DEFAULT 0,
+  checked_details INT NOT NULL DEFAULT 0,
+  findings        JSONB NOT NULL DEFAULT '[]'::jsonb,
+  recorded_at     TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX ix_crawl_quality_school_recorded
+  ON crawl_quality (school_id, recorded_at DESC);
+
 -- 첨부 문서 = 사용자가 학교에 직접 올린 파일(수강편람 PDF·학칙 HWP 등) 한 건.
 -- 파일 바이트는 보관하지 않는다. 뽑아낸 텍스트를 documents 청크로만 남긴다.
 CREATE TABLE attachments (

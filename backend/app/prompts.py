@@ -60,3 +60,50 @@ def rag_answer_instruction(no_evidence_answer: str) -> str:
         "- 날짜·금액·자격 등 조건은 근거에 있는 값을 그대로 인용하라.\n"
         f'- 근거가 부족하면 "{no_evidence_answer}" 라고 답하라.'
     )
+
+
+def spec_draft_instruction(
+    listing_url: str,
+    listing_html: str,
+    detail_samples: Iterable[tuple[str, str]],
+    schema: str,
+    feedback: Iterable[str] = (),
+) -> str:
+    """수집 규격 초안 지시문을 만든다(spec_generator).
+
+    `feedback` 은 직전 시도가 검증에서 받은 지적이다. 그냥 다시 시키면 같은 실수를
+    반복하므로, 무엇이 왜 틀렸는지 돌려준다.
+    """
+
+    samples = "\n\n".join(
+        f"[상세 페이지 {index}] {url}\n{html}" for index, (url, html) in enumerate(detail_samples, start=1)
+    )
+    retry = ""
+    if feedback := list(feedback):
+        retry = (
+            "\n[직전 시도의 문제]\n"
+            + "\n".join(f"- {item}" for item in feedback)
+            + "\n위 지적을 반드시 반영해 선택자를 고쳐라.\n"
+        )
+
+    return (
+        "너는 대학 공지 게시판의 HTML 구조를 분석해 수집 규격을 만드는 도구다.\n"
+        "아래 목록·상세 페이지를 보고 JSON 규격으로만 응답하라.\n\n"
+        f"[JSON 스키마]\n{schema}\n\n"
+        "규칙:\n"
+        "- 선택자는 CSS 선택자로 쓴다. 실제 HTML 에 존재하는 클래스·태그만 사용하라.\n"
+        "- row 는 공지 한 건에 해당하는 요소다. 메뉴·배너의 반복 요소를 고르지 마라.\n"
+        "- 고정공지와 일반공지의 클래스가 다르면 둘 다 포함하는 선택자를 골라라.\n"
+        "- title 은 목록의 제목 그 자체만 담기는 요소여야 한다. 말머리·분류·조회수가\n"
+        "  함께 들어가는 요소를 고르면 상세 페이지 제목과 대조되지 않는다.\n"
+        "- detail.body 는 게시글 본문만 담긴 요소다. 본문 아래 이전·다음 글 목록이나\n"
+        "  사이트 메뉴가 함께 들어가는 상위 요소를 고르지 마라.\n"
+        "- pagination 은 다음 세 유형 중 하나다.\n"
+        "  link: '다음' 링크의 href 를 따라간다. selector 를 채운다.\n"
+        "  offset: URL 파라미터를 일정하게 늘린다. param·step 을 채운다.\n"
+        "  form: 폼의 hidden input 을 조합해 URL 을 만든다. form_selector·next_selector 를 채운다.\n"
+        "- 판단할 근거가 없는 필드는 지어내지 말고 비워라.\n"
+        f"{retry}\n"
+        f"[목록 페이지] {listing_url}\n{listing_html}\n\n"
+        f"{samples}"
+    )

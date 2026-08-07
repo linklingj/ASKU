@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
+from app.adapter_spec import AdapterSpec, DetailSpec
 from app.llm import Extraction, Extractor as LLMExtractor
 from app.prompts import whitelist_instruction
 from app.schemas import CrawledPage, ExtractedChunk, ExtractedEntity, ExtractedRelation, ExtractionFailure
@@ -61,6 +62,29 @@ class ContentParser(Protocol):
     def parse(self, html: str) -> CleanedDocument: ...
 
 
+# 자식을 가질 수 없는 빈 요소. 여기에 자식이 있다면 마크업이 아니라 파서의 산물이다.
+_VOID_TAGS = frozenset({"input", "img", "br", "hr", "meta", "link", "source", "embed"})
+
+
+def strip_noise(soup, selectors: str) -> None:
+    """잡음 요소를 지우되, 잘못 중첩된 요소가 본문을 데려가지 않게 한다.
+
+    `<input>` 은 빈 요소라 자식이 있을 수 없다. 그런데 html.parser 는 사이트가
+    닫는 태그를 흘리면 뒤따르는 내용을 입력 요소 **안쪽**으로 넣어 버린다 —
+    고려대 상세 페이지가 그렇다. 그대로 `decompose()` 하면 게시글 본문까지
+    사라진다. 그래서 이 경우에만 껍데기를 벗겨 자식을 살린다.
+
+    `li.prev` 처럼 원래 자식을 갖는 요소는 통째로 지운다. 옆 글 제목을 살려 두면
+    이 글의 본문으로 저장된다.
+    """
+
+    for node in soup.select(selectors):
+        if node.name in _VOID_TAGS and node.find(True) is not None:
+            node.unwrap()
+        else:
+            node.decompose()
+
+
 class CommonContentParser:
     """서버 렌더링 공지의 제목·본문을 보수적으로 정제하는 기본 파서."""
 
@@ -69,12 +93,20 @@ class CommonContentParser:
         ".view-content", ".view-content-wrap", "#content", ".content",
     )
     _TITLE_SELECTORS = ("h1", ".board-view-title", ".view-title", ".title")
-    _REMOVE_SELECTORS = "script, style, noscript, nav, header, footer, aside, form, iframe"
+    # `form` 을 통째로 지우지 않는다. 페이지 전체를 폼으로 감싸는 게시판이 있어
+    # (국민대) 본문까지 함께 사라진다. 검색창·버튼 같은 입력 요소만 걷어낸다.
+    # 이전글·다음글은 클래스로도 걷어낸다. 텍스트로만 거르면(`_is_ui_block`)
+    # '이전글' 같은 라벨 없이 옆 글 제목만 넣는 게시판을 놓친다 — 국민대가 그렇다.
+    # 본문이 비어 상위 컨테이너로 폴백하면 옆 공지가 이 글의 내용으로 저장된다.
+    _REMOVE_SELECTORS = (
+        "script, style, noscript, nav, header, footer, aside, iframe, "
+        "input, select, textarea, button, label, "
+        "li.prev, li.next, .prev-next"
+    )
 
     def parse(self, html: str) -> CleanedDocument:
         soup = BeautifulSoup(html, "html.parser")
-        for node in soup.select(self._REMOVE_SELECTORS):
-            node.decompose()
+        strip_noise(soup, self._REMOVE_SELECTORS)
 
         title = _first_text(soup, self._TITLE_SELECTORS)
         selected_body = _first_node(soup, self._BODY_SELECTORS)
@@ -99,14 +131,38 @@ class K2WebContentParser:
 
     def parse(self, html: str) -> CleanedDocument:
         soup = BeautifulSoup(html, "html.parser")
-        for node in soup.select(CommonContentParser._REMOVE_SELECTORS):
-            node.decompose()
+        strip_noise(soup, CommonContentParser._REMOVE_SELECTORS)
 
         title = _first_text(soup, self._TITLE_SELECTORS)
         body = _first_node(soup, self._CONTENT_SELECTORS)
         if body is None:
             raise ValueError("k2web content selector not found")
         return CleanedDocument(title=title, content=_body_text(body))
+
+
+class SpecContentParser:
+    """규격(`AdapterSpec.detail`)을 읽어 본문을 선택하는 파서.
+
+    학교마다 클래스를 만드는 대신 선택자를 데이터로 받는다. 선택자를 못 찾으면
+    예외를 던져 `DocumentExtractor` 가 공통 파서로 폴백하게 한다 — 규격이 어긋난
+    채 페이지 전체를 본문으로 저장하는 것보다 낫다.
+    """
+
+    def __init__(self, detail: "DetailSpec") -> None:
+        self.detail = detail
+
+    def parse(self, html: str) -> CleanedDocument:
+        soup = BeautifulSoup(html, "html.parser")
+        # 제목은 잡음을 걷어내기 전에 뽑는다. 글 제목을 `<header>` 안에 두는
+        # 게시판이 있어(서울대 `.board-view header h3.title`), 먼저 지우면 제목을
+        # 잃고 목록과 대조할 수 없게 된다.
+        title = _first_text(soup, tuple(self.detail.title) or CommonContentParser._TITLE_SELECTORS)
+
+        strip_noise(soup, CommonContentParser._REMOVE_SELECTORS)
+        content = _first_body_text(soup, tuple(self.detail.body))
+        if content is None:
+            raise ValueError("spec body selector not found")
+        return CleanedDocument(title=title, content=content)
 
 
 # 호스트별 본문 파서. 미등록 호스트는 `CommonContentParser` 로 폴백한다.
@@ -117,11 +173,40 @@ CONTENT_PARSER_REGISTRY: dict[str, type[ContentParser]] = {
 }
 
 
-def content_parser_for(url: str) -> ContentParser:
-    """`url` 호스트에 맞는 본문 파서를 만든다."""
+def content_parser_for(url: str, spec: "AdapterSpec | None" = None) -> ContentParser:
+    """`url` 에 맞는 본문 파서를 만든다.
+
+    크롤러의 `adapter_for` 와 같은 순서로 고른다 — ``전용 클래스 → 규격 → 공용``.
+    `spec` 은 호출자가 저장소에서 꺼내 넘긴다.
+    """
 
     host = (urlsplit(url).hostname or "").lower()
-    return CONTENT_PARSER_REGISTRY.get(host, CommonContentParser)()
+    if host in CONTENT_PARSER_REGISTRY:
+        return CONTENT_PARSER_REGISTRY[host]()
+    if spec is not None and spec.detail.body:
+        return SpecContentParser(spec.detail)
+    return CommonContentParser()
+
+
+def _first_body_text(soup: BeautifulSoup, selectors: tuple[str, ...]) -> str | None:
+    """본문 후보를 훑어 **내용이 있는 첫 결과**를 쓴다. 하나도 없으면 None.
+
+    요소가 있어도 비어 있으면 다음 후보로 넘어간다. 같은 게시판 안에서도 글에 따라
+    본문 컨테이너가 갈리는 경우가 있다 — 국민대는 대개 `.view_cont` 에 본문이 있지만
+    비어 있는 글이 있고, 그때는 상위 `.board_view` 에 내용이 담긴다. 요소 유무만
+    보면 빈 값을 잡고 멈춘다.
+    """
+
+    found = False
+    for selector in selectors:
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        found = True
+        text = _body_text(node)
+        if text.strip():
+            return text
+    return "" if found else None
 
 
 def _first_node(soup: BeautifulSoup, selectors: tuple[str, ...]):
@@ -220,6 +305,7 @@ class DocumentExtractor:
         llm_extractor: LLMExtractor,
         *,
         parsers: dict[int, ContentParser] | None = None,
+        spec: AdapterSpec | None = None,
         max_retries: int = 2,
         chunk_chars: int = DEFAULT_CHUNK_CHARS,
         overlap_chars: int = DEFAULT_OVERLAP_CHARS,
@@ -231,6 +317,9 @@ class DocumentExtractor:
             raise ValueError("chunk_chars/overlap_chars 범위가 올바르지 않다")
         self.llm_extractor = llm_extractor
         self.parsers = parsers or {}
+        # 이 학교의 수집 규격. 호출자가 저장소에서 꺼내 넘긴다(Extractor 는 Storage 를
+        # 직접 알지 않는다). 전용 파서가 없는 호스트에서만 쓰인다.
+        self.spec = spec
         self.max_retries = max_retries
         self.chunk_chars = chunk_chars
         self.overlap_chars = overlap_chars
@@ -307,7 +396,7 @@ class DocumentExtractor:
     def _parse_page(self, page: CrawledPage) -> CleanedDocument:
         # 명시 주입(school_id) 이 있으면 그것을, 없으면 호스트로 고른다. 호스트 기준이
         # 기본값이라 새 학교를 추가할 때 레지스트리 한 곳만 등록하면 된다.
-        parser = self.parsers.get(page.school_id) or content_parser_for(page.canonical_url)
+        parser = self.parsers.get(page.school_id) or content_parser_for(page.canonical_url, self.spec)
         try:
             return parser.parse(page.raw_html)
         except Exception as error:  # 전용 파서 실패 시 공통 파서로 안전하게 폴백

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -112,7 +113,113 @@ def _error_response(status_code: int, code: str, message: str, details: dict | N
     return JSONResponse(status_code=status_code, content=body.model_dump())
 
 
-def _record_crawl_quality(storage, school_id: int, crawl_id: str, run, adapter, boards) -> None:
+def _ensure_adapter_spec(storage, crawler, request, base_url: str):
+    """규격이 없으면 확보한다. 알려진 게시판 제품이면 LLM 없이 끝난다.
+
+    LLM 생성은 기본으로 켜지 않는다(`SPEC_AUTOGEN`). 잘못된 선택자가 곧바로 크롤에
+    쓰이면 남의 서버를 잘못 긁고, 호출당 수만 토큰이 든다. 템플릿 대조는 공짜라
+    항상 시도한다.
+    """
+
+    try:
+        return _provision_adapter_spec(storage, crawler, request, base_url)
+    except Exception:
+        # 규격 확보는 보조 작업이다. 여기서 터지면 수집 자체가 중단돼, 공용 파서로도
+        # 모을 수 있었을 공지를 통째로 잃는다.
+        logger.exception("규격 확보 실패: %s", base_url)
+        return None
+
+
+def _provision_adapter_spec(storage, crawler, request, base_url: str):
+    from app.crawler import ADAPTER_REGISTRY
+    from app.spec_generator import collect_samples, discover_boards, generate_spec, match_template
+    from app.spec_templates import host_spec
+
+    host = (urlsplit(base_url).hostname or "").lower()
+    if host in ADAPTER_REGISTRY:
+        return None  # 검증된 전용 어댑터가 있으면 규격이 필요 없다
+
+    existing = _adapter_spec(storage, base_url)
+    if existing is not None:
+        return existing
+
+    seeded = host_spec(host)
+    samples = collect_samples(crawler, request, base_url)
+    if samples is None:
+        logger.warning("규격 판정용 표본을 얻지 못했습니다: %s", base_url)
+        # 표본이 없어도 손으로 쓴 규격은 살린다. 하위 게시판만 못 찾을 뿐,
+        # 공용 폴백으로 떨어지는 것보다 낫다.
+        if seeded is not None:
+            _save_spec(storage, host, seeded, origin="host")
+        return seeded
+    listing, details = samples
+
+    if seeded is not None:
+        # 손으로 쓴 규격이 템플릿 대조보다 먼저다. 이 학교를 보고 쓴 것이라
+        # 느슨한 제품 템플릿이 우연히 통과하는 것보다 정확하다.
+        seeded = discover_boards(seeded, listing, crawler, request)
+        _save_spec(storage, host, seeded, origin="host")
+        logger.info("호스트 규격 적용: host=%s 게시판=%d", host, len(seeded.boards) or 1)
+        return seeded
+
+    matched = match_template(host, listing, details)
+    if matched is not None:
+        name, spec, report = matched
+        # 템플릿 경로는 LLM 을 부르지 않으므로, 여기서 찾지 않으면 하위 게시판을
+        # 발견할 기회가 아예 없다.
+        spec = discover_boards(spec, listing, crawler, request)
+        _save_spec(storage, host, spec, origin=f"template:{name}")
+        logger.info("규격 템플릿 적용: host=%s template=%s %s", host, name, report.summary())
+        return spec
+
+    if os.getenv("SPEC_AUTOGEN", "").lower() not in ("1", "true", "yes"):
+        logger.info("알려진 템플릿과 맞지 않습니다. 자동 생성은 꺼져 있습니다: host=%s", host)
+        return None
+
+    try:
+        from app.llm import GeminiProvider
+
+        result = generate_spec(GeminiProvider(), host, listing, details)
+    except Exception:
+        logger.exception("규격 자동 생성 실패: host=%s", host)
+        return None
+
+    if not result.accepted:
+        logger.warning("규격 자동 생성이 검증을 통과하지 못했습니다: host=%s %s", host, result.summary())
+        return None
+    result.spec = discover_boards(result.spec, listing, crawler, request)
+    _save_spec(storage, host, result.spec, origin="generated")
+    logger.info("규격 자동 생성: host=%s %s", host, result.summary())
+    return result.spec
+
+
+def _save_spec(storage, host: str, spec, *, origin: str) -> None:
+    """확보한 규격을 저장한다. 저장 실패가 크롤을 막지는 않는다."""
+
+    try:
+        storage.upsert_adapter_spec(host, spec.model_dump(mode="json"), source=spec.source)
+    except Exception:
+        logger.exception("규격 저장 실패: host=%s origin=%s", host, origin)
+
+
+def _adapter_spec(storage, base_url: str):
+    """호스트에 등록된 수집 규격을 읽는다. 없거나 형식이 어긋나면 None.
+
+    규격은 부가 정보다. 읽지 못해도 전용 어댑터·공용 파서로 수집은 계속된다.
+    """
+
+    from app.adapter_spec import AdapterSpec
+
+    host = (urlsplit(base_url).hostname or "").lower()
+    try:
+        raw = storage.get_adapter_spec(host)
+        return AdapterSpec.model_validate(raw) if raw else None
+    except Exception:
+        logger.exception("수집 규격을 읽지 못했습니다: host=%s", host)
+        return None
+
+
+def _record_crawl_quality(storage, school_id: int, crawl_id: str, run, adapter, boards, spec=None) -> None:
     """크롤 직후 수집 품질을 판정해 이력으로 남긴다.
 
     파서가 사이트 구조와 어긋나도 크롤은 0건 성공으로 끝나므로, 지표를 남기지
@@ -129,13 +236,69 @@ def _record_crawl_quality(storage, school_id: int, crawl_id: str, run, adapter, 
             previous_rows=lambda board: storage.get_previous_listing_rows(
                 school_id, board, before_crawl_id=crawl_id
             ),
+            # 운영과 같은 본문 파서로 검사해야 한다. 규격을 빼면 규격 기반 학교에서
+            # 공용 파서로 검사하게 되어 본문이 비어도 통과로 판정한다.
+            spec=spec,
         )
         storage.record_crawl_quality(school_id, crawl_id, reports)
         for report in reports:
             if not report.passed:
                 logger.warning("수집 품질 경고: school_id=%d %s", school_id, report.summary())
+        return reports
     except Exception:
         logger.exception("수집 품질 기록 실패: school_id=%d", school_id)
+        return []
+
+
+def _refresh_broken_spec(storage, crawler, request, base_url: str, spec, reports) -> None:
+    """규격이 깨진 것으로 보이면 다시 만든다.
+
+    학교가 홈페이지를 개편하면 선택자가 어긋나 수집이 0건이 된다. 크롤은 정상
+    종료하므로 지표를 보지 않으면 아무도 알아채지 못하고, 학교가 늘수록 사람이
+    매번 손보기 어렵다.
+
+    사람이 쓴 규격(`source="human"`)은 덮어쓰지 않는다. 손으로 고친 결정을 자동
+    생성이 밀어내면 왜 바뀌었는지 알 수 없게 된다. 경고만 남기고 사람이 판단한다.
+    """
+
+    from app.spec_generator import BLOCKING_CODES, collect_samples, generate_spec, match_template
+
+    broken = [r for r in reports if any(f.code in BLOCKING_CODES for f in r.findings)]
+    if not broken or spec is None:
+        return
+    host = (urlsplit(base_url).hostname or "").lower()
+    if spec.source == "human":
+        logger.warning("사람이 쓴 규격이 어긋났습니다. 자동 교체하지 않습니다: host=%s", host)
+        return
+
+    samples = collect_samples(crawler, request, base_url)
+    if samples is None:
+        logger.warning("규격 재생성용 표본을 얻지 못했습니다: host=%s", host)
+        return
+    listing, details = samples
+
+    matched = match_template(host, listing, details)
+    if matched is not None:
+        name, fresh, report = matched
+        _save_spec(storage, host, fresh, origin=f"template:{name}")
+        logger.info("규격 재생성(템플릿 %s): host=%s %s", name, host, report.summary())
+        return
+
+    if os.getenv("SPEC_AUTOGEN", "").lower() not in ("1", "true", "yes"):
+        logger.warning("규격이 어긋났으나 자동 생성이 꺼져 있습니다: host=%s", host)
+        return
+    try:
+        from app.llm import GeminiProvider
+
+        result = generate_spec(GeminiProvider(), host, listing, details)
+    except Exception:
+        logger.exception("규격 재생성 실패: host=%s", host)
+        return
+    if not result.accepted:
+        logger.warning("규격 재생성이 검증을 통과하지 못했습니다: host=%s %s", host, result.summary())
+        return
+    _save_spec(storage, host, result.spec, origin="regenerated")
+    logger.info("규격 재생성: host=%s %s", host, result.summary())
 
 
 def _crawl_quality(storage, school_id: int) -> CrawlQuality:
@@ -214,11 +377,22 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
             scope=CrawlScope(allowed_hosts=[urlsplit(base_url).hostname or ""]),
         )
         crawler = Crawler.from_storage(storage)
-        adapter = adapter_for(base_url)
+        # 규격은 크롤 시작 때 한 번만 확보해 파이프라인 전체에 넘긴다. Crawler·Extractor 가
+        # Storage 를 직접 알지 않게 하고, 페이지마다 조회하는 일도 없게 한다.
+        # 처음 보는 학교면 여기서 규격을 만든다(알려진 게시판 제품이면 LLM 없이).
+        _PROGRESS_MAP[school_id]["message"] = "게시판 구조 확인 중..."
+        spec = _ensure_adapter_spec(storage, crawler, crawl_request, base_url)
+        _PROGRESS_MAP[school_id]["message"] = "공지 페이지 수집 중..."
+        adapter = adapter_for(base_url, spec)
         # 세종대처럼 공지가 여러 탭으로 쪼개진 학교는 등록된 게시판을 모두 돈다.
-        boards = boards_for(base_url)
+        boards = boards_for(base_url, spec)
         run = crawler.crawl_boards(crawl_request, boards, adapter)
-        _record_crawl_quality(storage, school_id, str(crawl_request.crawl_id), run, adapter, boards)
+        reports = _record_crawl_quality(storage, school_id, str(crawl_request.crawl_id), run, adapter, boards, spec)
+        # 사이트 개편으로 규격이 깨졌으면 다음 크롤을 위해 지금 다시 만든다.
+        try:
+            _refresh_broken_spec(storage, crawler, crawl_request, base_url, spec, reports)
+        except Exception:
+            logger.exception("규격 재생성 처리 실패: school_id=%d", school_id)
         pages = crawler.pages_for_extractor(run)
 
         # 전체 방문/수집된 페이지 수
@@ -260,7 +434,7 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
 
         embedder = LocalEmbedder()
         provider = GeminiProvider()
-        extractor = DocumentExtractor(llm_extractor=provider)
+        extractor = DocumentExtractor(llm_extractor=provider, spec=spec)
         builder = GraphBuilder(storage=storage, embedder=embedder)
 
         has_failures = len(run.failures) > 0

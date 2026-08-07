@@ -2,7 +2,9 @@ from datetime import datetime, timezone
 from uuid import uuid4
 import unittest
 
-from app.extractor import DocumentExtractor, K2WebContentParser
+from bs4 import BeautifulSoup
+
+from app.extractor import CommonContentParser, DocumentExtractor, K2WebContentParser, strip_noise
 from app.llm import Extraction, Extractor as LLMExtractor
 from app.schemas import Attachment, CrawledPage, ExtractedEntity, ExtractedRelation, ExtractionFailure
 
@@ -241,6 +243,50 @@ class ExtractorTests(unittest.TestCase):
 
         self.assertIsInstance(out, ExtractionFailure)
         self.assertEqual(out.error_code, "EMPTY_CONTENT")
+
+
+class StripNoiseTests(unittest.TestCase):
+    def test_keeps_content_html_parser_nested_inside_an_input(self) -> None:
+        """고려대 상세 페이지는 본문이 `<input>` 안쪽으로 파싱된다.
+
+        입력 요소를 통째로 지우면 게시글까지 사라진다.
+        """
+
+        soup = BeautifulSoup(
+            "<form><input type='hidden' name='page'><div class='txt'>공지 본문입니다.</div></form>",
+            "html.parser",
+        )
+
+        strip_noise(soup, CommonContentParser._REMOVE_SELECTORS)
+
+        self.assertEqual(soup.select_one("div.txt").get_text(strip=True), "공지 본문입니다.")
+        self.assertIsNone(soup.select_one("input"))
+
+    def test_neighbour_navigation_is_removed_even_without_a_label(self) -> None:
+        """국민대는 '이전글' 같은 라벨 없이 옆 글 제목만 넣는다.
+
+        본문이 비어 상위 컨테이너로 폴백하면 옆 공지가 이 글의 내용이 된다.
+        """
+
+        soup = BeautifulSoup(
+            "<div class='board_view'><div class='view_cont'></div>"
+            "<div class='view_bottom'><ul>"
+            "<li class='prev'><a>이전 공지 제목</a></li>"
+            "<li class='next'><a>다음 공지 제목</a></li>"
+            "</ul></div></div>",
+            "html.parser",
+        )
+
+        strip_noise(soup, CommonContentParser._REMOVE_SELECTORS)
+
+        self.assertEqual(soup.get_text(strip=True), "")
+
+    def test_plain_control_is_removed_with_its_label_text(self) -> None:
+        soup = BeautifulSoup("<div><label>검색어</label><input><p>본문</p></div>", "html.parser")
+
+        strip_noise(soup, CommonContentParser._REMOVE_SELECTORS)
+
+        self.assertEqual(soup.get_text(strip=True), "본문")
 
 
 if __name__ == "__main__":

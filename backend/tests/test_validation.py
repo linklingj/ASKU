@@ -160,6 +160,30 @@ class DetailValidationTests(unittest.TestCase):
 
         self.assertNotIn("TITLE_MISMATCH", [f.code for f in report.findings])
 
+    def test_listing_title_with_extra_badge_still_matches(self) -> None:
+        """목록에는 상세에 없는 말머리가 붙는다(아주대 `[공지] [생활관] …`).
+
+        말머리가 제목 셀 안에 있어 선택자로 떼어낼 수 없다. 이를 불일치로 보면
+        고칠 수 없는 문제를 규격 탓으로 돌리게 된다.
+        """
+
+        report = validate_detail(
+            self.document("본문을 충분히 채운 공지 문단입니다. " * 3, title="[생활관] 2026학년도 2학기 잔여석 신청 안내"),
+            item("[공지] [생활관] 2026학년도 2학기 잔여석 신청 안내"),
+        )
+
+        self.assertNotIn("TITLE_MISMATCH", [f.code for f in report.findings])
+
+    def test_short_detail_title_does_not_pass_by_accident(self) -> None:
+        """짧은 제목은 우연히 포함될 수 있어 일치 근거로 쓰지 않는다."""
+
+        report = validate_detail(
+            self.document("전혀 다른 공지의 본문입니다. " * 4, title="공지"),
+            item("공지사항 안내문 제목입니다"),
+        )
+
+        self.assertIn("TITLE_MISMATCH", [f.code for f in report.findings])
+
     def test_body_fallback_is_reported(self) -> None:
         report = validate_detail(
             self.document("장학금 신청 안내 " + "본문 " * 30, fallback=True),
@@ -176,6 +200,7 @@ class CrawlValidationTests(unittest.TestCase):
         run = CrawlRun()
         run.first_listing_html[label or DEFAULT_BOARD_LABEL] = listing_html(rows)
         for index in range(1, rows + 1):
+            run.board_of[f"https://example.edu/notice/view.do?id={index}"] = label or DEFAULT_BOARD_LABEL
             run.pages.append(
                 CrawledPage(
                     crawl_id=uuid4(),
@@ -228,6 +253,24 @@ class CrawlValidationTests(unittest.TestCase):
 
         self.assertIn("LISTING_ROWS_DROPPED", [f.code for f in reports[0].findings])
 
+    def test_details_are_checked_when_listing_supplies_its_own_category(self) -> None:
+        """목록이 자체 분류를 주면 `category_hint` 가 게시판 라벨과 달라진다.
+
+        분류로 페이지를 게시판에 되짚으면(아주대 `기타`·`학사`) 어느 게시판에도
+        붙지 않아 상세 검증이 통째로 건너뛰어지고, 본문이 빈 공지를 놓친다.
+        """
+
+        run = self.run_fixture(rows=2, label="일반공지")
+        for page in run.pages:
+            page.category_hint = "학사"  # 목록이 준 분류. 게시판 라벨과 다르다
+            page.raw_html = "<main><p>짧음</p></main>"  # 본문 미달 → EMPTY_CONTENT 대상
+        boards = (Board(LISTING_URL, "일반공지"),)
+
+        reports = validate_crawl(run, CommonNoticeAdapter(), boards)
+
+        self.assertGreater(reports[0].checked_details, 0, "상세 검증이 건너뛰어졌다")
+        self.assertIn("EMPTY_CONTENT", [f.code for f in reports[0].findings])
+
     def test_first_crawl_has_no_previous_rows_to_compare(self) -> None:
         boards = (Board(LISTING_URL, "일반공지"),)
 
@@ -243,3 +286,38 @@ class CrawlValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TitleNoiseTests(unittest.TestCase):
+    """제목 칸에 함께 들어가는 장식은 선택자로 뗄 수 없다."""
+
+    def doc(self, title: str):
+        return CleanedDocument(title=title, content="본문을 충분히 채운 공지 문단입니다. " * 3)
+
+    def test_new_badge_in_listing_title(self) -> None:
+        """연세대 목록은 제목 뒤에 '새글' 을 붙인다."""
+
+        report = validate_detail(
+            self.doc("2026년 8월 학위수여식 안내"),
+            item("2026년 8월 학위수여식 안내 새글"),
+        )
+
+        self.assertNotIn("TITLE_MISMATCH", [f.code for f in report.findings])
+
+    def test_metadata_appended_to_detail_title(self) -> None:
+        """연세대 상세 제목 요소에는 분류·작성자·조회수가 함께 들어간다."""
+
+        report = validate_detail(
+            self.doc("2026년 8월 학위수여식 안내 분류 [학사] 작성자 교무처 교무팀 조회수 160"),
+            item("2026년 8월 학위수여식 안내 새글"),
+        )
+
+        self.assertNotIn("TITLE_MISMATCH", [f.code for f in report.findings])
+
+    def test_genuinely_different_titles_are_still_reported(self) -> None:
+        report = validate_detail(
+            self.doc("장학금 신청 안내 분류 [장학] 조회수 12"),
+            item("졸업 사정 결과 발표 새글"),
+        )
+
+        self.assertIn("TITLE_MISMATCH", [f.code for f in report.findings])
