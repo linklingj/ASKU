@@ -5,7 +5,7 @@ name: Deploy frontend to GitHub Pages
 
 on:
   push:
-    branches: [release/v01]   # 배포 브랜치
+    branches: [main]   # 배포 브랜치
     paths:
       - "frontend/src/**"
       - ".github/workflows/pages.yml"
