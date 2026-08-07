@@ -73,13 +73,19 @@ docker compose up -d --build
 docker compose ps                       # 두 서비스 up + db healthy 확인
 curl -s http://localhost:8000/schools   # 200 + 빈 목록이면 정상
 
-# 학교 등록 → 크롤 시작 (백그라운드)
+# 검증 완료 11개 학교 일괄 등록 (멱등 — 여러 번 실행해도 중복 없음)
+docker compose exec api python -m app.seed_schools --dry-run   # 등록 대상만 확인, DB 변경 없음
+docker compose exec api python -m app.seed_schools             # schools 테이블에 등록
+
+# (선택) 학교 하나만 임시 등록
 curl -sX POST http://localhost:8000/schools \
   -H 'Content-Type: application/json' \
   -d '{"name":"테스트대","base_url":"https://example.ac.kr","crawl_schedule":"weekly"}'
 
 curl -s http://localhost:8000/schools/1/status   # crawling → indexing → ready 추적
 ```
+
+> **seed 는 등록만 한다.** `app.seed_schools` 는 `schools` 테이블에 행만 넣고 크롤링·Gemini·Extractor 를 실행하지 않는다(`crawl_schedule` 기본값에 따라 스케줄러가 수집을 돌린다). 등록 대상은 `school-support-status.md` 표본 검증을 통과한 11곳이며, 한양대·중앙대(렌더링 필요)·서강대(URL 미확인)는 제외돼 있다. `SPEC_AUTOGEN` 을 켜지 않아도 이 11곳은 전용 Adapter·템플릿·학교별 규격으로 수집된다.
 
 > **첫 질의는 느리다.** 최초 `/query` 때 bge-m3(~2.3GB)를 내려받아 로드한다. 이후엔 `models` 볼륨 캐시로 빠르다. 시연 전 미리 한 번 질의해 워밍업해 둘 것.
 
