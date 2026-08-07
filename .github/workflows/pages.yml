@@ -29,6 +29,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true   # Pages 미활성 시 워크플로가 직접 켠다(Settings 수동 조작 불필요)
       - uses: actions/upload-pages-artifact@v3
         with:
           path: frontend/src
