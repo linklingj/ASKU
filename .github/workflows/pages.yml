@@ -1,0 +1,36 @@
+name: Deploy frontend to GitHub Pages
+
+# frontend/src(정적 HTML/CSS/JS)를 GitHub Pages 로 배포한다.
+# API 주소는 frontend/src/api.js 에 박혀 있으므로 빌드 단계가 없다 — 폴더를 그대로 올린다.
+
+on:
+  push:
+    branches: [release/v01]   # 배포 브랜치
+    paths:
+      - "frontend/src/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:    # Actions 탭에서 수동 실행도 가능
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/src
+      - id: deployment
+        uses: actions/deploy-pages@v4
