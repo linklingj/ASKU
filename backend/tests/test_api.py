@@ -338,6 +338,38 @@ class TestRecrawl:
         assert resp.status_code == 404
 
 
+# ── POST /schools/{id}/reset-status ────────────────────────────────────
+
+
+class TestResetStatus:
+    def test_200_resets_stuck_crawling(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="crawling")
+        resp = client.post("/schools/1/reset-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "failed"
+        mock_storage.update_school_status.assert_called_once_with(1, "failed")
+
+    def test_200_resets_stuck_indexing(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="indexing")
+        resp = client.post("/schools/1/reset-status")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "failed"
+
+    def test_409_when_not_stuck(self, client, mock_storage):
+        # ready 상태는 리셋 대상이 아니다 — 정상 종료된 상태를 실수로 되돌리지 않는다.
+        mock_storage.get_school.return_value = _make_school(status="ready")
+        resp = client.post("/schools/1/reset-status")
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "NOT_STUCK"
+        mock_storage.update_school_status.assert_not_called()
+
+    def test_404_not_found(self, client, mock_storage):
+        mock_storage.get_school.return_value = None
+        resp = client.post("/schools/999/reset-status")
+        assert resp.status_code == 404
+
+
 # ── GET /schools/{id}/status ───────────────────────────────────────────
 
 
