@@ -77,12 +77,12 @@ def _get_rag_engine():
     """HybridRAG 엔진 싱글턴을 반환한다(그래프 RAG → 문서 RAG fallback). 최초 호출 시 초기화."""
     global _rag_engine
     if _rag_engine is None:
-        from app.llm import GeminiProvider, LocalEmbedder
+        from app.llm import make_llm_provider, LocalEmbedder
         from app.rag import DocumentRAG, GraphRAG, HybridRAG
 
         storage = _get_storage()
         embedder = LocalEmbedder()
-        provider = GeminiProvider()
+        provider = make_llm_provider()
         graph_rag = GraphRAG(
             storage=storage,
             embedder=embedder,
@@ -177,9 +177,9 @@ def _provision_adapter_spec(storage, crawler, request, base_url: str):
         return None
 
     try:
-        from app.llm import GeminiProvider
+        from app.llm import make_llm_provider
 
-        result = generate_spec(GeminiProvider(), host, listing, details)
+        result = generate_spec(make_llm_provider(), host, listing, details)
     except Exception:
         logger.exception("규격 자동 생성 실패: host=%s", host)
         return None
@@ -288,9 +288,9 @@ def _refresh_broken_spec(storage, crawler, request, base_url: str, spec, reports
         logger.warning("규격이 어긋났으나 자동 생성이 꺼져 있습니다: host=%s", host)
         return
     try:
-        from app.llm import GeminiProvider
+        from app.llm import make_llm_provider
 
-        result = generate_spec(GeminiProvider(), host, listing, details)
+        result = generate_spec(make_llm_provider(), host, listing, details)
     except Exception:
         logger.exception("규격 재생성 실패: host=%s", host)
         return
@@ -430,10 +430,10 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         _PROGRESS_MAP[school_id]["progress"] = 0.4
         _PROGRESS_MAP[school_id]["message"] = "본문 파싱 및 엔티티 추출 중..."
 
-        from app.llm import GeminiProvider, LocalEmbedder
+        from app.llm import make_llm_provider, LocalEmbedder
 
         embedder = LocalEmbedder()
-        provider = GeminiProvider()
+        provider = make_llm_provider()
         extractor = DocumentExtractor(llm_extractor=provider, spec=spec)
         builder = GraphBuilder(storage=storage, embedder=embedder)
 

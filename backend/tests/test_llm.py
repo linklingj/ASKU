@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from pydantic import ValidationError
 
-from app.llm import GeminiProvider
+from app.llm import GeminiProvider, OpenAIProvider
 
 
 def provider(response) -> GeminiProvider:
@@ -45,6 +45,40 @@ class GeminiExtractTests(unittest.TestCase):
         payload = '{"entities": [{"type": "공지", "name": "장학금 안내"}], "relations": []}'
 
         result = provider(MagicMock(text=payload)).extract("본문")
+
+        self.assertEqual(result.entities[0].name, "장학금 안내")
+
+
+def openai_provider(content, finish_reason: str = "stop") -> OpenAIProvider:
+    """SDK 를 가짜로 바꾼 OpenAI 제공자. 실제 API 를 부르지 않는다."""
+
+    with patch("openai.OpenAI"):
+        instance = OpenAIProvider(api_key="테스트키", model="테스트모델")
+    instance._client = MagicMock()
+    resp = MagicMock(choices=[MagicMock(finish_reason=finish_reason)])
+    resp.choices[0].message.content = content
+    instance._client.chat.completions.create.return_value = resp
+    return instance
+
+
+class OpenAIExtractTests(unittest.TestCase):
+    """GeminiProvider 와 같은 실패 분류를 OpenAIProvider 도 지켜야 한다."""
+
+    def test_empty_response_is_retryable_not_a_schema_error(self) -> None:
+        with self.assertRaises(Exception) as caught:
+            openai_provider("", finish_reason="length").extract("본문")
+
+        self.assertNotIsInstance(caught.exception, ValidationError)
+        self.assertIn("length", str(caught.exception))
+
+    def test_malformed_json_stays_a_schema_error(self) -> None:
+        with self.assertRaises(ValidationError):
+            openai_provider("{'entities': ").extract("본문")
+
+    def test_valid_response_is_parsed(self) -> None:
+        payload = '{"entities": [{"type": "공지", "name": "장학금 안내"}], "relations": []}'
+
+        result = openai_provider(payload).extract("본문")
 
         self.assertEqual(result.entities[0].name, "장학금 안내")
 
