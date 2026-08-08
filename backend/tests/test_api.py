@@ -255,6 +255,12 @@ class TestAdminSchoolManagement:
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "INVALID_ADMIN_CREDENTIALS"
 
+    def test_login_accepts_unicode_password(self, client):
+        with patch.dict("os.environ", {"ADMIN_PASSWORD": "관리자비밀번호", "ADMIN_TOKEN_SECRET": "test-secret"}):
+            response = client.post("/admin/login", json={"password": "관리자비밀번호"})
+        assert response.status_code == 200
+        assert response.json()["token"]
+
     def test_update_requires_admin_token(self, client):
         with patch.dict("os.environ", {"ADMIN_PASSWORD": "test-password", "ADMIN_TOKEN_SECRET": "test-secret"}):
             response = client.patch("/schools/1", json={"image_url": "https://example.com/logo.png"})
@@ -268,6 +274,13 @@ class TestAdminSchoolManagement:
         assert response.status_code == 200
         assert response.json()["image_url"] == "https://example.com/logo.png"
         mock_storage.update_school.assert_called_once_with(1, image_url="https://example.com/logo.png")
+
+    def test_admin_can_clear_image_url(self, client, mock_storage, admin_headers):
+        mock_storage.update_school.return_value = _make_school(image_url=None)
+        response = client.patch("/schools/1", json={"image_url": None}, headers=admin_headers)
+        assert response.status_code == 200
+        assert response.json()["image_url"] is None
+        mock_storage.update_school.assert_called_once_with(1, image_url=None)
 
     def test_admin_can_delete_school(self, client, mock_storage, admin_headers):
         mock_storage.delete_school.return_value = True

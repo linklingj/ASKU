@@ -635,7 +635,8 @@ def admin_login(body: AdminLoginRequest):
     if config is None:
         return _error_response(503, "ADMIN_NOT_CONFIGURED", "관리자 인증이 구성되지 않았습니다.")
     password, secret = config
-    if not hmac.compare_digest(body.password, password):
+    # str 비교는 비ASCII 문자열에서 TypeError 를 내므로, UTF-8 바이트로 비교한다.
+    if not hmac.compare_digest(body.password.encode("utf-8"), password.encode("utf-8")):
         return _error_response(401, "INVALID_ADMIN_CREDENTIALS", "관리자 비밀번호가 올바르지 않습니다.")
     token, expires_at = _issue_admin_token(secret)
     return AdminLoginResponse(token=token, expires_at=expires_at)

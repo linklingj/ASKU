@@ -234,7 +234,9 @@ class SchoolUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _not_empty(self):
-        if all(value is None for value in (self.name, self.base_url, self.image_url, self.crawl_schedule)):
+        # ``image_url: null`` 은 대표 이미지를 제거하라는 유효한 수정이다.
+        # 값 자체가 아닌, 요청에 수정 필드가 포함됐는지를 검사해야 한다.
+        if not self.model_fields_set:
             raise ValueError("수정할 필드가 필요합니다.")
         return self
 
