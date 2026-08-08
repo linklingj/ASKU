@@ -94,7 +94,7 @@ class EnsureAdapterSpecTests(unittest.TestCase):
             "https://www.korea.ac.kr/portalBoard/ko/1/61085/portalBoardView.do": "<div class='txt'>본문</div>",
         })
 
-        with patch("app.llm.GeminiProvider") as provider:
+        with patch("app.llm.make_llm_provider") as provider:
             spec = _ensure_adapter_spec(self.storage, crawler, self.request, url)
 
         provider.assert_not_called()
@@ -118,7 +118,7 @@ class EnsureAdapterSpecTests(unittest.TestCase):
             "https://k2.ac.kr/notice.do?mode=view&articleNo=2": K2WEB_DETAIL,
         })
 
-        with patch("app.llm.GeminiProvider") as provider:
+        with patch("app.llm.make_llm_provider") as provider:
             spec = _ensure_adapter_spec(self.storage, crawler, self.request, "https://k2.ac.kr/notice.do")
 
         self.assertIsNotNone(spec)
@@ -130,7 +130,7 @@ class EnsureAdapterSpecTests(unittest.TestCase):
 
         crawler = fake_crawler({"https://new.ac.kr/notice.do": UNKNOWN_LISTING, "https://new.ac.kr/read/1": "<main>본문</main>", "https://new.ac.kr/read/2": "<main>본문</main>"})
 
-        with patch.dict("os.environ", {}, clear=False), patch("app.llm.GeminiProvider") as provider:
+        with patch.dict("os.environ", {}, clear=False), patch("app.llm.make_llm_provider") as provider:
             spec = _ensure_adapter_spec(self.storage, crawler, self.request, "https://new.ac.kr/notice.do")
 
         self.assertIsNone(spec)
@@ -146,7 +146,7 @@ class EnsureAdapterSpecTests(unittest.TestCase):
 
         with (
             patch.dict("os.environ", {"SPEC_AUTOGEN": "1"}),
-            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.make_llm_provider", return_value=MagicMock()),
             patch("app.spec_generator.generate_spec", return_value=result) as generate,
         ):
             spec = _ensure_adapter_spec(self.storage, crawler, self.request, "https://new.ac.kr/notice.do")
@@ -165,7 +165,7 @@ class EnsureAdapterSpecTests(unittest.TestCase):
 
         with (
             patch.dict("os.environ", {"SPEC_AUTOGEN": "1"}),
-            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.make_llm_provider", return_value=MagicMock()),
             patch("app.spec_generator.generate_spec", return_value=result),
         ):
             spec = _ensure_adapter_spec(self.storage, crawler, self.request, "https://new.ac.kr/notice.do")
@@ -250,7 +250,7 @@ class RefreshBrokenSpecTests(unittest.TestCase):
     def test_regeneration_prefers_templates_over_the_model(self) -> None:
         crawler = fake_crawler(self.k2web_pages)
 
-        with patch("app.llm.GeminiProvider") as provider:
+        with patch("app.llm.make_llm_provider") as provider:
             _refresh_broken_spec(
                 self.storage, crawler, self.request, "https://k2.ac.kr/notice.do",
                 self.spec(), [self.report("NO_LISTING_ROWS")],

@@ -454,7 +454,7 @@ class TestRunCrawlPipeline:
             patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
             patch("app.extractor.DocumentExtractor", return_value=mock_extractor),
             patch("app.graph_builder.GraphBuilder", return_value=mock_builder),
-            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.make_llm_provider", return_value=MagicMock()),
             patch("app.llm.LocalEmbedder", return_value=MagicMock()),
         ):
             MockCrawlerModule.from_storage.return_value = mock_crawler
@@ -509,7 +509,7 @@ class TestRunCrawlPipeline:
             patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
             patch("app.extractor.DocumentExtractor", return_value=mock_extractor),
             patch("app.graph_builder.GraphBuilder", return_value=mock_builder),
-            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.make_llm_provider", return_value=MagicMock()),
             patch("app.llm.LocalEmbedder", return_value=MagicMock()),
         ):
             MockCrawlerModule.from_storage.return_value = mock_crawler
@@ -545,7 +545,7 @@ class TestRunCrawlPipeline:
             patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
             patch("app.extractor.DocumentExtractor", return_value=mock_extractor),
             patch("app.graph_builder.GraphBuilder", return_value=MagicMock()),
-            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.make_llm_provider", return_value=MagicMock()),
             patch("app.llm.LocalEmbedder", return_value=MagicMock()),
         ):
             MockCrawlerModule.from_storage.return_value = mock_crawler
@@ -571,7 +571,7 @@ class TestRunCrawlPipeline:
             patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
             patch("app.extractor.DocumentExtractor", return_value=MagicMock()),
             patch("app.graph_builder.GraphBuilder", return_value=MagicMock()),
-            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.make_llm_provider", return_value=MagicMock()),
             patch("app.llm.LocalEmbedder", return_value=MagicMock()),
         ):
             MockCrawlerModule.from_storage.return_value = mock_crawler

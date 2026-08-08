@@ -46,8 +46,9 @@ ASKU 백엔드(FastAPI) + DB(Postgres+pgvector)를 **Railway** 에 서비스 2�
 | 키 | 설명 |
 |---|---|
 | `DATABASE_URL` | `postgresql+psycopg://asku:${{db.POSTGRES_PASSWORD}}@${{db.RAILWAY_PRIVATE_DOMAIN}}:5432/asku` — 코드가 `postgresql+psycopg://` 드라이버 접두어를 요구한다(`storage.py`). Railway 기본 Postgres 플러그인이 주는 `postgresql://` 를 그대로 쓰면 안 되므로 pgvector 이미지를 직접 띄우고 URL도 손으로 구성한다. `${{db.*}}` 는 §1 db 서비스 값을 참조한다 |
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey)에서 발급 |
-| `GEMINI_MODEL` | 기본 `gemini-3.5-flash` (저비용). `gemini-2.5-flash` 는 신규 키로 호출하면 404 다 |
+| `OPENAI_API_KEY` | 답변 생성·추출용. [OpenAI Platform](https://platform.openai.com/api-keys)에서 발급 |
+| `OPENAI_MODEL` | 기본 `gpt-4o-mini` (저비용). 계정에서 쓸 수 있는 모델로 지정 |
+| `LLM_PROVIDER` | `openai`(기본) 또는 `gemini`. gemini 로 되돌릴 때만 지정하고, 그때는 `GEMINI_API_KEY`·`GEMINI_MODEL` 를 대신 넣는다 |
 | `SPEC_AUTOGEN` | 알려진 템플릿과 맞지 않는 학교의 수집 규격을 LLM 으로 생성할지. 기본 꺼짐(`1`·`true`·`yes` 로 켬) |
 
 `SPEC_AUTOGEN` 을 켜면 새 학교를 등록할 때마다 호출당 약 4만 토큰이 나갈 수 있다. 알려진 게시판 제품은 이 설정과 무관하게 LLM 없이 처리되므로, 먼저 꺼 둔 채로 등록해 보고 템플릿에 걸리지 않는 학교가 나올 때 켜는 편이 안전하다([`03_crawler.md`](../01_SYSTEM/03_crawler.md) §7-2).
