@@ -25,10 +25,11 @@ assert.ok(M.validate({ provider: "ollama", ollamaModel: "llama3.1" }).ok);
 assert.strictEqual(M.label({ provider: "server" }), "기본 Gemini");
 assert.strictEqual(M.label({ provider: "ollama", ollamaModel: "llama3.1" }), "llama3.1");
 
-// mixedContent(): https 페이지 → http://localhost 는 브라우저가 막는다
-assert.strictEqual(M.mixedContent("https:", "http://localhost:11434"), true);
-assert.strictEqual(M.mixedContent("http:", "http://localhost:11434"), false);
-assert.strictEqual(M.mixedContent("https:", "https://ollama.example"), false);
+// insecureLocal(): https 페이지 → http://localhost 조합인지. 막는 용도가 아니라
+// (크롬 계열은 허용) 연결 실패 시 사파리 가능성을 덧붙이는 판단에만 쓴다.
+assert.strictEqual(M.insecureLocal("https:", "http://localhost:11434"), true);
+assert.strictEqual(M.insecureLocal("http:", "http://localhost:11434"), false);
+assert.strictEqual(M.insecureLocal("https:", "https://ollama.example"), false);
 
 // classifyError(): 사용자가 원인을 구분할 수 있게 코드가 갈린다(계획 §1-5)
 const err = (status) => Object.assign(new Error("boom"), { status });
@@ -37,8 +38,15 @@ assert.strictEqual(M.classifyError(err(404), { provider: "ollama", ollamaModel: 
 assert.strictEqual(M.classifyError(err(403), { provider: "gemini" }).code, "GEMINI_AUTH");
 assert.strictEqual(M.classifyError(err(429), { provider: "gemini" }).code, "GEMINI_QUOTA");
 assert.strictEqual(M.classifyError(err(404), { provider: "gemini" }).code, "GEMINI_MODEL_NOT_FOUND");
-assert.strictEqual(M.classifyError(Object.assign(new Error("m"), { code: "MIXED_CONTENT" }), { provider: "ollama" }).code, "MIXED_CONTENT");
-assert.match(M.classifyError(err(undefined), { provider: "ollama" }).message, /OLLAMA_ORIGINS/, "CORS 안내에 사이트 주소를 넣는다");
+// 연결 실패는 미실행·CORS 누락·브라우저 차단이 구분되지 않으므로 원인 후보를 함께 안내한다
+const unreachable = M.classifyError(err(undefined), { provider: "ollama", ollamaHost: "http://localhost:11434" }).message;
+assert.match(unreachable, /ollama serve/, "미실행 가능성 안내");
+assert.match(unreachable, /OLLAMA_ORIGINS=https:\/\/example\.github\.io/, "CORS 안내에 사이트 주소를 넣는다");
+assert.match(unreachable, /사파리/, "https 페이지 + http localhost 조합이면 브라우저 차단 가능성도 안내");
+// http 로 연 화면이면 사파리 안내는 붙이지 않는다
+globalThis.location.protocol = "http:";
+assert.doesNotMatch(M.classifyError(err(undefined), { provider: "ollama" }).message, /사파리/);
+globalThis.location.protocol = "https:";
 
 // geminiText(): 여러 part 를 잇고, 빈 응답(안전 필터·길이 제한)은 오류로 구분한다
 assert.strictEqual(M.geminiText({ candidates: [{ content: { parts: [{ text: "가" }, { text: "나" }] } }] }), "가나");
@@ -49,4 +57,4 @@ assert.throws(() => M.geminiText({}), /unknown/);
 assert.deepStrictEqual(M.ollamaModelNames({ models: [{ name: "qwen2" }, { name: "llama3.1" }] }), ["llama3.1", "qwen2"]);
 assert.deepStrictEqual(M.ollamaModelNames(null), []);
 
-console.log("OK — normalize/validate/label/mixedContent/classifyError/geminiText/ollamaModelNames pass");
+console.log("OK — normalize/validate/label/insecureLocal/classifyError/geminiText/ollamaModelNames pass");

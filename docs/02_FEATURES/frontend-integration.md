@@ -43,10 +43,32 @@ cd frontend/src && python3 -m http.server 5500
 - `retrieve` 가 준 `instruction`+`context` 를 그대로 모델에 넘기므로, 어느 모델로 답하든
   근거와 지시문이 같다. `source_type` 이 `null` 이면 모델을 부르지 않고 보류 문구를 쓴다.
 - Ollama 는 설정창의 "연결 확인"이 `GET {host}/api/tags` 로 설치된 모델 목록을 채운다.
-  실패 원인은 코드로 갈라 안내한다: 미실행·CORS(`OLLAMA_UNREACHABLE`, `OLLAMA_ORIGINS` 안내),
-  모델 없음(`OLLAMA_MODEL_NOT_FOUND`), https 페이지에서 `http://localhost` 호출 차단(`MIXED_CONTENT`).
-- Gemini 오류도 키 거부(`GEMINI_AUTH`)·한도(`GEMINI_QUOTA`)·모델명(`GEMINI_MODEL_NOT_FOUND`)·
+- Gemini 오류는 키 거부(`GEMINI_AUTH`)·한도(`GEMINI_QUOTA`)·모델명(`GEMINI_MODEL_NOT_FOUND`)·
   빈 응답(`GEMINI_EMPTY`)으로 구분한다.
+
+### 배포(HTTPS) 화면에서 내 PC Ollama 쓰기
+
+**HTTPS 페이지에서 `http://localhost:11434` 호출은 막지 않는다.** 크롬 계열 브라우저는
+`localhost` 를 신뢰할 수 있는 출처로 보아 허용한다 — 배포 origin(`https://…github.io`)에서
+실제 Ollama(0.32.6, `qwen2.5:1.5b`)의 `/api/tags`(단순 요청)와 `/api/generate`(프리플라이트
+후 POST)가 200 으로 돌고 답변까지 생성되는 것을 확인했다. 사파리처럼 이 조합을 막는
+브라우저가 있으므로, 차단은 사전에 하지 않고 실패했을 때 원인 후보로 안내한다.
+
+사용자가 해야 할 설정은 CORS 허용 하나다. 설정창이 배포 주소를 넣은 명령을 그대로 보여준다.
+
+```bash
+OLLAMA_ORIGINS=https://linklingj.github.io ollama serve
+```
+
+이 설정 없이 배포 origin에서 부르면 `TypeError: Failed to fetch` 로 끝난다(확인함). 즉
+CORS 허용은 선택이 아니라 필수다. Ollama 는 기본 바인딩(`127.0.0.1:11434`)을 유지한다. `OLLAMA_HOST=0.0.0.0` 으로 외부에 열거나
+ngrok 같은 터널을 쓰는 방법은 권하지 않는다 — 개인 PC의 모델 서버가 인터넷에 노출된다.
+
+연결 실패는 브라우저가 원인을 알려주지 않는다(미실행·CORS 거절·브라우저 차단이 모두 같은
+`TypeError`). 그래서 `OLLAMA_UNREACHABLE` 하나로 묶고 확인할 것을 순서대로 나열한다 —
+실행 여부, `OLLAMA_ORIGINS`, 주소, 그리고 https 페이지일 때만 브라우저 차단 가능성.
+나머지는 코드로 갈린다: 모델 없음(`OLLAMA_MODEL_NOT_FOUND`), 목록은 비었지만 연결은 됨,
+설정 미완성(`NO_MODEL`·`NO_HOST`), 응답 오류(`OLLAMA_ERROR`).
 
 ## 디자인 목업 → 백엔드 필드 매핑에서 조정한 것
 

@@ -66,9 +66,12 @@
     return "기본 Gemini";
   }
 
-  // https 페이지에서 http://localhost 를 부르면 브라우저가 요청 자체를 막는다
-  // (혼합 콘텐츠). fetch 실패와 증상이 같아 구분이 안 되므로 부르기 전에 잡는다.
-  function mixedContent(pageProtocol, host) {
+  // https 페이지에서 http://localhost 를 부르는 조합. **막지 않는다** — 대부분의
+  // 브라우저는 localhost 를 신뢰할 수 있는 출처로 보고 허용한다(크롬 계열에서
+  // 배포 사이트 → localhost:11434 의 /api/tags·/api/generate 호출을 실제로 확인).
+  // 다만 사파리처럼 이 조합을 막는 브라우저가 있어, 연결이 실패했을 때 원인 후보로
+  // 안내하는 데만 쓴다.
+  function insecureLocal(pageProtocol, host) {
     return pageProtocol === "https:" && /^http:\/\//i.test(String(host || ""));
   }
 
@@ -79,12 +82,20 @@
     if (err && err.code) return { code: err.code, message: err.message };
 
     if (cfg.provider === "ollama") {
+      // 브라우저는 '연결 거부'·'CORS 거절'·'로컬 접근 차단'을 모두 같은 실패로
+      // 준다(status 없음). 구분이 불가능하므로 원인 후보를 순서대로 안내한다.
       if (!status) {
+        var causes = [
+          "Ollama 가 실행 중인지 (`ollama serve`)",
+          "이 사이트를 허용했는지 (`OLLAMA_ORIGINS=" + pageOrigin() + "`)",
+          "주소가 맞는지 (" + cfg.ollamaHost + ")",
+        ];
+        if (insecureLocal(pageProtocol(), cfg.ollamaHost)) {
+          causes.push("사파리 등 일부 브라우저는 https 페이지에서 http://localhost 호출을 막습니다 — 크롬·엣지·파이어폭스로 시도");
+        }
         return {
           code: "OLLAMA_UNREACHABLE",
-          message:
-            "Ollama 에 연결하지 못했습니다. Ollama 가 실행 중인지 확인하고, 이 사이트에서 부를 수 있도록 " +
-            "OLLAMA_ORIGINS 에 " + pageOrigin() + " 를 허용해 주세요.",
+          message: "Ollama 에 연결하지 못했습니다. 확인해 주세요 — " + causes.join(" · "),
         };
       }
       if (status === 404) return { code: "OLLAMA_MODEL_NOT_FOUND", message: "Ollama 에 그 모델이 없습니다. `ollama pull " + (cfg.ollamaModel || "<모델>") + "` 로 먼저 받아 주세요." };
@@ -128,6 +139,10 @@
 
   function pageOrigin() {
     try { return global.location.origin; } catch (_) { return "이 사이트"; }
+  }
+
+  function pageProtocol() {
+    try { return global.location.protocol; } catch (_) { return ""; }
   }
 
   function load() {
@@ -191,14 +206,6 @@
   // 선택한 제공자로 답변을 만든다. context 는 백엔드 /retrieve 가 준 근거 그대로다.
   function generate(cfg, prompt, context) {
     cfg = normalize(cfg);
-    if (cfg.provider === "ollama" && mixedContent(global.location.protocol, cfg.ollamaHost)) {
-      var e = new Error(
-        "이 페이지는 https 로 열려 있어 http://localhost 의 Ollama 를 부를 수 없습니다(브라우저가 막습니다). " +
-        "http 로 배포된 주소나 로컬에서 연 페이지에서 사용해 주세요."
-      );
-      e.code = "MIXED_CONTENT";
-      return Promise.reject(e);
-    }
     if (cfg.provider === "gemini") return generateGemini(cfg, prompt, context);
     if (cfg.provider === "ollama") return generateOllama(cfg, prompt, context);
     return Promise.reject(new Error("서버 모델은 백엔드 /query 로 답합니다"));
@@ -207,11 +214,6 @@
   // 설정창의 연결 확인 — 설치된 모델 목록을 읽어 드롭다운을 채운다(계획 §1-3).
   function listOllamaModels(host) {
     var target = String(host || DEFAULT_OLLAMA_HOST).replace(/\/+$/, "");
-    if (mixedContent(global.location.protocol, target)) {
-      var e = new Error("https 페이지에서는 http://localhost 의 Ollama 를 부를 수 없습니다.");
-      e.code = "MIXED_CONTENT";
-      return Promise.reject(e);
-    }
     return send(target + "/api/tags", { method: "GET" }).then(ollamaModelNames);
   }
 
@@ -222,7 +224,7 @@
     normalize: normalize,
     validate: validate,
     label: label,
-    mixedContent: mixedContent,
+    insecureLocal: insecureLocal,
     classifyError: classifyError,
     geminiText: geminiText,
     ollamaModelNames: ollamaModelNames,

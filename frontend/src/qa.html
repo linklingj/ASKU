@@ -442,8 +442,10 @@
       body = fieldHTML("qa-set-host", "Ollama 주소", d.ollamaHost, ASKU_MODEL.DEFAULT_OLLAMA_HOST)
         + '<button data-act="ollamaCheck" class="qa-btn" style="border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);color:var(--color-text,#201e1d);font-family:inherit;font-weight:700;font-size:12px;padding:8px 12px;cursor:pointer;margin-bottom:12px;transition:background .18s ease,color .18s ease;">연결 확인 · 모델 목록 불러오기</button>'
         + opts
-        + note("내 컴퓨터에서 Ollama 가 실행 중이어야 합니다. 설치는 ollama.com, 실행은 <code>ollama serve</code>, 모델 받기는 <code>ollama pull llama3.1</code>. "
-          + "이 사이트에서 부르려면 <code>OLLAMA_ORIGINS=" + esc(location.origin) + "</code> 를 켜고 Ollama 를 다시 실행해야 할 수 있습니다.");
+        + note("답변은 내 컴퓨터의 Ollama 가 만듭니다(ASKU 서버는 근거만 찾습니다). 설치는 ollama.com, 모델 받기는 <code>ollama pull llama3.1</code>.<br>"
+          + "이 사이트에서 부르려면 <b>이 사이트를 허용한 채로</b> Ollama 를 실행해야 합니다 — 실행 중이면 끄고 아래처럼 다시 켜 주세요."
+          + '<div style="margin-top:7px;padding:8px 10px;background:var(--color-surface,#fff);border:2px solid color-mix(in srgb,var(--color-text,#201e1d) 16%,transparent);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:700;word-break:break-all;">OLLAMA_ORIGINS=' + esc(location.origin) + " ollama serve</div>"
+          + '<div style="margin-top:6px;">Windows PowerShell: <code>$env:OLLAMA_ORIGINS="' + esc(location.origin) + '"; ollama serve</code></div>');
     } else {
       body = note("ASKU 서버가 프로젝트 키로 답변합니다. 별도 설정이 필요 없지만, 공용 한도를 함께 씁니다.");
     }
