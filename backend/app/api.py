@@ -81,11 +81,11 @@ def _get_rag_engine():
     """HybridRAG 엔진 싱글턴을 반환한다(그래프 RAG → 문서 RAG fallback). 최초 호출 시 초기화."""
     global _rag_engine
     if _rag_engine is None:
-        from app.llm import make_llm_provider, LocalEmbedder
+        from app.llm import make_llm_provider
         from app.rag import DocumentRAG, GraphRAG, HybridRAG
 
         storage = _get_storage()
-        embedder = LocalEmbedder()
+        embedder = _get_embedder()
         provider = make_llm_provider()
         graph_rag = GraphRAG(
             storage=storage,
@@ -99,7 +99,13 @@ def _get_rag_engine():
 
 
 def _get_embedder():
-    """첨부 색인용 Embedder 싱글턴. 모델 로딩이 무거워 요청마다 만들지 않는다."""
+    """프로세스 전역 Embedder 싱글턴 — 크롤 인덱싱·첨부 색인·질의가 함께 쓴다.
+
+    bge-m3 는 인스턴스마다 모델을 통째로 메모리에 올린다. 예전처럼 각자 새로 만들면
+    학교 등록 직후 첨부를 올리는 흐름(크롤 + 첨부 색인 동시 진행)에서 모델이 겹쳐 떠
+    컨테이너가 죽는다(크롤 직렬화와 같은 이유 — `_CRAWL_LOCK`). `embed()` 는 호출 간
+    상태를 남기지 않아 스레드끼리 나눠 써도 된다.
+    """
     global _embedder
     if _embedder is None:
         from app.llm import LocalEmbedder
@@ -471,9 +477,9 @@ def _run_crawl_inner(school_id: int, base_url: str, mode: str, max_nodes: int = 
         _PROGRESS_MAP[school_id]["progress"] = 0.4
         _PROGRESS_MAP[school_id]["message"] = "본문 파싱 및 엔티티 추출 중..."
 
-        from app.llm import make_llm_provider, LocalEmbedder
+        from app.llm import make_llm_provider
 
-        embedder = LocalEmbedder()
+        embedder = _get_embedder()
         provider = make_llm_provider()
         extractor = DocumentExtractor(llm_extractor=provider, spec=spec)
         builder = GraphBuilder(storage=storage, embedder=embedder)

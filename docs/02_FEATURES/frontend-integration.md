@@ -22,11 +22,30 @@ cd frontend/src && python3 -m http.server 5500
 |---|---|---|
 | `index.html` | `GET /schools` | "등록된 학교" 섹션을 실제 수·이름으로 채움. 0개거나 백엔드 미연결이면 섹션 숨김 |
 | `find.html` | `GET /schools` | 휠·listbox 를 실제 학교로 구성, 노드 수·상태·갱신일 표시, `school_id` 를 QA로 전달 |
-| `register.html` | `POST /schools` → `GET /schools/{id}/status` (폴링) | URL 등록 후 실제 진행도/단계로 로딩 표시, 완료 시 `qa.html?school={id}` 로 이동 |
+| `register.html` | `POST /schools` → `POST /schools/{id}/attachments` → `GET /schools/{id}/status` · `GET /schools/{id}/attachments` (폴링) | URL 등록 + 문서 첨부(선택) 후 실제 진행도/단계로 로딩 표시, 완료 시 `qa.html?school={id}` 로 이동 |
 | `qa.html` | `GET /schools/{id}`, `GET /schools/{id}/graph`, `GET /schools/{id}/entities/{eid}`, `POST /schools/{id}/query` | 그래프 렌더, 노드 클릭 시 상세(속성·근거문서·이웃), 질문바 답변+근거링크+`entity_ids` 하이라이트 |
 
-- 공통 fetch 헬퍼: `api.js` (`ASKU.get`/`ASKU.post`, 공통 에러 `{error:{code,message}}` 파싱).
-- 순수 변환 로직은 노드 자가검증으로 커버: `qa.selfcheck.js`(`buildGraph`/`assignTypeColors`/`parseEid`), `register.selfcheck.js`(`valid`/`normalizeUrl`/`deriveName`/`stageToPhase`).
+- 공통 fetch 헬퍼: `api.js` (`ASKU.get`/`ASKU.post`/`ASKU.upload`, 공통 에러 `{error:{code,message,details}}` 파싱).
+- 순수 변환 로직은 노드 자가검증으로 커버: `qa.selfcheck.js`(`buildGraph`/`assignTypeColors`/`parseEid`/`sourceChip`), `register.selfcheck.js`(`valid`/`normalizeUrl`/`deriveName`/`stageToPhase`/`fileError`/`attachSummary`).
+
+### 학교 등록 시 문서 첨부 ([#41](https://github.com/linklingj/ASKU/issues/41))
+
+크롤링으로는 닿지 않는 수강편람 PDF·학칙 HWP 를 등록 화면에서 함께 올린다
+([`01_SYSTEM/01_backend-api.md`](../01_SYSTEM/01_backend-api.md) §2.4-1).
+
+- **선택 입력이다.** URL 만으로 등록하던 흐름은 그대로다(요청도 예전과 같이 `POST /schools` 하나뿐).
+- 파일 선택·드래그 앤 드롭 모두 받고, `fileError()` 가 **백엔드와 같은 규칙**(`.pdf`·`.hwp`·`.hwpx`·`.txt`·`.md`,
+  파일당 50MB, 빈 파일 거부)으로 먼저 걸러 올리지 않는다. 걸러진 파일도 사유와 함께 목록에 남긴다.
+- 첨부는 학교가 생긴 **뒤에** 올린다(`school_id` 가 있어야 붙는다). 업로드가 실패해도 크롤은 이미
+  시작됐으므로 등록을 실패로 되돌리지 않고 사유만 남긴다.
+- 색인은 크롤 파이프라인과 **별개로** 백그라운드에서 돈다. 그래서 로딩 화면은 `/status` 와
+  `/attachments` 를 함께 폴링하고, 첨부가 `pending`·`indexing` 인 동안에는 진행률을 100% 로
+  올리지 않는다(끝나지 않았는데 끝난 것처럼 보이면 안 된다).
+- **크롤이 실패해도 색인된 첨부가 있으면 완료로 끝낸다.** 백엔드가 그 경우 질의를 열어주기 때문이다
+  (`POST /query` 는 `count_ready_attachments > 0` 이면 `SCHOOL_NOT_READY` 를 내지 않는다).
+  이때는 "지식 그래프 생성" 문구·크롤 통계를 감추고 문서로 답할 수 있다는 안내로 바꾼다.
+- QA 화면의 근거 표시: 첨부 근거의 `url` 은 `attachment://{id}` 합성 URI 라 링크로 걸면 열리지
+  않는다 → `sourceChip()` 이 웹 출처만 새 탭 링크로 만들고 첨부는 파일명·페이지 칩으로 보여준다.
 
 ## 디자인 목업 → 백엔드 필드 매핑에서 조정한 것
 

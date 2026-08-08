@@ -157,7 +157,10 @@
 **입력**
 
 - 화면 **정중앙에 URL 입력칸** 하나가 주인공(공지·학사 기준 URL). 학교명은 자동 추론하되 보조 입력 허용.
-- 제출 → `POST /schools` → `{school_id}` 수신 후 로딩 화면으로.
+- 그 아래 **문서 첨부(선택)** — 수강편람 PDF·학칙 HWP 처럼 크롤링으로 닿지 않는 문서를 함께 올린다
+  (`.pdf`·`.hwp`·`.hwpx`·`.txt`·`.md`, 파일당 50MB. [`01_backend-api.md`](01_backend-api.md) §2.4-1).
+  지원하지 않는 파일은 올리기 전에 사유와 함께 목록에서 걸러낸다.
+- 제출 → `POST /schools` → `{school_id}` 수신 → 첨부가 있으면 `POST /schools/{id}/attachments` → 로딩 화면으로.
 
 **로딩 (이목을 끄는 연출)**
 
@@ -165,10 +168,14 @@
 - 단계(백엔드 파이프라인과 1:1): **크롤링 → 추출 → 그래프 빌드 → 저장/인덱싱** ([`03_crawler.md`](03_crawler.md)·[`04_extractor.md`](04_extractor.md)·[`05_graph-builder.md`](05_graph-builder.md)·[`06_storage.md`](06_storage.md)).
 - 전체 진행률(`progress` 0–1)과 단계별 카운트(`pages/chunks/entities/edges`)를 함께 표기. 노드/엣지가 실시간으로 늘며 그래프가 "자라는" 미니 프리뷰로 몰입감을 준다.
 - 데이터: **SSE** `GET /schools/{id}/status`(권장) 또는 폴링. `reduce` 모션 시 아이콘 변환은 정적 단계 표시로 대체.
+- 첨부를 올렸으면 `GET /schools/{id}/attachments` 도 함께 폴링해 파일별 상태(`pending`→`indexing`→`ready`/`failed`)를
+  단계 목록 아래에 따로 보인다. 첨부 색인은 크롤 파이프라인과 별개로 돌아 4단계에 끼워 넣을 수 없다.
 
 **완료 → 이동**
 
 - `stage:"done"` 이면 완성 그래프가 잠깐 피어나는 모션 후 `/s/{schoolId}` 로 이동. `failed` 면 사유·재시도.
+- 단, `failed` 라도 **색인이 끝난 첨부가 있으면** 완료로 끝낸다 — 백엔드가 그 학교의 질의를 열어주기 때문이다
+  ([`01_backend-api.md`](01_backend-api.md) §2.4). 완료 화면은 크롤 통계 대신 첨부 색인 결과를 보인다.
 
 ---
 
@@ -184,6 +191,8 @@
 | GET ✚ | `/schools/{id}/entities/{eid}` | QA 패널 | 노드 상세·이웃·근거 |
 | POST | `/schools/{id}/query` | 질문바 | 답변+근거(+`entity_ids` 확장) |
 | POST | `/schools` | 등록 | 등록 시작, `school_id` 반환 |
+| POST | `/schools/{id}/attachments` | 등록 | 문서 첨부(multipart, 필드명 `files`) — 선택 |
+| GET | `/schools/{id}/attachments` | 등록 로딩 | 첨부별 색인 상태 |
 | GET | `/schools/{id}/status` | 등록 로딩 | 단계·진행도 (SSE 권장) |
 
 **그래프 payload** (`/graph`, `/entities/{eid}` 로 확장 로드):
