@@ -351,5 +351,63 @@ class HybridRagTests(unittest.TestCase):
         )
 
 
+class RetrieveContractTests(unittest.TestCase):
+    """검색 전용 계약 — 근거만 모으고 답변 생성은 하지 않는다(사용자 모델 경로).
+
+    사용자가 자기 Gemini·자기 PC Ollama 를 골랐을 때 서버가 하는 일이 여기까지다.
+    ``answer()`` 와 같은 근거를 내되 생성기는 한 번도 부르지 않아야 한다.
+    """
+
+    def _hybrid(self, storage, generator) -> HybridRAG:
+        return HybridRAG(
+            graph_rag=GraphRAG(storage, FakeEmbedder(), FakeExtractor(), generator),
+            document_rag=DocumentRAG(storage, FakeEmbedder(), generator),
+        )
+
+    def test_graph_retrieve_returns_context_and_sources_without_generating(self) -> None:
+        chunk = doc(1, title="장학금 안내", url="https://ex.edu/1", content="장학금 신청 본문")
+        storage = FakeStorage(hits=[(chunk, 0.9)])
+        generator = FakeGenerator()
+
+        result = engine(storage, generator=generator).retrieve(1, "장학금 신청 언제야?")
+
+        self.assertEqual(result.source_type, "graph")
+        self.assertIn("장학금 신청 본문", result.context)
+        self.assertEqual([source.url for source in result.sources], ["https://ex.edu/1"])
+        self.assertEqual(generator.calls, [])  # 서버는 답변을 만들지 않는다
+
+    def test_retrieve_context_matches_what_answer_generates_from(self) -> None:
+        chunk = doc(1, content="본문 A")
+        generator = FakeGenerator()
+        rag = engine(FakeStorage(hits=[(chunk, 0.9)]), generator=generator)
+
+        rag.answer(1, "q")
+        retrieved = engine(FakeStorage(hits=[(chunk, 0.9)])).retrieve(1, "q")
+
+        _prompt, context = generator.calls[0]
+        self.assertEqual(context, retrieved.context)  # 브라우저가 같은 근거로 답한다
+
+    def test_retrieve_without_evidence_signals_none_and_empty_context(self) -> None:
+        generator = FakeGenerator()
+        storage = FakeStorage(hits=[], attachment_hits=[])
+
+        result = self._hybrid(storage, generator).retrieve(1, "q")
+
+        self.assertIsNone(result.source_type)
+        self.assertEqual(result.context, "")
+        self.assertEqual(result.sources, [])
+        self.assertEqual(generator.calls, [])
+
+    def test_retrieve_falls_back_to_documents_like_answer(self) -> None:
+        storage = FakeStorage(hits=[], attachment_hits=[(attachment_doc(5), 0.9)])
+        generator = FakeGenerator()
+
+        result = self._hybrid(storage, generator).retrieve(1, "q")
+
+        self.assertEqual(result.source_type, "document")
+        self.assertEqual([source.url for source in result.sources], ["attachment://5"])
+        self.assertEqual(generator.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -207,6 +207,42 @@ POST /schools/{school_id}/query
 
 ---
 
+### 2.4-2 근거 검색 (사용자 모델 경로)
+
+```
+POST /schools/{school_id}/retrieve
+```
+
+검색만 하고 **답변은 만들지 않는다**. 사용자가 자기 Gemini 키나 자기 PC의 Ollama를
+답변 모델로 고른 경우, 프론트가 이 응답으로 브라우저에서 직접 모델을 부른다.
+
+요청 본문은 `/query`와 같다.
+
+**응답 `200 OK`**
+
+```json
+{
+  "context": "[근거 1] 2026학년도 성적우수 장학금 안내\n출처: https://...\n본문…",
+  "instruction": "…근거 기반 답변 지시문…\n\n[질문]\n성적우수 장학금 마감일이 언제야?",
+  "sources": [{ "title": "2026학년도 …", "url": "https://www.yonsei.ac.kr/..." }],
+  "entity_ids": ["e_123"],
+  "source_type": "graph",
+  "no_evidence_answer": "해당 정보를 찾지 못했습니다."
+}
+```
+
+`context`·`sources`·`source_type`의 뜻은 `/query`와 같고, 2단 검색 순서도 같다
+(RAG Engine의 `retrieve(school_id, question)`). `instruction`은 서버가 답변할 때 쓰는
+프롬프트 그대로라, 모델을 누가 부르든 같은 문안·같은 근거로 답한다.
+`source_type`이 `null`이면 프론트는 모델을 부르지 않고 `no_evidence_answer`를 그대로
+보여준다 — 근거 없이 생성하지 않는 규칙(환각 방지)이 경로와 무관하게 유지된다.
+
+이 경로에서 서버는 **답변 생성을 하지 않으며 사용자 API 키를 받지도, 저장하지도
+않는다.** 다만 검색 단계의 질문 엔티티 추출은 `/query`와 동일하게 서버 모델이 맡는다 —
+그래프 확장 결과가 사용자의 모델 선택에 따라 달라지면 안 되기 때문이다.
+
+---
+
 ### 2.4-1 첨부 문서 업로드
 
 ```

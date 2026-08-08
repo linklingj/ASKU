@@ -7,7 +7,15 @@
 (``source_type='attachment'``)만 벡터 top-k 로 찾는다 — 그래프 확장은 하지 않는다.
 두 엔진 모두 근거 청크가 없거나 최고 유사도가 임계 미만이면 LLM 생성 없이 보류
 문구를 반환한다(07 §3, 환각 방지). ``HybridRAG`` 가 그래프 → 문서 순서로 위임하는
-오케스트레이션을 맡고, API 계층은 ``HybridRAG.answer()`` 만 호출한다.
+오케스트레이션을 맡는다.
+
+각 엔진은 검색과 생성을 두 진입점으로 나눠 제공한다.
+
+- ``retrieve()`` — 근거만 모아 ``RagRetrieval`` 을 낸다. LLM 생성은 하지 않는다.
+- ``answer()``  — ``retrieve()`` 결과로 답변까지 만든다(기존 동작).
+
+사용자가 자기 모델(개인 Gemini 키·자기 PC Ollama)을 고르면 API 계층이 ``retrieve()``
+만 부르고, 생성은 브라우저가 한다. 서버 기본 모델일 때는 ``answer()`` 를 부른다.
 
 저장소 접근은 06_storage.md, LLM 호출은 08_llm-provider.md 인터페이스만 사용한다.
 """
@@ -21,7 +29,7 @@ from app.graph_builder import normalize_entity_key
 from app.llm import Embedder, Extractor, Generator
 from app.models import SOURCE_TYPE_ATTACHMENT, SOURCE_TYPE_WEB, Document, Entity
 from app.prompts import rag_answer_instruction
-from app.schemas import RagAnswer, Source
+from app.schemas import RagAnswer, RagRetrieval, Source
 
 if TYPE_CHECKING:  # storage.py 는 pgvector 를 top-level import 하므로 런타임 의존을 피한다
     from app.storage import Neighbor
@@ -32,6 +40,34 @@ NO_EVIDENCE_ANSWER = "해당 정보를 찾지 못했습니다."
 
 # 프롬프트 문안은 app/prompts.py 가 소유한다. 여기서는 보류 문구를 끼워 조립만 한다.
 _ANSWER_INSTRUCTION = rag_answer_instruction(NO_EVIDENCE_ANSWER)
+
+
+def answer_prompt(question: str) -> str:
+    """근거 기반 답변 지시문 + 질문을 합친 프롬프트.
+
+    서버가 생성할 때도, 사용자가 고른 모델이 브라우저에서 생성할 때도 같은 문안을
+    쓴다 — 검색 전용 API 가 이 문자열을 그대로 내려주기 때문이다(01 §질의).
+    """
+
+    return f"{_ANSWER_INSTRUCTION}\n\n[질문]\n{question}"
+
+
+def _generate_answer(generator: Generator, retrieval: RagRetrieval, question: str) -> RagAnswer:
+    """검색 결과로 답변을 만든다. 근거가 없으면 생성하지 않고 보류한다(07 §3).
+
+    ``retrieve()`` 와 ``answer()`` 가 갈라져도 '근거 없으면 LLM 을 부르지 않는다'는
+    규칙이 한곳에만 있도록 두 엔진이 이 함수를 공유한다.
+    """
+
+    if retrieval.source_type is None:
+        return RagAnswer(answer=NO_EVIDENCE_ANSWER, sources=[], source_type=None)
+    answer = generator.generate(answer_prompt(question), retrieval.context).strip()
+    return RagAnswer(
+        answer=answer,
+        sources=retrieval.sources,
+        entity_ids=retrieval.entity_ids,
+        source_type=retrieval.source_type,
+    )
 
 
 class RagStorage(Protocol):
@@ -92,6 +128,15 @@ class GraphRAG:
         판단하는 신호가 된다.
         """
 
+        return _generate_answer(self.generator, self.retrieve(school_id, question), question)
+
+    def retrieve(self, school_id: int, question: str) -> RagRetrieval:
+        """답변 생성 없이 근거만 모은다(검색 전용 계약).
+
+        사용자가 자기 모델로 답변을 만들 때 서버가 하는 일이 여기까지다. 근거가
+        없으면 ``source_type=None`` 이고 ``context`` 는 빈 문자열이다.
+        """
+
         query_vector = self.embedder.embed(question)
         hits = [
             (doc, score)
@@ -101,12 +146,10 @@ class GraphRAG:
             if score >= self.min_similarity
         ]
         if not hits:
-            return RagAnswer(answer=NO_EVIDENCE_ANSWER, sources=[], source_type=None)
+            return RagRetrieval(context="", sources=[], source_type=None)
 
         neighbors = self._expand_neighbors(school_id, question)
         context, sources = self._assemble_context(school_id, hits, neighbors)
-        prompt = f"{_ANSWER_INSTRUCTION}\n\n[질문]\n{question}"
-        answer = self.generator.generate(prompt, context).strip()
 
         # 컨텍스트 확장에 사용된 실제 그래프 엔티티 ID들 수집
         used_entity_ids: set[str] = set()
@@ -118,8 +161,8 @@ class GraphRAG:
             if tgt_id is not None:
                 used_entity_ids.add(f"e_{tgt_id}")
 
-        return RagAnswer(
-            answer=answer,
+        return RagRetrieval(
+            context=context,
             sources=sources,
             entity_ids=sorted(used_entity_ids),
             source_type="graph",
@@ -233,6 +276,11 @@ class DocumentRAG:
     def answer(self, school_id: int, question: str) -> RagAnswer:
         """첨부 문서에서만 근거를 찾는다. 근거가 없으면 생성 없이 보류한다."""
 
+        return _generate_answer(self.generator, self.retrieve(school_id, question), question)
+
+    def retrieve(self, school_id: int, question: str) -> RagRetrieval:
+        """답변 생성 없이 첨부 문서 근거만 모은다(검색 전용 계약)."""
+
         query_vector = self.embedder.embed(question)
         hits = [
             (doc, score)
@@ -242,16 +290,15 @@ class DocumentRAG:
             if score >= self.min_similarity
         ]
         if not hits:
-            return RagAnswer(answer=NO_EVIDENCE_ANSWER, sources=[], source_type=None)
+            return RagRetrieval(context="", sources=[], source_type=None)
 
         context = "\n\n".join(
             f"[근거 {rank}] {self._citation(doc)}\n{doc.content}"
             for rank, (doc, _score) in enumerate(hits, start=1)
         )
-        prompt = f"{_ANSWER_INSTRUCTION}\n\n[질문]\n{question}"
-        answer = self.generator.generate(prompt, context).strip()
-
-        return RagAnswer(answer=answer, sources=self._collect_sources(hits), source_type="document")
+        return RagRetrieval(
+            context=context, sources=self._collect_sources(hits), source_type="document"
+        )
 
     @staticmethod
     def _citation(doc: Document) -> str:
@@ -304,3 +351,14 @@ class HybridRAG:
         if graph_result.source_type == "graph":
             return graph_result
         return self.document_rag.answer(school_id, question)
+
+    def retrieve(self, school_id: int, question: str) -> RagRetrieval:
+        """답변 생성 없이 근거만 모은다 — 단계 순서는 ``answer()`` 와 같다.
+
+        사용자가 자기 모델로 답할 때 쓰는 경로라서 LLM 은 한 번도 부르지 않는다.
+        """
+
+        graph_result = self.graph_rag.retrieve(school_id, question)
+        if graph_result.source_type == "graph":
+            return graph_result
+        return self.document_rag.retrieve(school_id, question)

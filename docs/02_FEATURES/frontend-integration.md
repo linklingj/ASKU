@@ -23,10 +23,30 @@ cd frontend/src && python3 -m http.server 5500
 | `index.html` | `GET /schools` | "등록된 학교" 섹션을 실제 수·이름으로 채움. 0개거나 백엔드 미연결이면 섹션 숨김 |
 | `find.html` | `GET /schools` | 휠·listbox 를 실제 학교로 구성, 노드 수·상태·갱신일 표시, `school_id` 를 QA로 전달 |
 | `register.html` | `POST /schools` → `GET /schools/{id}/status` (폴링) | URL 등록 후 실제 진행도/단계로 로딩 표시, 완료 시 `qa.html?school={id}` 로 이동 |
-| `qa.html` | `GET /schools/{id}`, `GET /schools/{id}/graph`, `GET /schools/{id}/entities/{eid}`, `POST /schools/{id}/query` | 그래프 렌더, 노드 클릭 시 상세(속성·근거문서·이웃), 질문바 답변+근거링크+`entity_ids` 하이라이트 |
+| `qa.html` | `GET /schools/{id}`, `GET /schools/{id}/graph`, `GET /schools/{id}/entities/{eid}`, `POST /schools/{id}/query` 또는 `POST /schools/{id}/retrieve` | 그래프 렌더, 노드 클릭 시 상세(속성·근거문서·이웃), 질문바 답변+근거링크+`entity_ids` 하이라이트 |
 
 - 공통 fetch 헬퍼: `api.js` (`ASKU.get`/`ASKU.post`, 공통 에러 `{error:{code,message}}` 파싱).
-- 순수 변환 로직은 노드 자가검증으로 커버: `qa.selfcheck.js`(`buildGraph`/`assignTypeColors`/`parseEid`), `register.selfcheck.js`(`valid`/`normalizeUrl`/`deriveName`/`stageToPhase`).
+- 순수 변환 로직은 노드 자가검증으로 커버: `qa.selfcheck.js`(`buildGraph`/`assignTypeColors`/`parseEid`), `register.selfcheck.js`(`valid`/`normalizeUrl`/`deriveName`/`stageToPhase`), `model.selfcheck.js`(`normalize`/`validate`/`classifyError`/`geminiText`/`ollamaModelNames`).
+
+## 답변 모델 선택 (`model.js`)
+
+질문 답변을 만드는 모델만 사용자가 고른다. 검색·추출·임베딩은 서버 구현 그대로다.
+
+| 선택 | 질문 시 호출 | 답변을 만드는 곳 |
+|---|---|---|
+| 기본 Gemini | `POST /schools/{id}/query` | ASKU 서버(프로젝트 키) |
+| 내 Gemini | `POST /schools/{id}/retrieve` → `generativelanguage.googleapis.com` | 브라우저(사용자 개인 키) |
+| 내 PC Ollama | `POST /schools/{id}/retrieve` → `{ollamaHost}/api/generate` | 사용자 PC |
+
+- 설정(제공자·API 키·모델명·Ollama 주소)은 **`sessionStorage`에만** 둔다. 백엔드로 보내지
+  않고 `localStorage`에도 쓰지 않는다 — 탭을 닫으면 지워지는 것이 기본값이다.
+- `retrieve` 가 준 `instruction`+`context` 를 그대로 모델에 넘기므로, 어느 모델로 답하든
+  근거와 지시문이 같다. `source_type` 이 `null` 이면 모델을 부르지 않고 보류 문구를 쓴다.
+- Ollama 는 설정창의 "연결 확인"이 `GET {host}/api/tags` 로 설치된 모델 목록을 채운다.
+  실패 원인은 코드로 갈라 안내한다: 미실행·CORS(`OLLAMA_UNREACHABLE`, `OLLAMA_ORIGINS` 안내),
+  모델 없음(`OLLAMA_MODEL_NOT_FOUND`), https 페이지에서 `http://localhost` 호출 차단(`MIXED_CONTENT`).
+- Gemini 오류도 키 거부(`GEMINI_AUTH`)·한도(`GEMINI_QUOTA`)·모델명(`GEMINI_MODEL_NOT_FOUND`)·
+  빈 응답(`GEMINI_EMPTY`)으로 구분한다.
 
 ## 디자인 목업 → 백엔드 필드 매핑에서 조정한 것
 

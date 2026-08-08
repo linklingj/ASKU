@@ -43,6 +43,7 @@ from app.schemas import (
     QueryResponse,
     RecrawlResponse,
     RejectedAttachment,
+    RetrieveResponse,
     SchoolCreateRequest,
     SchoolDetailResponse,
     SchoolDetailStats,
@@ -664,22 +665,33 @@ def get_school(school_id: int):
     )
 
 
-@app.post("/schools/{school_id}/query", response_model=QueryResponse)
-def query_school(school_id: int, body: QueryRequest):
-    """선택한 학교의 지식그래프를 기반으로 질문에 답변한다."""
-    storage = _get_storage()
+def _query_not_ready(storage, school_id: int):
+    """질의를 받을 수 없는 학교면 오류 응답을, 받을 수 있으면 ``None`` 을 반환한다.
+
+    아직 준비되지 않은 학교라도 색인이 끝난 첨부가 하나라도 있으면 크롤링 결과 없이
+    문서 RAG 로 답할 수 있으므로 질의를 열어준다. 질의 계열 엔드포인트(``query``·
+    ``retrieve``)가 같은 판정을 쓴다.
+    """
+
     school = storage.get_school(school_id)
     if school is None:
         return _school_not_found(school_id)
-
-    # 아직 준비되지 않은 학교에 질의 시. 다만 색인이 끝난 첨부가 하나라도 있으면
-    # 크롤링 결과 없이도 문서 RAG 로 답할 수 있으므로 질의를 열어준다.
     if school.status not in ("ready", "partial_failed") and storage.count_ready_attachments(school_id) == 0:
         return _error_response(
             503,
             "SCHOOL_NOT_READY",
             "학교 데이터가 아직 준비되지 않았습니다. 크롤링·인덱싱이 완료될 때까지 기다려주세요.",
         )
+    return None
+
+
+@app.post("/schools/{school_id}/query", response_model=QueryResponse)
+def query_school(school_id: int, body: QueryRequest):
+    """선택한 학교의 지식그래프를 기반으로 질문에 답변한다(서버 기본 모델)."""
+    storage = _get_storage()
+    not_ready = _query_not_ready(storage, school_id)
+    if not_ready is not None:
+        return not_ready
 
     rag = _get_rag_engine()
     result = rag.answer(school_id, body.question)
@@ -689,6 +701,36 @@ def query_school(school_id: int, body: QueryRequest):
         sources=result.sources,
         entity_ids=result.entity_ids,
         source_type=result.source_type,
+    )
+
+
+@app.post("/schools/{school_id}/retrieve", response_model=RetrieveResponse)
+def retrieve_school(school_id: int, body: QueryRequest):
+    """근거만 검색해 돌려준다 — 답변 생성은 하지 않는다(사용자 모델 경로).
+
+    사용자가 자기 Gemini 키나 자기 PC 의 Ollama 를 고른 경우 브라우저가 이 응답의
+    ``instruction`` + ``context`` 로 직접 모델을 부른다. 서버는 **답변 생성을 하지
+    않으며** 사용자 API 키를 받지도, 저장하지도 않는다. 검색 단계의 질문 엔티티
+    추출은 ``/query`` 와 동일하게 서버 모델이 맡는다 — 그래프 확장 결과가 모델
+    선택에 따라 달라지지 않게 하기 위해서다(계획 §1-1).
+    """
+    storage = _get_storage()
+    not_ready = _query_not_ready(storage, school_id)
+    if not_ready is not None:
+        return not_ready
+
+    from app.rag import NO_EVIDENCE_ANSWER, answer_prompt
+
+    rag = _get_rag_engine()
+    result = rag.retrieve(school_id, body.question)
+
+    return RetrieveResponse(
+        context=result.context,
+        instruction=answer_prompt(body.question),
+        sources=result.sources,
+        entity_ids=result.entity_ids,
+        source_type=result.source_type,
+        no_evidence_answer=NO_EVIDENCE_ANSWER,
     )
 
 
