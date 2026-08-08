@@ -37,6 +37,7 @@ class School(BaseModel):
     school_id: int | None = None  # PK(BIGSERIAL): insert 전에는 None
     name: str
     base_url: str
+    image_url: str | None = None
     crawl_schedule: str | None = None  # 예: 'daily', 'weekly'
     status: str = "idle"
     crawl_started_at: datetime | None = None

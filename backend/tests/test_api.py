@@ -237,6 +237,52 @@ class TestGetSchool:
         assert body["error"]["code"] == "SCHOOL_NOT_FOUND"
 
 
+# ── 관리자 인증·학교 관리 ──────────────────────────────────────────────
+
+
+class TestAdminSchoolManagement:
+    @pytest.fixture
+    def admin_headers(self, client, monkeypatch):
+        monkeypatch.setenv("ADMIN_PASSWORD", "test-password")
+        monkeypatch.setenv("ADMIN_TOKEN_SECRET", "test-secret")
+        response = client.post("/admin/login", json={"password": "test-password"})
+        assert response.status_code == 200
+        return {"Authorization": "Bearer " + response.json()["token"]}
+
+    def test_login_rejects_incorrect_password(self, client):
+        with patch.dict("os.environ", {"ADMIN_PASSWORD": "test-password", "ADMIN_TOKEN_SECRET": "test-secret"}):
+            response = client.post("/admin/login", json={"password": "incorrect"})
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "INVALID_ADMIN_CREDENTIALS"
+
+    def test_update_requires_admin_token(self, client):
+        with patch.dict("os.environ", {"ADMIN_PASSWORD": "test-password", "ADMIN_TOKEN_SECRET": "test-secret"}):
+            response = client.patch("/schools/1", json={"image_url": "https://example.com/logo.png"})
+        assert response.status_code == 401
+
+    def test_admin_can_update_image_url(self, client, mock_storage, admin_headers):
+        mock_storage.update_school.return_value = _make_school(image_url="https://example.com/logo.png")
+        response = client.patch(
+            "/schools/1", json={"image_url": "https://example.com/logo.png"}, headers=admin_headers
+        )
+        assert response.status_code == 200
+        assert response.json()["image_url"] == "https://example.com/logo.png"
+        mock_storage.update_school.assert_called_once_with(1, image_url="https://example.com/logo.png")
+
+    def test_admin_can_delete_school(self, client, mock_storage, admin_headers):
+        mock_storage.delete_school.return_value = True
+        response = client.delete("/schools/1", headers=admin_headers)
+        assert response.status_code == 204
+        mock_storage.delete_school.assert_called_once_with(1)
+
+    def test_delete_rejects_school_with_active_crawl(self, client, mock_storage, admin_headers):
+        mock_storage.get_school.return_value = _make_school(status="crawling")
+        response = client.delete("/schools/1", headers=admin_headers)
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "CRAWL_IN_PROGRESS"
+        mock_storage.delete_school.assert_not_called()
+
+
 # ── POST /schools/{id}/query ──────────────────────────────────────────
 
 
