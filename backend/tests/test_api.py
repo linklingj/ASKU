@@ -337,6 +337,81 @@ class TestRecrawl:
         resp = client.post("/schools/999/recrawl")
         assert resp.status_code == 404
 
+    def test_max_nodes_defaults_when_omitted(self, client, mock_storage):
+        with patch("app.api._run_crawl") as run_crawl:
+            resp = client.post("/schools/1/recrawl")
+        assert resp.status_code == 202
+        assert run_crawl.call_args.args[3] == app.api.DEFAULT_MAX_NODES
+
+    def test_max_nodes_can_be_overridden(self, client, mock_storage):
+        with patch("app.api._run_crawl") as run_crawl:
+            resp = client.post("/schools/1/recrawl?max_nodes=50")
+        assert resp.status_code == 202
+        assert run_crawl.call_args.args[3] == 50
+
+    def test_max_nodes_must_be_positive(self, client, mock_storage):
+        # 검증 오류는 이 앱의 공통 규약대로 400 INVALID_REQUEST 로 나온다.
+        resp = client.post("/schools/1/recrawl?max_nodes=0")
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "INVALID_REQUEST"
+
+
+# ── 노드 상한 (_run_crawl) ─────────────────────────────────────────────
+
+
+class TestNodeLimit:
+    """상한에 닿으면 남은 페이지를 더 추출하지 않고 멈춰야 한다.
+
+    멈추지 않으면 노드가 계속 늘어 그래프 조회가 메모리를 다 먹는다.
+    """
+
+    def _run(self, mock_storage, entity_counts, max_nodes, page_count=3):
+        pages = [MagicMock(source_url=f"https://x.ac.kr/{i}") for i in range(page_count)]
+        chunk = MagicMock()
+        build_result = BuildResult(
+            school_id=1, source_url="https://x.ac.kr/0", content_hash="h",
+            doc_id=1, entity_ids=[1], edge_ids=[], status="complete",
+        )
+        # 청크 빌드 직후 세는 노드 수. 상한을 넘는 시점을 여기서 조종한다.
+        mock_storage.get_school_stats.side_effect = [
+            {"document_count": 0, "entity_count": n, "attachment_count": 0, "last_crawled_at": None}
+            for n in entity_counts
+        ]
+        extractor = MagicMock()
+        extractor.process.return_value = [chunk]
+
+        crawler = MagicMock()
+        crawler.pages_for_extractor.return_value = pages
+
+        with (
+            patch("app.api._get_storage", return_value=mock_storage),
+            patch("app.api._ensure_adapter_spec", return_value=None),
+            patch("app.api._record_crawl_quality", return_value=[]),
+            patch("app.api._refresh_broken_spec"),
+            patch("app.crawler.Crawler") as crawler_cls,
+            patch("app.crawler.adapter_for"),
+            patch("app.crawler.boards_for", return_value=[]),
+            patch("app.extractor.DocumentExtractor", return_value=extractor),
+            patch("app.graph_builder.GraphBuilder") as builder_cls,
+            patch("app.llm.LocalEmbedder"),
+            patch("app.llm.make_llm_provider"),
+        ):
+            crawler_cls.from_storage.return_value = crawler
+            builder_cls.return_value.build.return_value = build_result
+            app.api._run_crawl(1, "https://x.ac.kr", "recrawl", max_nodes)
+
+        return extractor
+
+    def test_stops_extracting_once_cap_is_reached(self, mock_storage):
+        # 첫 페이지에서 이미 상한(10)에 닿으면 나머지 2페이지는 추출하지 않는다.
+        extractor = self._run(mock_storage, entity_counts=[10, 10, 10], max_nodes=10)
+        assert extractor.process.call_count == 1
+
+    def test_keeps_going_below_the_cap(self, mock_storage):
+        # 상한(100)에 못 미치면 3페이지를 모두 추출한다.
+        extractor = self._run(mock_storage, entity_counts=[1, 2, 3], max_nodes=100)
+        assert extractor.process.call_count == 3
+
 
 # ── POST /schools/{id}/reset-status ────────────────────────────────────
 

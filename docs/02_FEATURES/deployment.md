@@ -50,6 +50,7 @@ ASKU 백엔드(FastAPI) + DB(Postgres+pgvector)를 **Railway** 에 서비스 2�
 | `OPENAI_MODEL` | 기본 `gpt-4o-mini` (저비용). 계정에서 쓸 수 있는 모델로 지정 |
 | `LLM_PROVIDER` | `openai`(기본) 또는 `gemini`. gemini 로 되돌릴 때만 지정하고, 그때는 `GEMINI_API_KEY`·`GEMINI_MODEL` 를 대신 넣는다 |
 | `SPEC_AUTOGEN` | 알려진 템플릿과 맞지 않는 학교의 수집 규격을 LLM 으로 생성할지. 기본 꺼짐(`1`·`true`·`yes` 로 켬) |
+| `MAX_GRAPH_NODES` | 학교당 그래프 노드(엔티티) 상한. 기본 `120`. 노드가 늘수록 그래프 조회·검색 메모리가 커져 컨테이너가 죽을 수 있어 둔 안전장치다. 재배포 없이 조정하려고 환경변수로 열어 뒀고, 한 번만 다르게 돌리려면 `POST /recrawl?max_nodes=…` 로 넘긴다 |
 
 `SPEC_AUTOGEN` 을 켜면 새 학교를 등록할 때마다 호출당 약 4만 토큰이 나갈 수 있다. 알려진 게시판 제품은 이 설정과 무관하게 LLM 없이 처리되므로, 먼저 꺼 둔 채로 등록해 보고 템플릿에 걸리지 않는 학교가 나올 때 켜는 편이 안전하다([`03_crawler.md`](../01_SYSTEM/03_crawler.md) §7-2).
 

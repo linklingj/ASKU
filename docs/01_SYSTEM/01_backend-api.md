@@ -259,10 +259,14 @@ DELETE /schools/{school_id}/attachments/{attachment_id}
 ### 2.5 수동 재크롤링
 
 ```
-POST /schools/{school_id}/recrawl
+POST /schools/{school_id}/recrawl?max_nodes=120
 ```
 
 해당 학교의 크롤링을 수동으로 다시 실행한다.
+
+| 쿼리 | 기본값 | 설명 |
+|---|---|---|
+| `max_nodes` | `MAX_GRAPH_NODES` 환경변수(기본 `120`) | 이 학교 그래프의 노드(엔티티) 상한. `1` 이상 |
 
 **응답 `202 Accepted`**
 
@@ -275,7 +279,15 @@ POST /schools/{school_id}/recrawl
 ```
 
 Crawler에 `CrawlRequest`(`mode: "recrawl"`)를 전달한다.
-이미 크롤링 중이면 `409 Conflict`를 반환한다.
+이미 크롤링 중이면 `409 Conflict`를, `max_nodes` 가 1 미만이면 `400 INVALID_REQUEST` 를 반환한다.
+
+**노드 상한** — 노드가 늘수록 그래프 조회·검색이 쓰는 메모리가 커지므로 학교당 총 노드 수를 제한한다.
+인덱싱 중 청크를 하나 반영할 때마다 현재 노드 수를 세고, 상한에 닿으면 **남은 페이지를 더 추출하지 않고
+멈춘다**(LLM 호출도 함께 아낀다). 상한 도달은 실패가 아니므로 상태는 `ready` 로 끝나고,
+`GET /status` 의 `message` 로 중단 사실을 알린다. 노드 수는 build 결과를 더하지 않고 DB 로 세는데,
+같은 엔티티가 여러 청크에 나오면 upsert 로 합쳐져 실제보다 부풀려지기 때문이다.
+
+`POST /schools`(최초 등록)와 스케줄러 재크롤은 상한을 따로 받지 않고 기본값을 쓴다.
 
 ---
 
