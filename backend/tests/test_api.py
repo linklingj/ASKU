@@ -157,8 +157,15 @@ def mock_storage():
 
 @pytest.fixture
 def client(mock_storage):
-    """모킹된 Storage로 FastAPI TestClient를 반환한다."""
-    with patch("app.api._get_storage", return_value=mock_storage):
+    """모킹된 Storage로 FastAPI TestClient를 반환한다.
+
+    크롤 실행기도 모킹한다. 실제로 제출하면 백그라운드 스레드가 모킹된 Storage 를
+    건드려 다른 테스트의 호출 검증과 뒤섞인다.
+    """
+    with (
+        patch("app.api._get_storage", return_value=mock_storage),
+        patch("app.api._CRAWL_EXECUTOR"),
+    ):
         from app.api import app
 
         with TestClient(app, raise_server_exceptions=False) as c:
@@ -338,22 +345,61 @@ class TestRecrawl:
         assert resp.status_code == 404
 
     def test_max_nodes_defaults_when_omitted(self, client, mock_storage):
-        with patch("app.api._run_crawl") as run_crawl:
-            resp = client.post("/schools/1/recrawl")
+        resp = client.post("/schools/1/recrawl")
         assert resp.status_code == 202
-        assert run_crawl.call_args.args[3] == app.api.DEFAULT_MAX_NODES
+        # submit(_run_crawl, school_id, base_url, mode, max_nodes)
+        assert app.api._CRAWL_EXECUTOR.submit.call_args.args[4] == app.api.DEFAULT_MAX_NODES
 
     def test_max_nodes_can_be_overridden(self, client, mock_storage):
-        with patch("app.api._run_crawl") as run_crawl:
-            resp = client.post("/schools/1/recrawl?max_nodes=50")
+        resp = client.post("/schools/1/recrawl?max_nodes=50")
         assert resp.status_code == 202
-        assert run_crawl.call_args.args[3] == 50
+        assert app.api._CRAWL_EXECUTOR.submit.call_args.args[4] == 50
 
     def test_max_nodes_must_be_positive(self, client, mock_storage):
         # 검증 오류는 이 앱의 공통 규약대로 400 INVALID_REQUEST 로 나온다.
         resp = client.post("/schools/1/recrawl?max_nodes=0")
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "INVALID_REQUEST"
+
+
+# ── 크롤 직렬화 ────────────────────────────────────────────────────────
+
+
+class TestCrawlSerialization:
+    """크롤은 한 번에 하나만 돌아야 한다.
+
+    동시에 돌면 크롤마다 만드는 bge-m3 임베더가 그 수만큼 메모리에 겹쳐 뜬다.
+    """
+
+    def test_only_one_crawl_runs_at_a_time(self):
+        import threading
+
+        overlap = []
+        running = []
+        lock = threading.Lock()
+
+        def fake_inner(school_id, base_url, mode, max_nodes):
+            with lock:
+                running.append(school_id)
+                if len(running) > 1:  # 겹쳐 들어왔다 = 직렬화 실패
+                    overlap.append(tuple(running))
+            import time
+
+            time.sleep(0.05)
+            with lock:
+                running.remove(school_id)
+
+        with patch("app.api._run_crawl_inner", side_effect=fake_inner):
+            threads = [
+                threading.Thread(target=app.api._run_crawl, args=(i, "https://x.ac.kr", "recrawl", 10))
+                for i in range(4)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert overlap == []
 
 
 # ── 노드 상한 (_run_crawl) ─────────────────────────────────────────────
