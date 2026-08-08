@@ -370,6 +370,49 @@ class TestResetStatus:
         assert resp.status_code == 404
 
 
+# ── POST /schools/{id}/force-complete ──────────────────────────────────
+
+
+class TestForceComplete:
+    def test_200_completes_indexing(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="indexing")
+        resp = client.post("/schools/1/force-complete")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ready"
+        mock_storage.update_school_status.assert_called_once_with(1, "ready")
+
+    def test_200_completes_partial_failed(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="partial_failed")
+        resp = client.post("/schools/1/force-complete")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ready"
+
+    def test_409_when_crawling(self, client, mock_storage):
+        # 아직 아무것도 색인되지 않았으므로 완료로 속이면 안 된다.
+        mock_storage.get_school.return_value = _make_school(status="crawling")
+        resp = client.post("/schools/1/force-complete")
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "NOT_ELIGIBLE"
+        mock_storage.update_school_status.assert_not_called()
+
+    def test_409_when_already_ready(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="ready")
+        resp = client.post("/schools/1/force-complete")
+        assert resp.status_code == 409
+        mock_storage.update_school_status.assert_not_called()
+
+    def test_409_when_failed(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="failed")
+        resp = client.post("/schools/1/force-complete")
+        assert resp.status_code == 409
+
+    def test_404_not_found(self, client, mock_storage):
+        mock_storage.get_school.return_value = None
+        resp = client.post("/schools/999/force-complete")
+        assert resp.status_code == 404
+
+
 # ── GET /schools/{id}/status ───────────────────────────────────────────
 
 

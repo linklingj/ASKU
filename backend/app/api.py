@@ -36,6 +36,7 @@ from app.schemas import (
     EntityNeighbor,
     ErrorDetail,
     ErrorResponse,
+    ForceCompleteResponse,
     GraphEdge,
     GraphNode,
     GraphResponse,
@@ -898,6 +899,35 @@ def reset_school_status(school_id: int):
         school_id=school_id,
         status="failed",
         message="상태를 failed 로 되돌렸습니다. 다시 재크롤링을 시작할 수 있습니다.",
+    )
+
+
+@app.post("/schools/{school_id}/force-complete", response_model=ForceCompleteResponse)
+def force_complete_school(school_id: int):
+    """indexing/partial_failed 상태를 관리용으로 강제 ready(완료) 처리한다.
+
+    인덱싱이 끼었거나 일부만 실패했지만 이미 쌓인 데이터로 질의해도 충분하다고
+    운영자가 판단했을 때 쓴다. 실제로 색인을 다시 돌리지 않는다 — 상태값만
+    바꾼다. `crawling`(아직 아무것도 색인 안 됨)·`failed`(색인 결과 없음)·
+    `ready`(이미 완료)에서는 데이터 없이 완료로 속일 수 있어 거부한다.
+    """
+    storage = _get_storage()
+    school = storage.get_school(school_id)
+    if school is None:
+        return _school_not_found(school_id)
+
+    if school.status not in ("indexing", "partial_failed"):
+        return _error_response(
+            409, "NOT_ELIGIBLE", f"현재 상태가 '{school.status}' 라 강제 완료 대상이 아닙니다."
+        )
+
+    storage.update_school_status(school_id, "ready")
+    _PROGRESS_MAP.pop(school_id, None)
+
+    return ForceCompleteResponse(
+        school_id=school_id,
+        status="ready",
+        message="상태를 ready 로 강제 완료 처리했습니다. 지금까지 색인된 데이터로 질의할 수 있습니다.",
     )
 
 
