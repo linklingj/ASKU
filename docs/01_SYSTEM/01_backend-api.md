@@ -279,6 +279,35 @@ Crawler에 `CrawlRequest`(`mode: "recrawl"`)를 전달한다.
 
 ---
 
+### 2.5-1 관리용 상태 리셋
+
+```
+POST /schools/{school_id}/reset-status
+```
+
+크롤링·인덱싱 도중 컨테이너가 죽으면(재배포·OOM 등) `crawling`/`indexing` 상태가 영구히 남아
+이후 모든 `recrawl` 이 `409 CRAWL_IN_PROGRESS` 로 막힌다. 자동 판별 없이, 운영자가
+`GET /schools/{id}/status` 로 오래 멈춰 있음을(`started_at` 이 크롤 예산 시간을 훨씬 넘김)
+직접 확인한 뒤 호출하는 수동 복구 경로다.
+
+**응답 `200 OK`**
+
+```json
+{
+  "school_id": 1,
+  "status": "failed",
+  "message": "상태를 failed 로 되돌렸습니다. 다시 재크롤링을 시작할 수 있습니다."
+}
+```
+
+현재 상태가 `crawling`/`indexing` 이 아니면(이미 정상 종료됐거나 애초에 끼지 않음) `409 NOT_STUCK` 을
+반환하고 아무것도 바꾸지 않는다. 리셋 후 상태는 `failed` 로 남고, `POST /recrawl` 로 다시 시작한다.
+
+> 인증 없음(MVP 전역 정책과 동일). 어떤 상태여도 강제로 되돌리는 관리용 엔드포인트이므로 공개 배포에서는
+> 신뢰 경계를 넘기 전에 호출 주체를 제한하는 편이 좋다.
+
+---
+
 ### 2.6 크롤링·인덱싱 상태
 
 ```

@@ -43,6 +43,7 @@ from app.schemas import (
     QueryResponse,
     RecrawlResponse,
     RejectedAttachment,
+    ResetStatusResponse,
     SchoolCreateRequest,
     SchoolDetailResponse,
     SchoolDetailStats,
@@ -868,6 +869,35 @@ def recrawl_school(school_id: int, background_tasks: BackgroundTasks):
         school_id=school_id,
         status="crawling",
         message="재크롤링이 시작되었습니다.",
+    )
+
+
+@app.post("/schools/{school_id}/reset-status", response_model=ResetStatusResponse)
+def reset_school_status(school_id: int):
+    """끼어버린 크롤링·인덱싱 상태를 관리용으로 강제 되돌린다.
+
+    컨테이너가 재배포·OOM 등으로 죽으면 `_run_crawl`의 예외 핸들러가 실행되지
+    않아 상태가 crawling/indexing 에 영구히 남는다(`try_start_crawl` 이 이후
+    모든 recrawl 을 409 로 막는다). 자동 판별 없이, 운영자가 `/status` 로 직접
+    확인한 뒤 호출하는 수동 복구 경로다.
+    """
+    storage = _get_storage()
+    school = storage.get_school(school_id)
+    if school is None:
+        return _school_not_found(school_id)
+
+    if school.status not in ("crawling", "indexing"):
+        return _error_response(
+            409, "NOT_STUCK", f"현재 상태가 '{school.status}' 라 리셋 대상이 아닙니다."
+        )
+
+    storage.update_school_status(school_id, "failed")
+    _PROGRESS_MAP.pop(school_id, None)
+
+    return ResetStatusResponse(
+        school_id=school_id,
+        status="failed",
+        message="상태를 failed 로 되돌렸습니다. 다시 재크롤링을 시작할 수 있습니다.",
     )
 
 
