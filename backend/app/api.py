@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -344,12 +346,49 @@ def _school_not_found(school_id: int) -> JSONResponse:
 
 _PROGRESS_MAP: dict[int, dict] = {}
 
+# 학교 하나가 가질 수 있는 그래프 노드(엔티티) 상한. 노드가 늘수록 그래프 조회·검색이
+# 잡아먹는 메모리가 커져 실제로 컨테이너가 죽었다. 운영 중 조정하는 값이라 환경변수로
+# 열어 둔다(재배포 없이 바꾸기 위함). 호출자가 넘기면 그 값이 우선한다.
+DEFAULT_MAX_NODES = int(os.getenv("MAX_GRAPH_NODES", "1200"))
 
-def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
+# 크롤은 프로세스 전체에서 한 번에 하나만 돈다. `try_start_crawl` 은 같은 학교의 중복만
+# 막아 다른 학교끼리는 동시에 돌 수 있었고, 크롤마다 bge-m3 임베더를 새로 만들기 때문에
+# 동시 실행 수만큼 모델이 메모리에 겹쳐 떠 24GB 를 넘겼다. 크롤 대상 서버 부하와 LLM
+# 레이트리밋에도 직렬 실행이 낫다.
+# ponytail: 프로세스 안에서만 유효한 락. 워커를 늘리면 DB 기반 잠금이 필요하다
+#           (배포는 워커 1개 고정 — deployment.md).
+_CRAWL_LOCK = threading.Lock()
+
+# 차례를 기다리는 크롤이 FastAPI 스레드풀을 붙잡지 않도록 전용 워커에서 돌린다.
+# 엔드포인트가 동기 함수라 스레드풀이 마르면 API 전체가 응답하지 못한다.
+_CRAWL_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asku-crawl")
+
+
+def _run_crawl(school_id: int, base_url: str, mode: str, max_nodes: int = 0) -> None:
+    """크롤 파이프라인을 한 번에 하나만 실행한다(직렬화 래퍼).
+
+    스케줄러·API 등 모든 호출부가 이 함수를 지나므로 여기 한 곳에서만 막는다.
+    """
+    # 대기 중임을 먼저 알린다. 이 표시가 없으면 차례를 기다리는 학교가 끼어버린
+    # 크롤과 구분되지 않는다.
+    _PROGRESS_MAP[school_id] = {
+        "pages": 0, "chunks": 0, "entities": 0, "edges": 0,
+        "progress": 0.05, "stage": "crawling",
+        "message": "다른 학교 크롤이 끝나기를 기다리는 중입니다.",
+    }
+    with _CRAWL_LOCK:
+        _run_crawl_inner(school_id, base_url, mode, max_nodes)
+
+
+def _run_crawl_inner(school_id: int, base_url: str, mode: str, max_nodes: int = 0) -> None:
     """백그라운드에서 크롤링 파이프라인을 실행한다.
 
     crawling → indexing → ready 상태 전이를 추적한다.
     실패 시 failed 또는 partial_failed 로 전이한다.
+
+    ``max_nodes`` 는 이 학교의 그래프 노드 상한이다. 0 이하면 ``DEFAULT_MAX_NODES``
+    를 쓴다(스케줄러처럼 3인자로 부르는 기존 호출부를 그대로 두기 위한 기본값).
+    상한에 닿으면 남은 페이지를 더 추출하지 않고 멈춘다 — LLM 호출도 같이 아낀다.
     """
     storage = _get_storage()
     crawl_ok = False
@@ -441,8 +480,12 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
 
         has_failures = len(run.failures) > 0
         total_pages = max(len(pages), 1)
+        node_cap = max_nodes if max_nodes > 0 else DEFAULT_MAX_NODES
+        node_limit_hit = False
 
         for i, page in enumerate(pages):
+            if node_limit_hit:
+                break
             try:
                 _PROGRESS_MAP[school_id]["stage"] = "extracting"
                 result = extractor.process(page)
@@ -466,6 +509,15 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
                         if build_result.status == "partial":
                             has_failures = True
 
+                    # 노드 수는 DB 로 센다. 청크마다 같은 엔티티가 다시 나오면
+                    # upsert 로 합쳐지므로 build 결과를 더하면 실제보다 부풀려진다.
+                    if storage.get_school_stats(school_id)["entity_count"] >= node_cap:
+                        node_limit_hit = True
+                        logger.info(
+                            "노드 상한 도달로 인덱싱 중단: school_id=%d, cap=%d", school_id, node_cap
+                        )
+                        break
+
                 # 진행률 계산 (0.4 ~ 0.9)
                 curr_p = 0.4 + (0.5 * (i + 1) / total_pages)
                 _PROGRESS_MAP[school_id]["progress"] = round(curr_p, 2)
@@ -475,12 +527,17 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
                 logger.exception("파이프라인 실패: school_id=%d, url=%s", school_id, page.source_url)
 
         # 3. 완료
+        # 상한에 걸린 것은 실패가 아니다 — 의도한 중단이라 상태를 낮추지 않는다.
         final_status = "partial_failed" if has_failures else "ready"
         storage.update_school_status(school_id, final_status)
 
         _PROGRESS_MAP[school_id]["stage"] = "done" if final_status == "ready" else final_status
         _PROGRESS_MAP[school_id]["progress"] = 1.0
-        _PROGRESS_MAP[school_id]["message"] = "인덱싱이 완료되었습니다."
+        _PROGRESS_MAP[school_id]["message"] = (
+            f"노드 상한({node_cap}개)에 도달해 인덱싱을 중단했습니다."
+            if node_limit_hit
+            else "인덱싱이 완료되었습니다."
+        )
         crawl_ok = final_status in ("ready", "partial_failed")
 
     except Exception:
@@ -528,6 +585,9 @@ async def lifespan(app: FastAPI):
         await scheduler.stop()
     except Exception:
         logger.warning("스케줄러 정지 실패", exc_info=True)
+    # 진행 중인 크롤을 기다리지 않는다. 종료는 대개 재배포라 어차피 컨테이너가 사라지고,
+    # 여기서 붙잡으면 배포가 크롤 시간만큼 지연된다.
+    _CRAWL_EXECUTOR.shutdown(wait=False)
     storage.close()
 
 
@@ -613,7 +673,9 @@ def create_school(body: SchoolCreateRequest, background_tasks: BackgroundTasks):
         logger.exception("스케줄러 등록 실패: school_id=%s", school.school_id)
 
     # 백그라운드에서 크롤링 시작
-    background_tasks.add_task(_run_crawl, school.school_id, school.base_url, "initial")
+    # 전용 워커에 넘긴다. BackgroundTasks 로 붙이면 FastAPI 스레드풀에서 돌아,
+    # 앞선 크롤을 기다리는 동안 동기 엔드포인트용 스레드를 붙잡는다.
+    _CRAWL_EXECUTOR.submit(_run_crawl, school.school_id, school.base_url, "initial")
 
     return SchoolResponse(
         school_id=updated.school_id,
@@ -838,8 +900,17 @@ def delete_attachment(school_id: int, attachment_id: int):
 
 
 @app.post("/schools/{school_id}/recrawl", status_code=202, response_model=RecrawlResponse)
-def recrawl_school(school_id: int, background_tasks: BackgroundTasks):
-    """해당 학교의 크롤링을 수동으로 다시 실행한다 (원자적 상태 변경으로 중복 방지)."""
+def recrawl_school(
+    school_id: int,
+    background_tasks: BackgroundTasks,
+    max_nodes: int = Query(
+        DEFAULT_MAX_NODES, ge=1, description="이 학교 그래프의 노드(엔티티) 상한"
+    ),
+):
+    """해당 학교의 크롤링을 수동으로 다시 실행한다 (원자적 상태 변경으로 중복 방지).
+
+    ``max_nodes`` 로 이번 실행의 노드 상한을 조절한다. 생략하면 `DEFAULT_MAX_NODES`.
+    """
     storage = _get_storage()
 
     # 원자적 한 줄 UPDATE로 상태 변경 시도
@@ -850,7 +921,7 @@ def recrawl_school(school_id: int, background_tasks: BackgroundTasks):
             return _school_not_found(school_id)
         return _error_response(409, "CRAWL_IN_PROGRESS", "이미 크롤링이 진행 중입니다.")
 
-    background_tasks.add_task(_run_crawl, school_id, updated.base_url, "recrawl")
+    _CRAWL_EXECUTOR.submit(_run_crawl, school_id, updated.base_url, "recrawl", max_nodes)
 
     try:
         from app.scheduler import calculate_next_run, get_scheduler
