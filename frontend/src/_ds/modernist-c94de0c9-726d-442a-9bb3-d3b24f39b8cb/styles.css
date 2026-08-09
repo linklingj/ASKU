@@ -79,7 +79,8 @@ h1, h2, h3, h4 { font-family: var(--font-heading); font-weight: var(--font-headi
    ══════════════════════════════════════════════════════════════════════ */
 
 *, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; font-size: 15px; line-height: 1.55; font-weight: 400; }
+/* keep-all: 한글은 어절(단어) 단위로만 줄바꿈. 긴 URL·영문은 overflow-wrap 이 받아준다. */
+body { margin: 0; font-size: 15px; line-height: 1.55; font-weight: 400; word-break: keep-all; overflow-wrap: break-word; }
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-heading); font-weight: var(--font-heading-weight);
   line-height: 1.12; letter-spacing: -0.015em; margin: 0 0 var(--space-2);
