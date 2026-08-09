@@ -75,6 +75,8 @@
   <main style="position:relative;flex:1 1 auto;min-width:0;">
     <div id="qa-graph" style="position:absolute;inset:0;"></div>
 
+    <div id="qa-filter" style="position:absolute;top:76px;right:28px;z-index:16;display:flex;justify-content:flex-end;pointer-events:none;"></div>
+
     <div style="position:absolute;top:26px;right:28px;z-index:15;display:flex;align-items:center;gap:14px;">
       <span style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 45%,transparent);">드래그 · 휠 확대</span>
       <button data-act="reset" class="qa-invert btn-ink" style="display:inline-flex;align-items:center;height:38px;border:2px solid var(--color-text,#201e1d);background:var(--color-bg,#f3f2f2);color:var(--color-text,#201e1d);font-family:inherit;font-weight:700;font-size:12px;letter-spacing:.04em;padding:0 14px;cursor:pointer;">레이아웃 초기화</button>
@@ -324,6 +326,7 @@
     sidebar: true, off: {}, selId: null, q: "", busy: false, busyStage: "",
     ans: null, ansSources: [], srcIds: [],
     asked: "", everAsked: false, // asked: 답변창에 함께 띄우는 질문 / everAsked: 예시 질문 칩은 첫 진입에만
+    filterOpen: true,           // 오른쪽 노드 타입 필터 패널 펼침 여부
     school: null, statusStage: null, notReadyMsg: "",
     detail: null, detailLoading: false, graphErr: null,
     // 답변 모델 선택(계획 §1). model 은 저장된 설정, draft 는 설정창에서 편집 중인 값.
@@ -565,19 +568,6 @@
       + statusLine
       + '<div style="display:flex;gap:26px;margin-top:20px;">' + stat("노드", vis.length) + stat("연결", lVis) + '</div></div>';
 
-    var rows = typeInfo.types.map(function (t) {
-      var on = !state.off[t];
-      var color = typeInfo.color[t];
-      return '<div class="qa-type" data-act="type" data-key="' + esc(t) + '" style="display:flex;align-items:center;gap:12px;padding:9px 8px;margin:0 -8px;cursor:pointer;opacity:' + (on ? 1 : 0.42) + ';transition:opacity .18s ease,background .18s ease;">'
-        + '<span style="width:14px;height:14px;flex:0 0 auto;border:2px solid ' + color + ';background:' + (on ? color : "transparent") + ';"></span>'
-        + '<span style="flex:1 1 auto;font-size:14px;font-weight:700;letter-spacing:-.01em;">' + esc(t) + '</span>'
-        + '<span style="font-size:12px;font-weight:700;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">' + (typeInfo.counts[t] || 0) + '</span></div>';
-    }).join("");
-    var types = typeInfo.types.length ? ('<div style="padding:22px 24px 18px;border-bottom:2px solid var(--color-divider,#d8d5d4);">'
-      + '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px;">' + kicker("노드 타입")
-      + '<a href="#" data-act="allOn" style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--color-accent-700,#a52108);">전체 보기</a></div>'
-      + '<div style="display:flex;flex-direction:column;gap:2px;">' + rows + '</div></div>') : "";
-
     var selBody;
     if (state.detailLoading) selBody = '<div style="font-size:12px;font-weight:600;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">불러오는 중…</div>';
     else if (state.detail && state.detail._error) selBody = '<div style="font-size:12px;font-weight:600;line-height:1.7;color:var(--color-accent,#ec3013);">' + esc(state.detail._error) + '</div>';
@@ -585,7 +575,37 @@
     else selBody = '<div style="font-size:12px;font-weight:600;line-height:1.7;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">그래프의 노드를 클릭하면 상세 정보가 표시됩니다. 드래그로 노드를 옮기고, 휠로 확대·축소할 수 있습니다.</div>';
     var sel = '<div style="padding:22px 24px;flex:1 1 auto;min-height:0;">' + '<div style="margin-bottom:14px;">' + kicker("선택한 노드") + '</div>' + selBody + '</div>';
 
-    return head + types + sel;
+    return head + sel;
+  }
+
+  // 노드 타입 필터: 왼쪽 사이드바(노드 설명 전용)와 분리된 오른쪽 패널. 접기/펼치기.
+  function filterHTML() {
+    if (!typeInfo.types.length) return "";
+    var hidden = typeInfo.types.filter(function (t) { return state.off[t]; }).length;
+    var mini = function (label, act) {
+      return '<button data-act="' + act + '" class="btn-ink" style="flex:1 1 0;border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);color:var(--color-text,#201e1d);font-family:inherit;font-weight:700;font-size:11px;letter-spacing:.02em;padding:7px 0;cursor:pointer;">' + label + '</button>';
+    };
+    var rows = typeInfo.types.map(function (t) {
+      var on = !state.off[t];
+      var color = typeInfo.color[t];
+      return '<div class="qa-type" data-act="type" data-key="' + esc(t) + '" style="display:flex;align-items:center;gap:10px;padding:7px 8px;cursor:pointer;opacity:' + (on ? 1 : 0.42) + ';transition:opacity .18s ease,background .18s ease;">'
+        + '<span style="width:13px;height:13px;flex:0 0 auto;border:2px solid ' + color + ';background:' + (on ? color : "transparent") + ';"></span>'
+        + '<span style="flex:1 1 auto;font-size:13px;font-weight:700;letter-spacing:-.01em;">' + esc(t) + '</span>'
+        + '<span style="font-size:12px;font-weight:700;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">' + (typeInfo.counts[t] || 0) + '</span></div>';
+    }).join("");
+
+    var body = state.filterOpen
+      ? '<div style="border-top:2px solid var(--color-divider,#d8d5d4);padding:10px 10px 12px;">'
+        + '<div style="display:flex;gap:6px;margin-bottom:8px;">' + mini("전체 보기", "allOn") + mini("전체 숨기기", "allOff") + '</div>'
+        + '<div style="max-height:min(44vh,380px);overflow-y:auto;">' + rows + '</div></div>'
+      : "";
+
+    return '<div style="pointer-events:auto;width:250px;border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);box-shadow:0 10px 30px color-mix(in srgb,var(--color-text,#201e1d) 10%,transparent);">'
+      + '<div data-act="toggleFilter" style="display:flex;align-items:center;gap:8px;padding:11px 12px;cursor:pointer;">'
+      + '<span style="flex:1 1 auto;font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 58%,transparent);">노드 타입</span>'
+      + '<span style="font-size:11px;font-weight:700;color:' + (hidden ? "var(--color-accent,#ec3013)" : "color-mix(in srgb,var(--color-text,#201e1d) 45%,transparent)") + ';">' + (typeInfo.types.length - hidden) + '/' + typeInfo.types.length + '</span>'
+      + '<span style="font-size:13px;font-weight:800;line-height:1;transition:transform .2s ease;transform:rotate(' + (state.filterOpen ? "0deg" : "-90deg") + ');">▾</span>'
+      + '</div>' + body + '</div>';
   }
 
   function answerHTML() {
@@ -780,6 +800,7 @@
   var input, wasBusy = false;
   function render() {
     document.getElementById("qa-sbbody").innerHTML = sidebarHTML();
+    document.getElementById("qa-filter").innerHTML = filterHTML();
     document.getElementById("qa-answer").innerHTML = answerHTML();
     document.getElementById("qa-model").innerHTML = modelHTML();
     renderSettings();
@@ -821,7 +842,9 @@
     else if (act === "reset") { nodes.forEach(function (n) { n.fx = null; n.fy = null; }); if (sim) sim.alpha(0.9).restart(); setTimeout(function () { fit(500); }, 900); }
     else if (act === "back") { if (window.history.length > 1) window.history.back(); else location.href = "find.html"; }
     else if (act === "ask") { submit(); }
+    else if (act === "toggleFilter") { setState({ filterOpen: !state.filterOpen }); }
     else if (act === "allOn") { setState({ off: {} }, draw); }
+    else if (act === "allOff") { var all = {}; typeInfo.types.forEach(function (t) { all[t] = true; }); setState({ off: all }, draw); }
     else if (act === "type") { var key = el.getAttribute("data-key"); var next = {}; for (var k in state.off) next[k] = state.off[k]; next[key] = !state.off[key]; setState({ off: next }, draw); }
     else if (act === "node") { selectNode(el.getAttribute("data-id")); }
     else if (act === "clearAns") { setState({ ans: null, asked: "", ansSources: [], srcIds: [] }, style); }
