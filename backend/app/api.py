@@ -139,13 +139,19 @@ def _get_rag_engine():
         storage = _get_storage()
         embedder = _get_embedder()
         provider = make_llm_provider()
+        # 두 단계의 임계값은 비대칭이다(07 §3). 그래프 단계가 느슨하면 주제만 겹치는
+        # 공지가 통과해 단계가 "성공"해 버리고, 정답이 든 첨부까지 내려가지 않는다.
+        # 반대로 문서 단계까지 같이 조이면 fallback 자체가 막히므로 0.3 을 유지한다.
         graph_rag = GraphRAG(
             storage=storage,
             embedder=embedder,
             extractor=provider,
             generator=provider,
+            min_similarity=0.6,
         )
-        document_rag = DocumentRAG(storage=storage, embedder=embedder, generator=provider)
+        document_rag = DocumentRAG(
+            storage=storage, embedder=embedder, generator=provider, min_similarity=0.3
+        )
         _rag_engine = HybridRAG(graph_rag=graph_rag, document_rag=document_rag)
     return _rag_engine
 
