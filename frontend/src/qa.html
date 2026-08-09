@@ -272,7 +272,7 @@
   }
 
   // ── 질의 ──────────────────────────────────────────────────────────
-  // 기본 Gemini: 백엔드 /query 가 검색·생성을 함께 한다(기존 경로).
+  // ASKU 기본: 백엔드 /query 가 검색·생성을 함께 한다(기존 경로).
   // 내 Gemini·내 PC Ollama: 백엔드 /retrieve 로 근거만 받고 생성은 브라우저가 한다.
   function submit() {
     var q = (state.q || "").trim();
@@ -529,7 +529,7 @@
       if (!check.ok) { state.draft = draft; state.setStatus = { ok: false, message: check.message }; renderSettings(true); return; }
       setState({ model: ASKU_MODEL.save(draft), settingsOpen: false, setStatus: null });
     }
-    else if (act === "resetSettings") { state.draft = ASKU_MODEL.clear(); state.ollamaModels = []; state.setStatus = { ok: true, message: "기본 Gemini 로 되돌렸습니다." }; setState({ model: ASKU_MODEL.load() }); renderSettings(true); }
+    else if (act === "resetSettings") { state.draft = ASKU_MODEL.clear(); state.ollamaModels = []; state.setStatus = { ok: true, message: "ASKU 기본으로 되돌렸습니다." }; setState({ model: ASKU_MODEL.load() }); renderSettings(true); }
     else return false;
     return true;
   }

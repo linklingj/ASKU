@@ -6,7 +6,7 @@
 ## 실행
 
 ```bash
-# 백엔드 (Postgres·GEMINI_API_KEY·임베더 필요)
+# 백엔드 (Postgres·LLM 키·임베더 필요. 기본 제공자는 OpenAI — 08_llm-provider.md)
 cd backend && uvicorn app.api:app --port 8000
 # 프론트엔드
 cd frontend/src && python3 -m http.server 5500
@@ -34,7 +34,7 @@ cd frontend/src && python3 -m http.server 5500
 
 | 선택 | 질문 시 호출 | 답변을 만드는 곳 |
 |---|---|---|
-| 기본 Gemini | `POST /schools/{id}/query` | ASKU 서버(프로젝트 키) |
+| ASKU 기본 | `POST /schools/{id}/query` | ASKU 서버(프로젝트 키) |
 | 내 Gemini | `POST /schools/{id}/retrieve` → `generativelanguage.googleapis.com` | 브라우저(사용자 개인 키) |
 | 내 PC Ollama | `POST /schools/{id}/retrieve` → `{ollamaHost}/api/generate` | 사용자 PC |
 

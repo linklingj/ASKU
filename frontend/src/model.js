@@ -17,7 +17,7 @@
   var DEFAULT_GEMINI_MODEL = "gemini-2.0-flash";
 
   var PROVIDERS = [
-    { id: "server", label: "기본 Gemini", hint: "ASKU 서버 키로 답변합니다" },
+    { id: "server", label: "ASKU 기본", hint: "ASKU 서버 키로 답변합니다" },
     { id: "gemini", label: "내 Gemini", hint: "내 API 키로 브라우저에서 답변합니다" },
     { id: "ollama", label: "내 PC Ollama", hint: "내 컴퓨터의 Ollama 로 답변합니다" },
   ];
@@ -63,7 +63,7 @@
     cfg = normalize(cfg);
     if (cfg.provider === "gemini") return cfg.geminiModel || "내 Gemini";
     if (cfg.provider === "ollama") return cfg.ollamaModel || "내 PC Ollama";
-    return "기본 Gemini";
+    return "ASKU 기본";
   }
 
   // https 페이지에서 http://localhost 를 부르는 조합. **막지 않는다** — 대부분의

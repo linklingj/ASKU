@@ -22,7 +22,7 @@ assert.strictEqual(M.validate({ provider: "ollama" }).code, "NO_MODEL");
 assert.ok(M.validate({ provider: "ollama", ollamaModel: "llama3.1" }).ok);
 
 // label(): 질문창에 보이는 이름
-assert.strictEqual(M.label({ provider: "server" }), "기본 Gemini");
+assert.strictEqual(M.label({ provider: "server" }), "ASKU 기본");
 assert.strictEqual(M.label({ provider: "ollama", ollamaModel: "llama3.1" }), "llama3.1");
 
 // insecureLocal(): https 페이지 → http://localhost 조합인지. 막는 용도가 아니라
