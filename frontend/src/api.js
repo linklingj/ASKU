@@ -9,8 +9,13 @@
   try { stored = localStorage.getItem("asku_api"); } catch (_) {}
   var BASE = (qp || stored || "https://asku-production-ef66.up.railway.app").replace(/\/+$/, "");
 
-  function req(method, path, body) {
+  function req(method, path, body, admin) {
     var opts = { method: method, headers: { Accept: "application/json" } };
+    if (admin) {
+      var token = null;
+      try { token = sessionStorage.getItem("asku_admin_token"); } catch (_) {}
+      if (token) opts.headers.Authorization = "Bearer " + token;
+    }
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
@@ -48,5 +53,14 @@
     get: function (p) { return req("GET", p); },
     post: function (p, b) { return req("POST", p, b || {}); },
     upload: upload,
+    patchAdmin: function (p, b) { return req("PATCH", p, b, true); },
+    deleteAdmin: function (p) { return req("DELETE", p, undefined, true); },
+    adminLogin: function (password) {
+      return req("POST", "/admin/login", { password: password }).then(function (data) {
+        try { sessionStorage.setItem("asku_admin_token", data.token); } catch (_) {}
+        return data;
+      });
+    },
+    adminLogout: function () { try { sessionStorage.removeItem("asku_admin_token"); } catch (_) {} },
   };
 })();

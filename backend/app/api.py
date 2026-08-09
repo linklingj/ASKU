@@ -11,15 +11,19 @@ from __future__ import annotations
 
 import logging
 import os
+import base64
+import binascii
+import hashlib
+import hmac
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -29,6 +33,8 @@ from app.schemas import (
     AttachmentItem,
     AttachmentListResponse,
     AttachmentUploadResponse,
+    AdminLoginRequest,
+    AdminLoginResponse,
     CrawlQuality,
     CrawlQualityBoard,
     CrawlQualityFinding,
@@ -54,11 +60,56 @@ from app.schemas import (
     SchoolListItem,
     SchoolListResponse,
     SchoolResponse,
+    SchoolUpdateRequest,
     StatusProgressDetail,
     StatusResponse,
 )
 
 logger = logging.getLogger(__name__)
+
+_ADMIN_TOKEN_TTL_SECONDS = 60 * 60
+
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _admin_secret() -> tuple[str, str] | None:
+    password = os.getenv("ADMIN_PASSWORD")
+    token_secret = os.getenv("ADMIN_TOKEN_SECRET")
+    return (password, token_secret) if password and token_secret else None
+
+
+def _issue_admin_token(secret: str, *, now: datetime | None = None) -> tuple[str, datetime]:
+    now = now or datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=_ADMIN_TOKEN_TTL_SECONDS)
+    payload = _b64url(f"admin:{int(expires_at.timestamp())}".encode("utf-8"))
+    signature = _b64url(hmac.new(secret.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest())
+    return f"{payload}.{signature}", expires_at
+
+
+def _require_admin(authorization: str | None = Header(default=None)) -> None:
+    config = _admin_secret()
+    if config is None:
+        raise HTTPException(status_code=503, detail="관리자 인증이 구성되지 않았습니다.")
+    _, secret = config
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다.")
+    try:
+        payload, supplied_signature = authorization[7:].split(".", 1)
+        expected_signature = _b64url(hmac.new(secret.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest())
+        decoded = _b64url_decode(payload).decode("utf-8")
+        role, expiry = decoded.split(":", 1)
+        if role != "admin" or int(expiry) <= int(datetime.now(timezone.utc).timestamp()):
+            raise ValueError("expired or invalid role")
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            raise ValueError("invalid signature")
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        raise HTTPException(status_code=401, detail="유효하지 않거나 만료된 관리자 토큰입니다.") from None
 
 # ── 의존성 (지연 초기화) ──────────────────────────────────────────────
 
@@ -645,6 +696,21 @@ async def general_exception_handler(request: Request, exc: Exception):
 # ── 엔드포인트 ─────────────────────────────────────────────────────────
 
 
+@app.post("/admin/login", response_model=AdminLoginResponse)
+def admin_login(body: AdminLoginRequest):
+    """환경변수의 관리자 비밀번호를 검증하고 짧은 수명 토큰을 발급한다."""
+
+    config = _admin_secret()
+    if config is None:
+        return _error_response(503, "ADMIN_NOT_CONFIGURED", "관리자 인증이 구성되지 않았습니다.")
+    password, secret = config
+    # str 비교는 비ASCII 문자열에서 TypeError 를 내므로, UTF-8 바이트로 비교한다.
+    if not hmac.compare_digest(body.password.encode("utf-8"), password.encode("utf-8")):
+        return _error_response(401, "INVALID_ADMIN_CREDENTIALS", "관리자 비밀번호가 올바르지 않습니다.")
+    token, expires_at = _issue_admin_token(secret)
+    return AdminLoginResponse(token=token, expires_at=expires_at)
+
+
 @app.post("/schools", status_code=201, response_model=SchoolResponse)
 def create_school(body: SchoolCreateRequest, background_tasks: BackgroundTasks):
     """새 학교를 등록하고 초기 크롤링을 비동기로 시작한다."""
@@ -688,6 +754,7 @@ def create_school(body: SchoolCreateRequest, background_tasks: BackgroundTasks):
         school_id=updated.school_id,
         name=updated.name,
         base_url=updated.base_url,
+        image_url=updated.image_url,
         crawl_schedule=updated.crawl_schedule,
         status=updated.status,
         created_at=updated.created_at,
@@ -704,6 +771,7 @@ def list_schools(query: str | None = Query(default=None, description="학교명 
         SchoolListItem(
             school_id=s.school_id,
             name=s.name,
+            image_url=s.image_url,
             status=s.status,
             entity_count=count,
             updated_at=s.updated_at,
@@ -726,6 +794,7 @@ def get_school(school_id: int):
         school_id=school.school_id,
         name=school.name,
         base_url=school.base_url,
+        image_url=school.image_url,
         crawl_schedule=school.crawl_schedule,
         status=school.status,
         stats=SchoolDetailStats(**stats),
@@ -733,6 +802,46 @@ def get_school(school_id: int):
         created_at=school.created_at,
         updated_at=school.updated_at,
     )
+
+
+@app.patch("/schools/{school_id}", response_model=SchoolResponse)
+def update_school(school_id: int, body: SchoolUpdateRequest, _: None = Depends(_require_admin)):
+    """관리자만 학교명·공지 URL·대표 이미지 URL을 수정한다."""
+
+    school = _get_storage().update_school(school_id, **body.model_dump(exclude_unset=True))
+    if school is None:
+        return _school_not_found(school_id)
+    return SchoolResponse(
+        school_id=school.school_id,
+        name=school.name,
+        base_url=school.base_url,
+        image_url=school.image_url,
+        crawl_schedule=school.crawl_schedule,
+        status=school.status,
+        created_at=school.created_at,
+        updated_at=school.updated_at,
+    )
+
+
+@app.delete("/schools/{school_id}", status_code=204)
+def delete_school(school_id: int, _: None = Depends(_require_admin)):
+    """관리자만 학교와 관련 데이터(문서·첨부·그래프·품질 이력)를 삭제한다."""
+
+    storage = _get_storage()
+    school = storage.get_school(school_id)
+    if school is None:
+        return _school_not_found(school_id)
+    if school.status in ("crawling", "indexing"):
+        return _error_response(409, "CRAWL_IN_PROGRESS", "수집 또는 인덱싱 중인 학교는 완료 후 삭제할 수 있습니다.")
+    if not storage.delete_school(school_id):
+        return _school_not_found(school_id)
+    try:
+        from app.scheduler import get_scheduler
+
+        get_scheduler().unregister_school(school_id)
+    except Exception:
+        logger.exception("삭제한 학교의 스케줄 해제 실패: school_id=%s", school_id)
+    return Response(status_code=204)
 
 
 def _query_not_ready(storage, school_id: int):

@@ -368,6 +368,7 @@
     var statusLine = state.statusStage ? '<div style="margin-top:9px;font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);">' + esc(state.statusStage) + '</div>' : "";
     var head = '<div style="padding:26px 24px 20px;border-bottom:2px solid var(--color-divider,#d8d5d4);">'
       + '<div style="display:flex;align-items:center;gap:9px;margin-bottom:12px;"><span style="width:9px;height:9px;background:var(--color-accent,#ec3013);display:block;"></span><span style="font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 58%,transparent);">ASKU · Graph</span></div>'
+      + ((state.school && state.school.image_url) ? '<img src="' + esc(state.school.image_url) + '" alt="" onerror="this.style.display=\'none\'" style="width:48px;height:48px;object-fit:cover;border-radius:50%;border:2px solid var(--color-text,#201e1d);margin-bottom:12px;">' : '')
       + '<h1 style="margin:0;font-weight:800;letter-spacing:-.02em;line-height:1;font-size:30px;">' + esc(schoolName()) + '</h1>'
       + statusLine
       + '<div style="display:flex;gap:26px;margin-top:20px;">' + stat("노드", vis.length) + stat("연결", lVis) + '</div></div>';
