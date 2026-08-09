@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ASKU — 학교 등록</title>
+<link rel="icon" type="image/svg+xml" href="assets/logo_A.svg">
 <!-- Register.dc.html 을 DC(React) 런타임 없이 이식. 디자인 시스템 토큰(styles.css)·Archivo 계승. 진행도는 백엔드 /status 폴링으로 구동. -->
 <link rel="stylesheet" href="_ds/modernist-c94de0c9-726d-442a-9bb3-d3b24f39b8cb/styles.css">
 <script src="api.js"></script>
@@ -24,13 +25,16 @@
   .rg-st{opacity:0;animation:rg-stagger .6s cubic-bezier(.2,.7,.2,1) forwards;}
   .rg-fu{opacity:0;animation:rg-fadeup .7s cubic-bezier(.2,.7,.2,1) forwards;}
   .rg-fi{opacity:0;animation:rg-fadein .8s ease forwards;}
-  .rg-back:hover{background:var(--color-text,#201e1d);color:var(--color-bg,#f3f2f2);}
-  .rg-cta{transition:background .22s ease,transform .22s ease;}
-  .rg-cta:hover{background:var(--color-accent-600,#c9280f);}
   .rg-rule{transition:border-color .25s ease;}
   .rg-input{width:100%;border:0;outline:0;background:transparent;font-family:var(--font-body,'Archivo',sans-serif);color:var(--color-text,#201e1d);font-weight:700;letter-spacing:-.02em;line-height:1.15;font-size:clamp(24px,3.6vw,48px);padding:0 0 clamp(14px,1.8vh,22px) 0;}
   .rg-input::placeholder{color:color-mix(in srgb,var(--color-text,#201e1d) 26%,transparent);font-weight:600;}
   .rg-ghost{position:absolute;right:clamp(22px,3.6vw,52px);bottom:clamp(-18px,-1vw,0px);font-weight:900;font-size:clamp(58px,9.5vw,146px);line-height:.78;letter-spacing:-.05em;color:color-mix(in srgb,var(--color-text,#201e1d) 5%,transparent);user-select:none;pointer-events:none;z-index:0;}
+  .rg-dz{border:2px dashed color-mix(in srgb,var(--color-text,#201e1d) 28%,transparent);transition:border-color .2s ease,background .2s ease;}
+  .rg-dz.rg-over{border-color:var(--color-accent,#ec3013);background:color-mix(in srgb,var(--color-accent,#ec3013) 6%,transparent);}
+  .rg-pick{cursor:pointer;border:2px solid var(--color-text,#201e1d);background:transparent;font-family:inherit;color:inherit;font-weight:700;font-size:13px;letter-spacing:.02em;padding:10px 16px;transition:background .2s ease,color .2s ease;}
+  .rg-x{cursor:pointer;border:0;background:transparent;font-family:inherit;color:color-mix(in srgb,var(--color-text,#201e1d) 45%,transparent);font-size:15px;font-weight:700;line-height:1;padding:2px 4px;}
+  .rg-x:hover{color:var(--color-accent,#ec3013);}
+  .rg-scroll{max-height:min(26vh,220px);overflow-y:auto;}
   @media (prefers-reduced-motion: reduce){
     .rg-fu,.rg-fi,.rg-st,.rg-drop{animation:none;opacity:1;transform:none;}
     .rg-out{animation:none;}
@@ -43,18 +47,15 @@
   <div class="rg-ghost" aria-hidden="true">Register</div>
 
   <div class="rg-fu" style="position:absolute;top:clamp(22px,3.2vw,40px);left:clamp(22px,3.6vw,52px);z-index:20;">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
-      <span style="width:10px;height:10px;background:var(--color-accent,#ec3013);display:block;"></span>
-      <span style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 60%,transparent);">ASKU · Onboarding</span>
-    </div>
     <h1 style="margin:0;font-weight:800;letter-spacing:-.02em;line-height:.92;font-size:clamp(30px,4.2vw,52px);">학교 등록</h1>
   </div>
 
-  <a class="rg-back rg-fu" id="rg-back" href="index.html" style="position:absolute;top:clamp(22px,3.2vw,40px);right:clamp(22px,3.6vw,52px);z-index:30;display:inline-flex;align-items:center;gap:9px;border:2px solid var(--color-text,#201e1d);background:var(--color-bg,#f3f2f2);padding:11px 17px;font-weight:700;font-size:14px;letter-spacing:.02em;transition:background .2s ease,color .2s ease;">
+  <a class="btn-ink rg-back rg-fu" id="rg-back" href="index.html" style="position:absolute;top:clamp(22px,3.2vw,40px);right:clamp(22px,3.6vw,52px);z-index:30;display:inline-flex;align-items:center;gap:9px;border:2px solid var(--color-text,#201e1d);background:var(--color-bg,#f3f2f2);padding:11px 17px;font-weight:700;font-size:14px;letter-spacing:.02em;transition:background .2s ease,color .2s ease;">
     <span style="font-size:16px;line-height:1;">←</span>뒤로가기
   </a>
 
-  <div style="position:relative;z-index:10;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:clamp(100px,13vh,170px) clamp(22px,3.6vw,52px) clamp(36px,5vh,80px);">
+  <!-- 첨부 목록이 길어지면 화면을 넘길 수 있어 이 영역만 스크롤을 허용한다(body 는 overflow:hidden). -->
+  <div style="position:relative;z-index:10;flex:1;min-height:0;overflow-y:auto;display:flex;align-items:center;justify-content:center;padding:clamp(100px,13vh,170px) clamp(22px,3.6vw,52px) clamp(36px,5vh,80px);">
     <div style="width:min(920px,100%);">
 
       <!-- Step 01 — URL 입력 -->
@@ -67,8 +68,21 @@
           <p style="margin:0;font-size:clamp(14px,1.4vw,17px);font-weight:500;line-height:1.5;color:color-mix(in srgb,var(--color-text,#201e1d) 60%,transparent);max-width:34em;text-wrap:pretty;">대학교 공지사항 페이지의 url을 입력하세요</p>
           <span id="rg-hint" style="flex:0 0 auto;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 40%,transparent);padding-top:3px;">Required</span>
         </div>
+        <!-- Step 01b — 문서 첨부(선택). 크롤링되지 않는 수강편람 PDF·학칙 HWP 등을 함께 올린다. -->
+        <div style="margin-top:clamp(22px,3.2vh,38px);">
+          <div style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);margin-bottom:clamp(10px,1.4vh,16px);">Documents <span style="color:color-mix(in srgb,var(--color-text,#201e1d) 35%,transparent);">(optional)</span></div>
+          <div class="rg-dz" id="rg-dz" style="display:flex;align-items:center;justify-content:space-between;gap:20px;padding:clamp(14px,2vh,20px) clamp(16px,2vw,22px);flex-wrap:wrap;">
+            <div style="min-width:0;">
+              <div style="font-size:clamp(14px,1.4vw,16px);font-weight:700;letter-spacing:-.01em;">문서를 끌어다 놓거나 파일을 선택하세요</div>
+              <div id="rg-dz-hint" style="margin-top:6px;font-size:12px;font-weight:600;line-height:1.5;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);">수강편람·학칙처럼 홈페이지에서 수집되지 않는 문서를 함께 올리면 답변 근거로 쓰입니다.</div>
+            </div>
+            <button class="rg-pick btn-ink" id="rg-pick" type="button">파일 선택</button>
+            <input id="rg-file" type="file" multiple accept=".pdf,.hwp,.hwpx,.txt,.md" style="display:none;">
+          </div>
+          <div class="rg-scroll" id="rg-file-list" style="margin-top:12px;display:none;"></div>
+        </div>
         <div class="rg-fu" id="rg-submit-wrap" style="margin-top:clamp(30px,4.6vh,52px);display:none;align-items:center;gap:20px;">
-          <a class="rg-cta" id="rg-submit" href="#" style="display:inline-flex;align-items:center;gap:12px;background:var(--color-accent,#ec3013);color:var(--color-bg,#f3f2f2);font-weight:800;font-size:15px;letter-spacing:.02em;padding:15px 26px;">등록하기 <span style="font-size:16px;">→</span></a>
+          <a class="rg-cta btn-accent" id="rg-submit" href="#" style="display:inline-flex;align-items:center;gap:12px;background:var(--color-accent,#ec3013);color:var(--color-bg,#f3f2f2);font-weight:800;font-size:15px;letter-spacing:.02em;padding:15px 26px;">등록하기 <span style="font-size:16px;">→</span></a>
         </div>
       </div>
 
@@ -91,6 +105,12 @@
         </div>
 
         <div id="rg-steps" style="margin-top:clamp(16px,2.6vh,40px);border-top:2px solid var(--color-divider,#d8d5d4);"></div>
+
+        <!-- 첨부 색인은 크롤 파이프라인과 별개로 돈다(백그라운드). 파일별 상태를 따로 보여준다. -->
+        <div id="rg-attach-panel" style="display:none;margin-top:clamp(14px,2.2vh,26px);">
+          <div style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">첨부 문서 색인</div>
+          <div class="rg-scroll" id="rg-attach-list"></div>
+        </div>
       </div>
 
       <!-- Step 03 — 완료 -->
@@ -98,7 +118,8 @@
         <div class="rg-st" style="animation-delay:.72s;font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--color-accent,#ec3013);margin-bottom:clamp(16px,2.4vh,26px);">Complete</div>
         <h2 class="rg-drop" style="margin:0;font-weight:800;letter-spacing:-.025em;line-height:.95;font-size:clamp(38px,6vw,84px);">등록이 완료되었습니다</h2>
         <p class="rg-st" style="animation-delay:.92s;margin:clamp(16px,2.4vh,24px) 0 0;font-size:clamp(14px,1.5vw,18px);font-weight:500;line-height:1.5;color:color-mix(in srgb,var(--color-text,#201e1d) 60%,transparent);max-width:38em;text-wrap:pretty;word-break:break-all;"><span id="rg-done-url"></span> 의 지식 그래프가 생성되었습니다. 이제 이 학교에 대해 질문할 수 있습니다.</p>
-        <div style="display:grid;grid-template-columns:repeat(3,auto);justify-content:start;gap:clamp(28px,4vw,64px);margin:clamp(28px,4vh,46px) 0 clamp(28px,4vh,44px);">
+        <p class="rg-st" id="rg-done-attach" style="animation-delay:1s;display:none;margin:12px 0 0;font-size:clamp(13px,1.3vw,16px);font-weight:600;line-height:1.5;color:color-mix(in srgb,var(--color-text,#201e1d) 60%,transparent);max-width:38em;text-wrap:pretty;"></p>
+        <div id="rg-stats" style="display:grid;grid-template-columns:repeat(3,auto);justify-content:start;gap:clamp(28px,4vw,64px);margin:clamp(28px,4vh,46px) 0 clamp(28px,4vh,44px);">
           <div class="rg-st" style="animation-delay:1.08s;">
             <div style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-bottom:8px;">문서</div>
             <div id="rg-docs" style="font-weight:800;font-size:clamp(26px,3.2vw,44px);line-height:1;"></div>
@@ -113,8 +134,8 @@
           </div>
         </div>
         <div class="rg-st" style="animation-delay:1.5s;display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
-          <a class="rg-cta" id="rg-go" href="qa.html" style="display:inline-flex;align-items:center;gap:12px;background:var(--color-accent,#ec3013);color:var(--color-bg,#f3f2f2);font-weight:800;font-size:15px;letter-spacing:.02em;padding:15px 26px;">질문하러 가기 <span style="font-size:16px;">→</span></a>
-          <a class="rg-back" id="rg-again" href="#" style="display:inline-flex;align-items:center;gap:9px;border:2px solid var(--color-text,#201e1d);padding:13px 22px;font-weight:700;font-size:15px;letter-spacing:.02em;transition:background .2s ease,color .2s ease;">다른 학교 등록</a>
+          <a class="rg-cta btn-accent" id="rg-go" href="qa.html" style="display:inline-flex;align-items:center;gap:12px;background:var(--color-accent,#ec3013);color:var(--color-bg,#f3f2f2);font-weight:800;font-size:15px;letter-spacing:.02em;padding:15px 26px;">질문하러 가기 <span style="font-size:16px;">→</span></a>
+          <a class="btn-ink rg-back" id="rg-again" href="#" style="display:inline-flex;align-items:center;gap:9px;border:2px solid var(--color-text,#201e1d);padding:13px 22px;font-weight:700;font-size:15px;letter-spacing:.02em;transition:background .2s ease,color .2s ease;">다른 학교 등록</a>
         </div>
       </div>
 
@@ -173,23 +194,81 @@
     return 0; // idle/알 수 없음 → 첫 단계
   }
 
+  // — 첨부 문서 —
+  // 백엔드 검증(01_backend-api.md §2.4-1)과 같은 규칙을 먼저 적용해, 어차피 거절될 파일을
+  // 올리느라 기다리지 않게 한다. 규칙이 바뀌면 백엔드와 같은 커밋에서 고친다.
+  var SUPPORTED_EXT = [".pdf", ".hwp", ".hwpx", ".txt", ".md"];
+  var MAX_FILE_MB = 100;  // 백엔드 MAX_ATTACHMENT_MB 와 같은 값 (환경변수로 올렸다면 함께 올린다)
+  var MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024;
+  var ATTACH_LABEL = { pending: "대기중", indexing: "색인중", ready: "완료", failed: "실패" };
+  // 상한에 걸려 문서 뒷부분이 빠졌으면 반드시 알린다 — 모르면 답이 비는 이유를 알 수 없다.
+  var TRUNCATED_NOTE = "분량 상한 도달 · 앞부분만 색인";
+
+  // 확장자. 백엔드(PurePosixPath.suffix)와 같게 맨 앞 점은 확장자로 보지 않는다(".pdf" → "").
+  function extOf(name) {
+    var base = String(name || "").split(/[\\/]/).pop();
+    var dot = base.lastIndexOf(".");
+    return dot > 0 ? base.slice(dot).toLowerCase() : "";
+  }
+  // 올릴 수 없는 파일이면 사유를, 올릴 수 있으면 null 을 준다.
+  function fileError(name, size) {
+    if (!String(name || "").trim()) return { code: "INVALID_FILENAME", message: "파일 이름이 없습니다" };
+    if (SUPPORTED_EXT.indexOf(extOf(name)) < 0) return { code: "UNSUPPORTED_FILE_TYPE", message: "지원하지 않는 형식" };
+    if (!size) return { code: "EMPTY_FILE", message: "빈 파일" };
+    if (size > MAX_FILE_BYTES) return { code: "FILE_TOO_LARGE", message: MAX_FILE_MB + "MB 초과" };
+    return null;
+  }
+  function formatBytes(n) {
+    if (!(n > 0)) return "0 B";
+    var units = ["B", "KB", "MB", "GB"], i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(1)) + " " + units[i];
+  }
+  // 첨부 색인 진행 요약. `settled` 는 pending/indexing 이 하나도 남지 않았다는 뜻이다.
+  function attachSummary(list) {
+    var s = { total: 0, ready: 0, failed: 0, working: 0, chunks: 0, truncated: 0 };
+    (list || []).forEach(function (a) {
+      s.total += 1;
+      if (a.status === "ready") {
+        s.ready += 1;
+        s.chunks += a.chunk_count || 0;
+        if (a.truncated) s.truncated += 1;
+      } else if (a.status === "failed") s.failed += 1;
+      else s.working += 1;
+    });
+    s.settled = s.working === 0;
+    return s;
+  }
+
   // 테스트 훅: 브라우저 없이 순수 함수들을 검증할 수 있게 노출 (register.selfcheck.js).
   if (typeof globalThis !== "undefined" && globalThis.__RG_TEST__) {
-    globalThis.__RG__ = { valid: valid, normalizeUrl: normalizeUrl, deriveName: deriveName, stageToPhase: stageToPhase, PHASES: PHASES };
+    globalThis.__RG__ = {
+      valid: valid, normalizeUrl: normalizeUrl, deriveName: deriveName, stageToPhase: stageToPhase, PHASES: PHASES,
+      extOf: extOf, fileError: fileError, formatBytes: formatBytes, attachSummary: attachSummary,
+      SUPPORTED_EXT: SUPPORTED_EXT, MAX_FILE_BYTES: MAX_FILE_BYTES, MAX_FILE_MB: MAX_FILE_MB,
+    };
     return; // 테스트 모드에선 DOM 배선 생략
   }
 
   var $ = function (id) { return document.getElementById(id); };
-  var state = { url: "", stage: "input", pct: 0, phase: 0, focus: false, message: "", detail: {}, error: "" };
+  var state = {
+    url: "", stage: "input", pct: 0, phase: 0, focus: false, message: "", detail: {}, error: "",
+    files: [],          // 사용자가 고른 파일 {file, name, size, error}
+    attachments: [],    // 업로드 후 백엔드가 돌려준 첨부 상태
+    attachNote: "",     // 제외·실패 등 첨부 관련 안내 한 줄
+    crawlFailed: false, // 크롤은 실패했지만 첨부로 질의 가능한 경우
+  };
   var T0 = null, ELAPSED = null, schoolId = null, pollTimer = null, pollErr = 0;
 
   // — DOM refs —
   var inputPanel = $("rg-input-panel"), loadingPanel = $("rg-loading-panel"), donePanel = $("rg-done-panel"), foot = $("rg-foot");
   var urlInput = $("rg-url"), rule = $("rg-rule"), hint = $("rg-hint"), submitWrap = $("rg-submit-wrap");
+  var dropZone = $("rg-dz"), fileInput = $("rg-file"), fileListEl = $("rg-file-list");
+  var attachPanel = $("rg-attach-panel"), attachListEl = $("rg-attach-list"), doneAttach = $("rg-done-attach");
   var gradLabel = $("rg-grad-label"), phaseEl = $("rg-phase"), loadUrl = $("rg-load-url"), pctEl = $("rg-pct"), bar = $("rg-bar");
   var doneUrl = $("rg-done-url"), docsEl = $("rg-docs"), nodesEl = $("rg-nodes"), timeEl = $("rg-time");
   var doneHead = donePanel.querySelector("h2"), doneKicker = donePanel.querySelector(".rg-st"), goBtn = $("rg-go");
-  var doneText = $("rg-done-url").parentElement, statsGrid = doneText.nextElementSibling;
+  var doneText = $("rg-done-url").parentElement, statsGrid = $("rg-stats");
 
   // — 진행 단계 행: PHASES 고정이라 한 번만 만들고 참조를 들고 있다가 갱신 시 값만 바꾼다 —
   var stepEls = PHASES.map(function (p, i) {
@@ -211,6 +290,83 @@
   });
 
   function setState(patch) { for (var k in patch) state[k] = patch[k]; render(); }
+
+  // — 첨부 목록 UI —
+  // 파일명은 사용자 입력이라 textContent 로만 넣는다(HTML 로 조립하지 않는다).
+  function attachRow(name, note, accent) {
+    var row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid color-mix(in srgb," + INK + " 12%,transparent);";
+    var nameEl = document.createElement("span");
+    nameEl.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:700;letter-spacing:-.01em;";
+    nameEl.textContent = name;
+    var noteEl = document.createElement("span");
+    noteEl.style.cssText = "flex:0 0 auto;font-size:11px;font-weight:700;letter-spacing:.08em;color:" + (accent ? ACCENT : dim(45)) + ";";
+    noteEl.textContent = note;
+    row.appendChild(nameEl);
+    row.appendChild(noteEl);
+    return row;
+  }
+
+  function renderFiles() {
+    fileListEl.style.display = state.files.length ? "block" : "none";
+    fileListEl.innerHTML = "";
+    state.files.forEach(function (item, index) {
+      var row = attachRow(item.name, item.error ? item.error.message : formatBytes(item.size), !!item.error);
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "rg-x";
+      remove.textContent = "✕";
+      remove.setAttribute("aria-label", item.name + " 제외");
+      remove.addEventListener("click", function () { removeFile(index); });
+      row.appendChild(remove);
+      fileListEl.appendChild(row);
+    });
+  }
+
+  function renderAttachments() {
+    var list = state.attachments;
+    attachPanel.style.display = list.length ? "block" : "none";
+    attachListEl.innerHTML = "";
+    list.forEach(function (a) {
+      var label = ATTACH_LABEL[a.status] || a.status;
+      if (a.status === "ready") {
+        label += " · " + (a.chunk_count || 0) + " 청크";
+        if (a.truncated) label += " · " + TRUNCATED_NOTE;
+      } else if (a.status === "failed" && a.error_code) label += " · " + a.error_code;
+      attachListEl.appendChild(attachRow(a.filename, label, a.status === "failed" || !!a.truncated));
+    });
+  }
+
+  // 완료 화면에 붙일 첨부 요약 한 줄. 올린 것이 없으면 빈 문자열.
+  function attachLine() {
+    var sum = attachSummary(state.attachments);
+    var parts = [];
+    if (sum.ready) parts.push("첨부 " + sum.ready + "건 색인 완료 (" + sum.chunks.toLocaleString("en-US") + " 청크)");
+    if (sum.truncated) parts.push(sum.truncated + "건은 분량 상한에 걸려 앞부분만 색인");
+    if (sum.failed) parts.push(sum.failed + "건 색인 실패");
+    if (state.attachNote) parts.push(state.attachNote);
+    return parts.join(" · ");
+  }
+
+  function addFiles(fileObjs) {
+    var next = state.files.slice();
+    for (var i = 0; i < fileObjs.length; i++) {
+      var f = fileObjs[i];
+      var duplicated = false;
+      for (var j = 0; j < next.length; j++) {
+        if (next[j].name === f.name && next[j].size === f.size) { duplicated = true; break; }
+      }
+      if (duplicated) continue;  // 같은 파일을 두 번 고르면 한 번만 올린다
+      next.push({ file: f, name: f.name, size: f.size, error: fileError(f.name, f.size) });
+    }
+    state.files = next;
+    renderFiles();
+  }
+
+  function removeFile(index) {
+    state.files = state.files.filter(function (_, i) { return i !== index; });
+    renderFiles();
+  }
 
   function render() {
     var s = state;
@@ -246,15 +402,22 @@
         e.state.textContent = done ? "Done" : act ? "Running" : "Queued";
         e.state.style.color = act ? grad : dim(40);
       }
+      renderAttachments();
     }
 
     if (s.stage === "done") {
       doneKicker.textContent = "Complete";
-      doneHead.textContent = "등록이 완료되었습니다";
+      doneHead.textContent = s.crawlFailed ? "문서로 등록을 마쳤습니다" : "등록이 완료되었습니다";
       doneText.style.display = "";
-      doneText.innerHTML = '<span id="rg-done-url"></span> 의 지식 그래프가 생성되었습니다. 이제 이 학교에 대해 질문할 수 있습니다.';
+      // 크롤이 0건이어도 색인된 첨부가 있으면 문서 RAG 로 답할 수 있다(01_backend-api.md §2.4).
+      doneText.innerHTML = s.crawlFailed
+        ? '<span id="rg-done-url"></span> 의 공지 수집에는 실패했지만, 올린 문서로 질문할 수 있습니다.'
+        : '<span id="rg-done-url"></span> 의 지식 그래프가 생성되었습니다. 이제 이 학교에 대해 질문할 수 있습니다.';
       $("rg-done-url").textContent = s.url;
-      statsGrid.style.display = "";
+      var line = attachLine();
+      doneAttach.style.display = line ? "" : "none";
+      doneAttach.textContent = line;
+      statsGrid.style.display = s.crawlFailed ? "none" : "";
       docsEl.textContent = (s.detail.pages || 0).toLocaleString("en-US");
       nodesEl.textContent = (s.detail.entities || 0).toLocaleString("en-US");
       timeEl.textContent = ELAPSED || "—";
@@ -267,35 +430,88 @@
       doneHead.textContent = "등록에 실패했습니다";
       doneText.style.display = "";
       doneText.textContent = s.error || "잠시 후 다시 시도해 주세요.";
+      var errLine = attachLine();
+      doneAttach.style.display = errLine ? "" : "none";
+      doneAttach.textContent = errLine;
       statsGrid.style.display = "none";
       goBtn.style.display = "none";
     }
   }
 
-  // — 등록 시작: POST /schools → school_id 받고 폴링 시작 —
+  // — 등록 시작: POST /schools → 첨부 업로드 → 폴링 시작 —
   function start() {
     if (!valid(state.url) || state.stage !== "input") return;
     T0 = performance.now(); ELAPSED = null; pollErr = 0;
     var url = normalizeUrl(state.url);
-    setState({ stage: "loading", pct: 0, phase: 0, message: "학교 등록 요청 중…" });
+    setState({ stage: "loading", pct: 0, phase: 0, message: "학교 등록 요청 중…", attachments: [], attachNote: "", crawlFailed: false });
     ASKU.post("/schools", { name: deriveName(state.url), base_url: url })
       .then(function (school) {
         schoolId = school.school_id;
-        poll();
+        return uploadFiles();  // 학교가 생긴 뒤에야 첨부를 붙일 수 있다
       })
+      .then(function () { poll(); })
       .catch(function (err) { fail(err.message); });
   }
 
-  // — /status 를 주기적으로 폴링해 진행도·단계를 반영 —
+  // — 고른 문서를 올린다. 색인은 백엔드가 백그라운드로 이어간다(202). —
+  function uploadFiles() {
+    var usable = state.files.filter(function (item) { return !item.error; });
+    var skipped = state.files.length - usable.length;
+    if (!usable.length) {
+      if (skipped) setState({ attachNote: skipped + "개 파일은 형식·크기 제한으로 제외했습니다." });
+      return Promise.resolve();
+    }
+    setState({ message: "문서 " + usable.length + "개 업로드 중…" });
+    return ASKU.upload(
+      "/schools/" + schoolId + "/attachments",
+      "files",
+      usable.map(function (item) { return item.file; })
+    ).then(function (res) {
+      var rejected = ((res && res.rejected) || []).length + skipped;
+      setState({
+        attachments: (res && res.accepted) || [],
+        attachNote: rejected ? rejected + "개 파일은 처리할 수 없어 제외했습니다." : "",
+      });
+    }).catch(function (err) {
+      // 크롤은 이미 시작됐다. 업로드가 실패했다고 등록 전체를 실패로 돌리지 않고 사유만 남긴다.
+      setState({ attachNote: "문서 업로드 실패: " + (err.message || "알 수 없는 오류") });
+    });
+  }
+
+  // — /status 를 주기적으로 폴링해 진행도·단계를 반영. 색인 중인 첨부가 있으면 함께 조회한다. —
   function poll() {
     if (schoolId == null) return;
-    ASKU.get("/schools/" + schoolId + "/status")
-      .then(function (s) {
+    var watching = state.attachments.length > 0 && !attachSummary(state.attachments).settled;
+    Promise.all([
+      ASKU.get("/schools/" + schoolId + "/status"),
+      watching ? ASKU.get("/schools/" + schoolId + "/attachments") : Promise.resolve(null),
+    ])
+      .then(function (results) {
         pollErr = 0;
+        var s = results[0], fresh = results[1];
+        var list = fresh && fresh.attachments ? fresh.attachments : state.attachments;
+        var sum = attachSummary(list);
+        var crawlDone = s.stage === "done" || s.stage === "ready" || s.stage === "partial_failed";
+        var crawlFailed = s.stage === "failed";
         var pct = Math.round((s.progress || 0) * 100);
-        setState({ pct: Math.max(state.pct, pct), phase: stageToPhase(s.stage), message: s.message || "", detail: s.detail || {} });
-        if (s.stage === "failed") { fail(s.message || "파이프라인 처리에 실패했습니다."); return; }
-        if (s.stage === "done" || s.stage === "ready" || s.stage === "partial_failed") { finish(); return; }
+        setState({
+          // 첨부 색인이 남았으면 100% 로 올리지 않는다 — 끝나지 않았는데 끝난 것처럼 보인다.
+          pct: Math.max(state.pct, sum.settled ? pct : Math.min(pct, 97)),
+          phase: stageToPhase(s.stage),
+          message: (crawlDone || crawlFailed) && !sum.settled
+            ? "문서 색인 중… (" + (sum.ready + sum.failed) + "/" + sum.total + ")"
+            : (s.message || ""),
+          detail: s.detail || {},
+          attachments: list,
+        });
+        if (!sum.settled) { pollTimer = setTimeout(poll, POLL_MS); return; }  // 첨부 결과를 기다린다
+        if (crawlFailed) {
+          // 공지 수집이 실패해도 색인된 첨부가 있으면 그 문서로 답할 수 있다.
+          if (sum.ready > 0) { finish(true); return; }
+          fail(s.message || "파이프라인 처리에 실패했습니다.");
+          return;
+        }
+        if (crawlDone) { finish(false); return; }
         pollTimer = setTimeout(poll, POLL_MS);
       })
       .catch(function (err) {
@@ -304,9 +520,9 @@
       });
   }
 
-  function finish() {
+  function finish(crawlFailed) {
     if (ELAPSED == null && T0 != null) ELAPSED = ((performance.now() - T0) / 1000).toFixed(1) + "s";
-    setState({ pct: 100, stage: "exit" });
+    setState({ pct: 100, stage: "exit", crawlFailed: !!crawlFailed });
     setTimeout(function () { setState({ stage: "done" }); }, 520);
   }
 
@@ -319,7 +535,12 @@
     if (pollTimer) clearTimeout(pollTimer);
     T0 = null; ELAPSED = null; schoolId = null; pollErr = 0;
     urlInput.value = "";
-    setState({ url: "", stage: "input", pct: 0, phase: 0, focus: false, message: "", detail: {}, error: "" });
+    fileInput.value = "";
+    setState({
+      url: "", stage: "input", pct: 0, phase: 0, focus: false, message: "", detail: {}, error: "",
+      files: [], attachments: [], attachNote: "", crawlFailed: false,
+    });
+    renderFiles();
     if (urlInput.focus) urlInput.focus();
   }
 
@@ -329,11 +550,38 @@
   urlInput.addEventListener("blur", function () { setState({ focus: false }); });
   urlInput.addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); start(); } });
   $("rg-submit").addEventListener("click", function (ev) { ev.preventDefault(); start(); });
+
+  // 파일 선택 — 영역 아무 데나 눌러도 열린다. 숨은 input 자신의 클릭은 걸러야 한다
+  // (input.click() 이 다시 여기로 버블링돼 무한히 되부른다).
+  dropZone.addEventListener("click", function (ev) { if (ev.target !== fileInput) fileInput.click(); });
+  fileInput.addEventListener("change", function () {
+    addFiles(fileInput.files);
+    fileInput.value = "";  // 같은 파일을 다시 골라도 change 가 나도록 비운다
+  });
+  // 드래그 앤 드롭. 영역 밖에 떨어뜨린 파일로 페이지가 이동하지 않게 문서 기본 동작도 막는다.
+  ["dragenter", "dragover"].forEach(function (type) {
+    dropZone.addEventListener(type, function (ev) { ev.preventDefault(); dropZone.classList.add("rg-over"); });
+  });
+  ["dragleave", "dragend", "drop"].forEach(function (type) {
+    dropZone.addEventListener(type, function () { dropZone.classList.remove("rg-over"); });
+  });
+  dropZone.addEventListener("drop", function (ev) {
+    ev.preventDefault();
+    if (ev.dataTransfer && ev.dataTransfer.files) addFiles(ev.dataTransfer.files);
+  });
+  window.addEventListener("dragover", function (ev) { ev.preventDefault(); });
+  window.addEventListener("drop", function (ev) { ev.preventDefault(); });
   $("rg-again").addEventListener("click", function (ev) { ev.preventDefault(); again(); });
   // 뒤로: 히스토리 있으면 back, 없으면 href(index.html) 로.
   $("rg-back").addEventListener("click", function (ev) { if (window.history.length > 1) { ev.preventDefault(); window.history.back(); } });
 
+  // 지원 형식·크기 안내는 검증 상수에서 만든다. 문구를 따로 적어두면 상한만 바꿨을 때 어긋난다.
+  $("rg-dz-hint").textContent =
+    "수강편람·학칙처럼 홈페이지에서 수집되지 않는 문서를 함께 올리면 답변 근거로 쓰입니다. "
+    + SUPPORTED_EXT.join(" · ") + " · 파일당 최대 " + MAX_FILE_MB + "MB";
+
   render();
+  renderFiles();
   urlInput.focus();
   window.addEventListener("beforeunload", function () { if (pollTimer) clearTimeout(pollTimer); });
 })();

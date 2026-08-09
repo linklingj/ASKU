@@ -2,7 +2,8 @@
 // that turn a backend /graph payload into d3 structures: buildGraph/assignTypeColors/parseEid.
 const fs = require("fs");
 const assert = require("assert");
-const html = fs.readFileSync(process.argv[2], "utf8");
+// CRLF 로 체크아웃되는 환경(Windows)에서도 같은 오프셋이 나오도록 개행을 먼저 맞춘다.
+const html = fs.readFileSync(process.argv[2], "utf8").replace(/\r\n/g, "\n");
 
 // Grab the IIFE body verbatim (the inline <script> without src).
 const start = html.indexOf("(function () {\n  \"use strict\";");
@@ -50,4 +51,37 @@ assert.notStrictEqual(ti.color["장학금"], ti.color["부서"], "distinct types
 assert(QA.nodeRadius({ degree: 0 }) >= 6 && QA.nodeRadius({ degree: 100 }) <= 18, "radius clamped");
 assert(QA.nodeRadius({ degree: 5 }) > QA.nodeRadius({ degree: 0 }), "radius grows with degree");
 
-console.log("OK — buildGraph/assignTypeColors/parseEid/nodeRadius pass; nodes:%d links:%d", g.nodes.length, g.rawLinks.length);
+// isLinkable()/sourceChip(): 웹 근거만 링크, 첨부 근거(attachment://{id})는 죽은 링크가 되지 않게 칩으로
+assert(QA.isLinkable("https://sejong.ac.kr/notice/1"), "web source is a link");
+assert(!QA.isLinkable("attachment://7"), "attachment URI is not a link");
+assert(!QA.isLinkable(""), "missing url is not a link");
+const webChip = QA.sourceChip({ title: "장학 공지", url: "https://a.bc/1" }, "");
+assert(webChip.startsWith("<a ") && webChip.includes('href="https://a.bc/1"'), "web chip is an anchor");
+const attChip = QA.sourceChip({ title: "수강편람.pdf - 12페이지", url: "attachment://7" }, "");
+assert(attChip.startsWith("<span "), "attachment chip is not an anchor");
+assert(!attChip.includes("attachment://"), "attachment chip shows the filename, not the URI");
+assert(
+  QA.sourceChip({ title: '<img src=x onerror=alert(1)>', url: "attachment://7" }, "").includes("&lt;img"),
+  "source titles are escaped"
+);
+
+// parseAnswer(): splits structured tags or falls back safely
+const parsedStructured = QA.parseAnswer("[핵심 답변]\n원격강좌 수강 가능\n\n[상세 답변]\n### 강의목록\n| 과목 | 학점 |\n|---|---|\n| 문학 | 1 |");
+assert.strictEqual(parsedStructured.summary, "원격강좌 수강 가능");
+assert(parsedStructured.detail.includes("### 강의목록"), "detail contains markdown body");
+
+const parsedFallback = QA.parseAnswer("첫째 줄 핵심 요약입니다.\n\n두번째 줄 상세 내용입니다.");
+assert.strictEqual(parsedFallback.summary, "첫째 줄 핵심 요약입니다.");
+assert.strictEqual(parsedFallback.detail, "두번째 줄 상세 내용입니다.");
+
+// simpleMarkdown(): renders headings, bold, italic, and tables
+const rendered = QA.simpleMarkdown("### 개설 강의\n| 과목 | 학점 |\n|---|---|\n| **국어** | *1학점* |");
+assert(rendered.includes("<h4 class=\"md-h3\">개설 강의</h4>"), "h3 heading rendered");
+assert(rendered.includes("<table class=\"md-table\">"), "table rendered");
+assert(rendered.includes("<strong>국어</strong>"), "bold rendered");
+assert(rendered.includes("<em>1학점</em>"), "italic rendered");
+
+console.log(
+  "OK — buildGraph/assignTypeColors/parseEid/nodeRadius/sourceChip/parseAnswer/simpleMarkdown pass; nodes:%d links:%d",
+  g.nodes.length, g.rawLinks.length
+);

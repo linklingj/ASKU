@@ -37,6 +37,7 @@ class School(BaseModel):
     school_id: int | None = None  # PK(BIGSERIAL): insert 전에는 None
     name: str
     base_url: str
+    image_url: str | None = None
     crawl_schedule: str | None = None  # 예: 'daily', 'weekly'
     status: str = "idle"
     crawl_started_at: datetime | None = None
@@ -62,6 +63,7 @@ class Attachment(BaseModel):
     chunk_count: int = 0
     status: str = "pending"  # pending | indexing | ready | failed
     error_code: str | None = None  # status=failed 일 때만
+    truncated: bool = False  # 청크 상한에 걸려 문서 뒷부분을 색인하지 않았다
     uploaded_at: datetime | None = None
 
     @property

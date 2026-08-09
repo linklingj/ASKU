@@ -11,15 +11,19 @@ from __future__ import annotations
 
 import logging
 import os
+import base64
+import binascii
+import hashlib
+import hmac
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -29,6 +33,8 @@ from app.schemas import (
     AttachmentItem,
     AttachmentListResponse,
     AttachmentUploadResponse,
+    AdminLoginRequest,
+    AdminLoginResponse,
     CrawlQuality,
     CrawlQualityBoard,
     CrawlQualityFinding,
@@ -47,17 +53,63 @@ from app.schemas import (
     RecrawlResponse,
     RejectedAttachment,
     ResetStatusResponse,
+    RetrieveResponse,
     SchoolCreateRequest,
     SchoolDetailResponse,
     SchoolDetailStats,
     SchoolListItem,
     SchoolListResponse,
     SchoolResponse,
+    SchoolUpdateRequest,
     StatusProgressDetail,
     StatusResponse,
 )
 
 logger = logging.getLogger(__name__)
+
+_ADMIN_TOKEN_TTL_SECONDS = 60 * 60
+
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _admin_secret() -> tuple[str, str] | None:
+    password = os.getenv("ADMIN_PASSWORD")
+    token_secret = os.getenv("ADMIN_TOKEN_SECRET")
+    return (password, token_secret) if password and token_secret else None
+
+
+def _issue_admin_token(secret: str, *, now: datetime | None = None) -> tuple[str, datetime]:
+    now = now or datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=_ADMIN_TOKEN_TTL_SECONDS)
+    payload = _b64url(f"admin:{int(expires_at.timestamp())}".encode("utf-8"))
+    signature = _b64url(hmac.new(secret.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest())
+    return f"{payload}.{signature}", expires_at
+
+
+def _require_admin(authorization: str | None = Header(default=None)) -> None:
+    config = _admin_secret()
+    if config is None:
+        raise HTTPException(status_code=503, detail="관리자 인증이 구성되지 않았습니다.")
+    _, secret = config
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다.")
+    try:
+        payload, supplied_signature = authorization[7:].split(".", 1)
+        expected_signature = _b64url(hmac.new(secret.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest())
+        decoded = _b64url_decode(payload).decode("utf-8")
+        role, expiry = decoded.split(":", 1)
+        if role != "admin" or int(expiry) <= int(datetime.now(timezone.utc).timestamp()):
+            raise ValueError("expired or invalid role")
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            raise ValueError("invalid signature")
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        raise HTTPException(status_code=401, detail="유효하지 않거나 만료된 관리자 토큰입니다.") from None
 
 # ── 의존성 (지연 초기화) ──────────────────────────────────────────────
 
@@ -81,11 +133,11 @@ def _get_rag_engine():
     """HybridRAG 엔진 싱글턴을 반환한다(그래프 RAG → 문서 RAG fallback). 최초 호출 시 초기화."""
     global _rag_engine
     if _rag_engine is None:
-        from app.llm import make_llm_provider, LocalEmbedder
+        from app.llm import make_llm_provider
         from app.rag import DocumentRAG, GraphRAG, HybridRAG
 
         storage = _get_storage()
-        embedder = LocalEmbedder()
+        embedder = _get_embedder()
         provider = make_llm_provider()
         graph_rag = GraphRAG(
             storage=storage,
@@ -99,7 +151,13 @@ def _get_rag_engine():
 
 
 def _get_embedder():
-    """첨부 색인용 Embedder 싱글턴. 모델 로딩이 무거워 요청마다 만들지 않는다."""
+    """프로세스 전역 Embedder 싱글턴 — 크롤 인덱싱·첨부 색인·질의가 함께 쓴다.
+
+    bge-m3 는 인스턴스마다 모델을 통째로 메모리에 올린다. 예전처럼 각자 새로 만들면
+    학교 등록 직후 첨부를 올리는 흐름(크롤 + 첨부 색인 동시 진행)에서 모델이 겹쳐 떠
+    컨테이너가 죽는다(크롤 직렬화와 같은 이유 — `_CRAWL_LOCK`). `embed()` 는 호출 간
+    상태를 남기지 않아 스레드끼리 나눠 써도 된다.
+    """
     global _embedder
     if _embedder is None:
         from app.llm import LocalEmbedder
@@ -471,9 +529,9 @@ def _run_crawl_inner(school_id: int, base_url: str, mode: str, max_nodes: int = 
         _PROGRESS_MAP[school_id]["progress"] = 0.4
         _PROGRESS_MAP[school_id]["message"] = "본문 파싱 및 엔티티 추출 중..."
 
-        from app.llm import make_llm_provider, LocalEmbedder
+        from app.llm import make_llm_provider
 
-        embedder = LocalEmbedder()
+        embedder = _get_embedder()
         provider = make_llm_provider()
         extractor = DocumentExtractor(llm_extractor=provider, spec=spec)
         builder = GraphBuilder(storage=storage, embedder=embedder)
@@ -638,6 +696,21 @@ async def general_exception_handler(request: Request, exc: Exception):
 # ── 엔드포인트 ─────────────────────────────────────────────────────────
 
 
+@app.post("/admin/login", response_model=AdminLoginResponse)
+def admin_login(body: AdminLoginRequest):
+    """환경변수의 관리자 비밀번호를 검증하고 짧은 수명 토큰을 발급한다."""
+
+    config = _admin_secret()
+    if config is None:
+        return _error_response(503, "ADMIN_NOT_CONFIGURED", "관리자 인증이 구성되지 않았습니다.")
+    password, secret = config
+    # str 비교는 비ASCII 문자열에서 TypeError 를 내므로, UTF-8 바이트로 비교한다.
+    if not hmac.compare_digest(body.password.encode("utf-8"), password.encode("utf-8")):
+        return _error_response(401, "INVALID_ADMIN_CREDENTIALS", "관리자 비밀번호가 올바르지 않습니다.")
+    token, expires_at = _issue_admin_token(secret)
+    return AdminLoginResponse(token=token, expires_at=expires_at)
+
+
 @app.post("/schools", status_code=201, response_model=SchoolResponse)
 def create_school(body: SchoolCreateRequest, background_tasks: BackgroundTasks):
     """새 학교를 등록하고 초기 크롤링을 비동기로 시작한다."""
@@ -681,6 +754,7 @@ def create_school(body: SchoolCreateRequest, background_tasks: BackgroundTasks):
         school_id=updated.school_id,
         name=updated.name,
         base_url=updated.base_url,
+        image_url=updated.image_url,
         crawl_schedule=updated.crawl_schedule,
         status=updated.status,
         created_at=updated.created_at,
@@ -697,6 +771,7 @@ def list_schools(query: str | None = Query(default=None, description="학교명 
         SchoolListItem(
             school_id=s.school_id,
             name=s.name,
+            image_url=s.image_url,
             status=s.status,
             entity_count=count,
             updated_at=s.updated_at,
@@ -719,6 +794,7 @@ def get_school(school_id: int):
         school_id=school.school_id,
         name=school.name,
         base_url=school.base_url,
+        image_url=school.image_url,
         crawl_schedule=school.crawl_schedule,
         status=school.status,
         stats=SchoolDetailStats(**stats),
@@ -728,22 +804,73 @@ def get_school(school_id: int):
     )
 
 
-@app.post("/schools/{school_id}/query", response_model=QueryResponse)
-def query_school(school_id: int, body: QueryRequest):
-    """선택한 학교의 지식그래프를 기반으로 질문에 답변한다."""
+@app.patch("/schools/{school_id}", response_model=SchoolResponse)
+def update_school(school_id: int, body: SchoolUpdateRequest, _: None = Depends(_require_admin)):
+    """관리자만 학교명·공지 URL·대표 이미지 URL을 수정한다."""
+
+    school = _get_storage().update_school(school_id, **body.model_dump(exclude_unset=True))
+    if school is None:
+        return _school_not_found(school_id)
+    return SchoolResponse(
+        school_id=school.school_id,
+        name=school.name,
+        base_url=school.base_url,
+        image_url=school.image_url,
+        crawl_schedule=school.crawl_schedule,
+        status=school.status,
+        created_at=school.created_at,
+        updated_at=school.updated_at,
+    )
+
+
+@app.delete("/schools/{school_id}", status_code=204)
+def delete_school(school_id: int, _: None = Depends(_require_admin)):
+    """관리자만 학교와 관련 데이터(문서·첨부·그래프·품질 이력)를 삭제한다."""
+
     storage = _get_storage()
     school = storage.get_school(school_id)
     if school is None:
         return _school_not_found(school_id)
+    if school.status in ("crawling", "indexing"):
+        return _error_response(409, "CRAWL_IN_PROGRESS", "수집 또는 인덱싱 중인 학교는 완료 후 삭제할 수 있습니다.")
+    if not storage.delete_school(school_id):
+        return _school_not_found(school_id)
+    try:
+        from app.scheduler import get_scheduler
 
-    # 아직 준비되지 않은 학교에 질의 시. 다만 색인이 끝난 첨부가 하나라도 있으면
-    # 크롤링 결과 없이도 문서 RAG 로 답할 수 있으므로 질의를 열어준다.
+        get_scheduler().unregister_school(school_id)
+    except Exception:
+        logger.exception("삭제한 학교의 스케줄 해제 실패: school_id=%s", school_id)
+    return Response(status_code=204)
+
+
+def _query_not_ready(storage, school_id: int):
+    """질의를 받을 수 없는 학교면 오류 응답을, 받을 수 있으면 ``None`` 을 반환한다.
+
+    아직 준비되지 않은 학교라도 색인이 끝난 첨부가 하나라도 있으면 크롤링 결과 없이
+    문서 RAG 로 답할 수 있으므로 질의를 열어준다. 질의 계열 엔드포인트(``query``·
+    ``retrieve``)가 같은 판정을 쓴다.
+    """
+
+    school = storage.get_school(school_id)
+    if school is None:
+        return _school_not_found(school_id)
     if school.status not in ("ready", "partial_failed") and storage.count_ready_attachments(school_id) == 0:
         return _error_response(
             503,
             "SCHOOL_NOT_READY",
             "학교 데이터가 아직 준비되지 않았습니다. 크롤링·인덱싱이 완료될 때까지 기다려주세요.",
         )
+    return None
+
+
+@app.post("/schools/{school_id}/query", response_model=QueryResponse)
+def query_school(school_id: int, body: QueryRequest):
+    """선택한 학교의 지식그래프를 기반으로 질문에 답변한다(서버 기본 모델)."""
+    storage = _get_storage()
+    not_ready = _query_not_ready(storage, school_id)
+    if not_ready is not None:
+        return not_ready
 
     rag = _get_rag_engine()
     result = rag.answer(school_id, body.question)
@@ -756,10 +883,51 @@ def query_school(school_id: int, body: QueryRequest):
     )
 
 
+@app.post("/schools/{school_id}/retrieve", response_model=RetrieveResponse)
+def retrieve_school(school_id: int, body: QueryRequest):
+    """근거만 검색해 돌려준다 — 답변 생성은 하지 않는다(사용자 모델 경로).
+
+    사용자가 자기 Gemini 키나 자기 PC 의 Ollama 를 고른 경우 브라우저가 이 응답의
+    ``instruction`` + ``context`` 로 직접 모델을 부른다. 서버는 **답변 생성을 하지
+    않으며** 사용자 API 키를 받지도, 저장하지도 않는다. 검색 단계의 질문 엔티티
+    추출은 ``/query`` 와 동일하게 서버 모델이 맡는다 — 그래프 확장 결과가 모델
+    선택에 따라 달라지지 않게 하기 위해서다(계획 §1-1).
+    """
+    storage = _get_storage()
+    not_ready = _query_not_ready(storage, school_id)
+    if not_ready is not None:
+        return not_ready
+
+    from app.rag import NO_EVIDENCE_ANSWER, answer_prompt
+
+    rag = _get_rag_engine()
+    result = rag.retrieve(school_id, body.question)
+
+    return RetrieveResponse(
+        context=result.context,
+        instruction=answer_prompt(body.question),
+        sources=result.sources,
+        entity_ids=result.entity_ids,
+        source_type=result.source_type,
+        no_evidence_answer=NO_EVIDENCE_ANSWER,
+    )
+
+
 # ── 첨부 문서 (사용자 업로드) ──────────────────────────────────────────
 
-# 업로드 파일 1건 상한. 수강편람 PDF(수백 페이지)도 통상 이 안에 들어간다.
-MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+# 업로드 파일 1건 크기 상한. 수강편람 PDF(수백 페이지)도 통상 이 안에 들어간다.
+# `upload.read()` 가 파일을 통째로 메모리에 올린 뒤 검사하므로, 이 값이 곧 한 요청이
+# 잡을 수 있는 메모리다(여러 파일이면 그만큼 곱해진다). bge-m3 가 이미 3~4GB 를 물고
+# 있어 무작정 키우면 컨테이너가 죽는다(deployment.md).
+MAX_ATTACHMENT_MB = int(os.getenv("MAX_ATTACHMENT_MB", "100"))
+MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024
+
+# 첨부 한 건이 만들 수 있는 청크 수 상한. 진짜 비용은 파일 크기가 아니라 텍스트 양이다
+# — 청크마다 임베딩 1회(bge-m3, 배치 없음)와 DB 쓰기 1회가 든다. 크기 상한만으로는
+# 텍스트가 빽빽한 파일 하나가 색인을 수십 분 붙잡는 것을 막지 못한다.
+# 기본 2000 청크 ≈ 400만 자 ≈ 1300페이지 안팎으로, 수강편람 한 권은 통째로 들어간다.
+# `MAX_GRAPH_NODES` 처럼 재배포 없이 조정하려고 환경변수로 열어 둔다.
+MAX_ATTACHMENT_CHUNKS = int(os.getenv("MAX_ATTACHMENT_CHUNKS", "2000"))
 
 
 def _attachment_item(attachment: Attachment) -> AttachmentItem:
@@ -772,6 +940,7 @@ def _attachment_item(attachment: Attachment) -> AttachmentItem:
         chunk_count=attachment.chunk_count,
         status=attachment.status,
         error_code=attachment.error_code,
+        truncated=attachment.truncated,
         uploaded_at=attachment.uploaded_at,
     )
 
@@ -785,11 +954,14 @@ def _run_attachment_ingest(attachment: Attachment, data: bytes) -> None:
     try:
         from app.attachment_ingest import AttachmentIngestor
 
-        ingestor = AttachmentIngestor(storage=_get_storage(), embedder=_get_embedder())
+        ingestor = AttachmentIngestor(
+            storage=_get_storage(), embedder=_get_embedder(), max_chunks=MAX_ATTACHMENT_CHUNKS
+        )
         result = ingestor.ingest(attachment, data)
         logger.info(
-            "첨부 색인 완료: school_id=%d, file=%s, units=%d, chunks=%d",
+            "첨부 색인 완료: school_id=%d, file=%s, units=%d, chunks=%d%s",
             attachment.school_id, result.filename, result.unit_count, result.chunk_count,
+            f" (청크 상한 {MAX_ATTACHMENT_CHUNKS} 도달로 중단)" if result.truncated else "",
         )
     except Exception:
         logger.exception(

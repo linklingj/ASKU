@@ -15,6 +15,7 @@ from typing import Any
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BIGINT,
+    BOOLEAN,
     INTEGER,
     TIMESTAMP,
     TEXT,
@@ -53,6 +54,7 @@ schools = Table(
     Column("school_id", BIGINT, primary_key=True),
     Column("name", TEXT, nullable=False),
     Column("base_url", TEXT, nullable=False),
+    Column("image_url", TEXT),
     Column("crawl_schedule", TEXT),
     Column("status", TEXT, nullable=False, server_default=text("'idle'")),
     Column("crawl_started_at", TIMESTAMP(timezone=True)),
@@ -106,6 +108,9 @@ attachments = Table(
     Column("chunk_count", INTEGER, nullable=False, server_default=text("0")),
     Column("status", TEXT, nullable=False, server_default=text("'pending'")),
     Column("error_code", TEXT),
+    # 청크 상한에 걸려 뒷부분을 색인하지 않았다는 표시. 성공(ready)이지만 문서 전체가
+    # 들어가지 않았음을 알려야 답이 비는 이유를 알 수 있다.
+    Column("truncated", BOOLEAN, nullable=False, server_default=text("false")),
     Column("uploaded_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     # 같은 학교에 같은 파일을 다시 올리면 새 행을 만들지 않고 기존 첨부를 다시 색인한다.
     UniqueConstraint("school_id", "file_hash", name="uq_attachments_school_file_hash"),
@@ -243,6 +248,7 @@ def _attachment(row: RowMapping) -> Attachment:
         chunk_count=int(row["chunk_count"]),
         status=row["status"],
         error_code=row["error_code"],
+        truncated=bool(row["truncated"]),
         uploaded_at=row["uploaded_at"],
     )
 
@@ -275,6 +281,7 @@ def _school(row: RowMapping) -> School:
         school_id=row["school_id"],
         name=row["name"],
         base_url=row["base_url"],
+        image_url=row.get("image_url"),
         crawl_schedule=row["crawl_schedule"],
         status=row["status"],
         crawl_started_at=row.get("crawl_started_at"),
@@ -308,6 +315,7 @@ class Storage:
             # 기존 테이블 호환성을 위한 경량 멱등 마이그레이션
             connection.execute(text("ALTER TABLE schools ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'idle'"))
             connection.execute(text("ALTER TABLE schools ADD COLUMN IF NOT EXISTS crawl_started_at TIMESTAMPTZ"))
+            connection.execute(text("ALTER TABLE schools ADD COLUMN IF NOT EXISTS image_url TEXT"))
             connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS miss_count INT NOT NULL DEFAULT 0"))
             connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ"))
             connection.execute(
@@ -317,6 +325,9 @@ class Storage:
                 )
             )
             connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS page INT"))
+            connection.execute(
+                text("ALTER TABLE attachments ADD COLUMN IF NOT EXISTS truncated BOOLEAN NOT NULL DEFAULT false")
+            )
             connection.execute(
                 text(
                     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS attachment_id BIGINT "
@@ -328,6 +339,7 @@ class Storage:
         values = {
             "name": school.name,
             "base_url": school.base_url,
+            "image_url": school.image_url,
             "crawl_schedule": school.crawl_schedule,
         }
         with self._engine.begin() as connection:
@@ -351,6 +363,34 @@ class Storage:
                 .returning(*schools.c)
             ).mappings().one()
         return School(**row)
+
+    def update_school(self, school_id: int, **values: Any) -> School | None:
+        """관리자가 변경 가능한 학교 메타데이터를 갱신한다."""
+
+        allowed = {"name", "base_url", "image_url", "crawl_schedule"}
+        update_values = {key: value for key, value in values.items() if key in allowed}
+        if not update_values:
+            return self.get_school(school_id)
+        update_values["updated_at"] = func.now()
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                schools.update().where(schools.c.school_id == school_id).values(**update_values).returning(*schools.c)
+            ).mappings().one_or_none()
+        return _school(row) if row is not None else None
+
+    def delete_school(self, school_id: int) -> bool:
+        """학교와 소속 데이터만 삭제하고, 재사용 가능한 adapter_specs 는 보존한다."""
+
+        with self._engine.begin() as connection:
+            connection.execute(edges.delete().where(edges.c.school_id == school_id))
+            connection.execute(entities.delete().where(entities.c.school_id == school_id))
+            connection.execute(documents.delete().where(documents.c.school_id == school_id))
+            connection.execute(attachments.delete().where(attachments.c.school_id == school_id))
+            connection.execute(crawl_quality.delete().where(crawl_quality.c.school_id == school_id))
+            deleted = connection.execute(
+                schools.delete().where(schools.c.school_id == school_id).returning(schools.c.school_id)
+            ).scalar_one_or_none()
+        return deleted is not None
 
     def get_school(self, school_id: int) -> School | None:
         """학교 ID로 단일 학교를 조회한다."""
@@ -611,6 +651,7 @@ class Storage:
         page_count: int | None = None,
         chunk_count: int | None = None,
         error_code: str | None = None,
+        truncated: bool | None = None,
     ) -> Attachment | None:
         """첨부의 색인 상태·집계를 갱신한다. 주지 않은 집계 값은 그대로 둔다."""
 
@@ -619,6 +660,8 @@ class Storage:
             values["page_count"] = page_count
         if chunk_count is not None:
             values["chunk_count"] = chunk_count
+        if truncated is not None:
+            values["truncated"] = truncated
 
         statement = (
             attachments.update()

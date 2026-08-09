@@ -22,6 +22,7 @@ from app.schemas import (
     BuildResult,
     ExtractionFailure,
     RagAnswer,
+    RagRetrieval,
     Source,
 )
 
@@ -244,6 +245,65 @@ class TestGetSchool:
         assert body["error"]["code"] == "SCHOOL_NOT_FOUND"
 
 
+# ── 관리자 인증·학교 관리 ──────────────────────────────────────────────
+
+
+class TestAdminSchoolManagement:
+    @pytest.fixture
+    def admin_headers(self, client, monkeypatch):
+        monkeypatch.setenv("ADMIN_PASSWORD", "test-password")
+        monkeypatch.setenv("ADMIN_TOKEN_SECRET", "test-secret")
+        response = client.post("/admin/login", json={"password": "test-password"})
+        assert response.status_code == 200
+        return {"Authorization": "Bearer " + response.json()["token"]}
+
+    def test_login_rejects_incorrect_password(self, client):
+        with patch.dict("os.environ", {"ADMIN_PASSWORD": "test-password", "ADMIN_TOKEN_SECRET": "test-secret"}):
+            response = client.post("/admin/login", json={"password": "incorrect"})
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "INVALID_ADMIN_CREDENTIALS"
+
+    def test_login_accepts_unicode_password(self, client):
+        with patch.dict("os.environ", {"ADMIN_PASSWORD": "관리자비밀번호", "ADMIN_TOKEN_SECRET": "test-secret"}):
+            response = client.post("/admin/login", json={"password": "관리자비밀번호"})
+        assert response.status_code == 200
+        assert response.json()["token"]
+
+    def test_update_requires_admin_token(self, client):
+        with patch.dict("os.environ", {"ADMIN_PASSWORD": "test-password", "ADMIN_TOKEN_SECRET": "test-secret"}):
+            response = client.patch("/schools/1", json={"image_url": "https://example.com/logo.png"})
+        assert response.status_code == 401
+
+    def test_admin_can_update_image_url(self, client, mock_storage, admin_headers):
+        mock_storage.update_school.return_value = _make_school(image_url="https://example.com/logo.png")
+        response = client.patch(
+            "/schools/1", json={"image_url": "https://example.com/logo.png"}, headers=admin_headers
+        )
+        assert response.status_code == 200
+        assert response.json()["image_url"] == "https://example.com/logo.png"
+        mock_storage.update_school.assert_called_once_with(1, image_url="https://example.com/logo.png")
+
+    def test_admin_can_clear_image_url(self, client, mock_storage, admin_headers):
+        mock_storage.update_school.return_value = _make_school(image_url=None)
+        response = client.patch("/schools/1", json={"image_url": None}, headers=admin_headers)
+        assert response.status_code == 200
+        assert response.json()["image_url"] is None
+        mock_storage.update_school.assert_called_once_with(1, image_url=None)
+
+    def test_admin_can_delete_school(self, client, mock_storage, admin_headers):
+        mock_storage.delete_school.return_value = True
+        response = client.delete("/schools/1", headers=admin_headers)
+        assert response.status_code == 204
+        mock_storage.delete_school.assert_called_once_with(1)
+
+    def test_delete_rejects_school_with_active_crawl(self, client, mock_storage, admin_headers):
+        mock_storage.get_school.return_value = _make_school(status="crawling")
+        response = client.delete("/schools/1", headers=admin_headers)
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "CRAWL_IN_PROGRESS"
+        mock_storage.delete_school.assert_not_called()
+
+
 # ── POST /schools/{id}/query ──────────────────────────────────────────
 
 
@@ -316,6 +376,63 @@ class TestQuerySchool:
         assert resp.status_code == 400
         body = resp.json()
         assert body["error"]["code"] == "INVALID_REQUEST"
+
+
+# ── POST /schools/{id}/retrieve ────────────────────────────────────────
+
+
+class TestRetrieveSchool:
+    """검색 전용 경로 — 사용자가 자기 모델로 답할 때 쓴다(계획 §1-3)."""
+
+    def test_200_returns_context_instruction_and_sources(self, client, mock_storage):
+        retrieval = RagRetrieval(
+            context="[근거 1] 장학금 안내\n출처: https://example.com/notice\n본문",
+            sources=[Source(title="장학금 안내", url="https://example.com/notice")],
+            entity_ids=["e_123"],
+            source_type="graph",
+        )
+        with patch("app.api._get_rag_engine") as mock_rag:
+            mock_rag.return_value.retrieve.return_value = retrieval
+            resp = client.post("/schools/1/retrieve", json={"question": "장학금 마감일?"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["context"] == retrieval.context
+        assert body["source_type"] == "graph"
+        assert body["entity_ids"] == ["e_123"]
+        assert len(body["sources"]) == 1
+        # 브라우저가 서버와 같은 지시문으로 자기 모델을 부를 수 있어야 한다
+        assert "장학금 마감일?" in body["instruction"]
+        assert body["no_evidence_answer"]
+
+    def test_does_not_generate_an_answer(self, client, mock_storage):
+        """이 경로에서 서버는 답변 생성을 하지 않는다(사용자 키·한도를 쓰는 쪽이 브라우저다)."""
+        with patch("app.api._get_rag_engine") as mock_rag:
+            mock_rag.return_value.retrieve.return_value = RagRetrieval(context="c", source_type="graph")
+            client.post("/schools/1/retrieve", json={"question": "질문"})
+
+        mock_rag.return_value.answer.assert_not_called()
+
+    def test_no_evidence_reports_null_source_type(self, client, mock_storage):
+        with patch("app.api._get_rag_engine") as mock_rag:
+            mock_rag.return_value.retrieve.return_value = RagRetrieval(context="", source_type=None)
+            resp = client.post("/schools/1/retrieve", json={"question": "질문"})
+
+        body = resp.json()
+        assert body["source_type"] is None
+        assert body["context"] == ""
+        assert body["no_evidence_answer"] == "해당 정보를 찾지 못했습니다."
+
+    def test_503_not_ready(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="crawling")
+        resp = client.post("/schools/1/retrieve", json={"question": "질문"})
+        assert resp.status_code == 503
+        assert resp.json()["error"]["code"] == "SCHOOL_NOT_READY"
+
+    def test_404_school_not_found(self, client, mock_storage):
+        mock_storage.get_school.return_value = None
+        resp = client.post("/schools/999/retrieve", json={"question": "질문"})
+        assert resp.status_code == 404
 
 
 # ── POST /schools/{id}/recrawl ─────────────────────────────────────────
@@ -849,14 +966,19 @@ class TestUploadAttachments:
         assert resp.status_code == 415
         assert resp.json()["error"]["details"]["rejected"][0]["code"] == "EMPTY_FILE"
 
-    def test_oversized_file_is_rejected(self, client, mock_storage):
-        from app.api import MAX_ATTACHMENT_BYTES
-
-        oversized = b"a" * (MAX_ATTACHMENT_BYTES + 1)
-        resp = client.post("/schools/1/attachments", files=[("files", ("큰.pdf", oversized, "application/pdf"))])
+    def test_oversized_file_is_rejected(self, client, mock_storage, monkeypatch):
+        # 상한은 환경변수(MAX_ATTACHMENT_MB)로 바뀐다. 실제 상한만큼 바이트를 만들면
+        # 상한을 올릴수록 테스트가 그만큼 메모리를 먹으므로, 상한 쪽을 낮춰 검사한다.
+        monkeypatch.setattr("app.api.MAX_ATTACHMENT_BYTES", 10)
+        resp = client.post("/schools/1/attachments", files=[("files", ("큰.pdf", b"a" * 11, "application/pdf"))])
 
         assert resp.status_code == 415
         assert resp.json()["error"]["details"]["rejected"][0]["code"] == "FILE_TOO_LARGE"
+
+    def test_size_limit_comes_from_env_megabytes(self):
+        from app.api import MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB
+
+        assert MAX_ATTACHMENT_BYTES == MAX_ATTACHMENT_MB * 1024 * 1024
 
     def test_404_when_school_missing(self, client, mock_storage):
         mock_storage.get_school.return_value = None
@@ -880,6 +1002,20 @@ class TestListAttachments:
         assert [item["status"] for item in items] == ["ready", "failed"]
         assert items[0]["chunk_count"] == 340
         assert items[1]["error_code"] == "HWP_ENCRYPTED"
+        assert items[0]["truncated"] is False
+
+    def test_truncated_attachment_is_ready_but_flagged(self, client, mock_storage):
+        # 분량 상한에 걸린 첨부는 실패가 아니라 '일부만 색인된 성공'이다. 이 표시가
+        # 없으면 문서 뒷부분이 왜 답에 안 나오는지 알 방법이 없다.
+        mock_storage.list_attachments.return_value = [
+            _make_attachment(status="ready", page_count=3000, chunk_count=2000, truncated=True)
+        ]
+
+        item = client.get("/schools/1/attachments").json()["attachments"][0]
+
+        assert item["status"] == "ready"
+        assert item["truncated"] is True
+        assert item["error_code"] is None
 
     def test_404_when_school_missing(self, client, mock_storage):
         mock_storage.get_school.return_value = None

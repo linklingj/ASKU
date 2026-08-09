@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ASKU — 학교 선택</title>
+<link rel="icon" type="image/svg+xml" href="assets/logo_A.svg">
 <!-- 랜딩과 같은 디자인 시스템 토큰·폰트(Archivo)를 그대로 계승. SchoolSelect.dc.html 을 런타임 의존 없이 이식. -->
 <link rel="stylesheet" href="_ds/modernist-c94de0c9-726d-442a-9bb3-d3b24f39b8cb/styles.css">
 <script src="api.js"></script>
@@ -18,9 +19,6 @@
   @keyframes ss-fadein{from{opacity:0;}to{opacity:1;}}
   .ss-fu{opacity:0;animation:ss-fadeup .8s cubic-bezier(.2,.7,.2,1) forwards;}
   .ss-fi{opacity:0;animation:ss-fadein 1s ease forwards;}
-  .ss-back:hover{background:var(--color-text,#201e1d);color:var(--color-bg,#f3f2f2);}
-  .ss-cta{transition:background .22s ease,gap .22s ease;}
-  .ss-cta:hover{background:var(--color-accent-600,#c9280f);}
   .ss-item{transition:opacity .18s ease;}
   .ss-wheel{touch-action:none;cursor:grab;-webkit-mask-image:linear-gradient(180deg,transparent 0,transparent 96px,#000 210px,#000 calc(100% - 60px),transparent 100%);mask-image:linear-gradient(180deg,transparent 0,transparent 96px,#000 210px,#000 calc(100% - 60px),transparent 100%);}
   .ss-wheel:active{cursor:grabbing;}
@@ -36,22 +34,18 @@
 <div id="ss" style="position:relative;height:100vh;width:100%;overflow:hidden;">
 
   <div class="ss-fu" style="position:absolute;top:clamp(22px,3.2vw,40px);left:clamp(22px,3.6vw,52px);z-index:20;">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
-      <span style="width:10px;height:10px;background:var(--color-accent,#ec3013);display:block;"></span>
-      <span style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 60%,transparent);">ASKU · Database</span>
-    </div>
     <h1 style="margin:0;font-weight:800;letter-spacing:-.02em;line-height:.92;font-size:clamp(30px,4.2vw,52px);">학교 선택</h1>
     <div style="margin-top:8px;font-size:13px;font-weight:600;letter-spacing:.02em;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);"><span id="ss-count"></span> UNIVERSITIES</div>
   </div>
 
-  <a class="ss-back ss-fu" id="ss-back" href="index.html" style="position:absolute;top:clamp(22px,3.2vw,40px);right:clamp(22px,3.6vw,52px);z-index:30;display:inline-flex;align-items:center;gap:9px;border:2px solid var(--color-text,#201e1d);background:var(--color-bg,#f3f2f2);padding:11px 17px;font-weight:700;font-size:14px;letter-spacing:.02em;transition:background .2s ease,color .2s ease;">
+  <a class="ss-back ss-fu btn-ink" id="ss-back" href="index.html" style="position:absolute;top:clamp(22px,3.2vw,40px);right:clamp(22px,3.6vw,52px);z-index:30;display:inline-flex;align-items:center;gap:9px;border:2px solid var(--color-text,#201e1d);background:var(--color-bg,#f3f2f2);padding:11px 17px;font-weight:700;font-size:14px;letter-spacing:.02em;transition:background .2s ease,color .2s ease;">
     <span style="font-size:16px;line-height:1;">←</span>뒤로가기
   </a>
 
   <div class="ss-fi" style="position:absolute;left:clamp(22px,3.6vw,52px);top:50%;transform:translateY(-50%);z-index:15;max-width:min(46vw,560px);animation-delay:.15s;">
     <span id="ss-initial" aria-hidden="true" style="position:absolute;left:-6px;top:50%;transform:translateY(-58%);font-weight:900;font-size:clamp(200px,30vw,420px);line-height:.8;letter-spacing:-.05em;color:color-mix(in srgb,var(--color-text,#201e1d) 6%,transparent);z-index:-1;user-select:none;pointer-events:none;"></span>
-    <div style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);margin-bottom:clamp(14px,2vh,20px);">Preview</div>
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px;">
+      <img id="ss-image" alt="" style="display:none;width:54px;height:54px;object-fit:cover;border-radius:50%;border:2px solid var(--color-text,#201e1d);" onerror="this.style.display='none'">
       <span style="width:16px;height:16px;border-radius:50%;background:var(--color-accent,#ec3013);flex:0 0 auto;"></span>
       <h2 id="ss-name" style="margin:0;font-weight:800;letter-spacing:-.02em;line-height:1;font-size:clamp(40px,5.6vw,78px);"></h2>
     </div>
@@ -72,7 +66,7 @@
       </div>
     </div>
 
-    <a class="ss-cta" id="ss-cont" href="#" style="margin-left:32px;display:inline-flex;align-items:center;gap:12px;background:var(--color-accent,#ec3013);color:var(--color-bg,#f3f2f2);font-weight:800;font-size:15px;letter-spacing:.02em;padding:14px 24px;">이 학교로 계속 <span style="font-size:16px;">→</span></a>
+    <a class="ss-cta btn-accent" id="ss-cont" href="#" style="margin-left:32px;display:inline-flex;align-items:center;gap:12px;background:var(--color-accent,#ec3013);color:var(--color-bg,#f3f2f2);font-weight:800;font-size:15px;letter-spacing:.02em;padding:14px 24px;">이 학교로 계속 <span style="font-size:16px;">→</span></a>
   </div>
 
   <!-- 시각 휠 (SR 은 아래 listbox 로) -->
@@ -111,6 +105,9 @@
     var s = DATA[a];
     $('ss-initial').textContent = (s.name || "?").charAt(0);
     $('ss-name').textContent = s.name;
+    var image = $('ss-image');
+    if (s.image_url) { image.src = s.image_url; image.style.display = "block"; }
+    else { image.removeAttribute("src"); image.style.display = "none"; }
     $('ss-en').textContent = (s.status || "").toUpperCase();
     $('ss-nodes').textContent = (s.entity_count || 0).toLocaleString("en-US");
     $('ss-status').textContent = STATUS_KR[s.status] || s.status || "—";
@@ -231,7 +228,7 @@
 
   ASKU.get('/schools')
     .then(function (res) {
-      var schools = (res && res.schools) || [];
+      var schools = ((res && res.schools) || []).slice().sort(function (a, b) { return String(a.name).localeCompare(String(b.name), "ko"); });
       if (!schools.length) showMessage("아직 등록된 학교가 없어요", "학교를 등록하면 여기에서 선택할 수 있어요.");
       else buildFrom(schools);
     })

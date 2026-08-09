@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ── 공용 하위 스키마 ────────────────────────────────────────────────
 
@@ -189,6 +189,20 @@ class RagAnswer(BaseModel):
     source_type: Literal["graph", "document"] | None = None
 
 
+class RagRetrieval(BaseModel):
+    """RAG 검색 단계 출력 — 답변 생성 직전까지의 결과.
+
+    ``RagAnswer`` 와 짝이다. 서버가 답을 만들면 이 ``context`` 로 생성하고, 사용자가
+    자기 모델을 골랐으면 같은 ``context`` 를 브라우저로 내려 거기서 생성한다.
+    근거를 못 찾으면 ``source_type`` 은 ``None`` 이고 ``context`` 는 빈 문자열이다.
+    """
+
+    context: str
+    sources: list[Source] = Field(default_factory=list)
+    entity_ids: list[str] = Field(default_factory=list)
+    source_type: Literal["graph", "document"] | None = None
+
+
 # ── Backend API 요청·응답 스키마 (01_backend-api.md) ─────────────────
 
 
@@ -203,12 +217,51 @@ class SchoolCreateRequest(BaseModel):
     )
 
 
+class AdminLoginRequest(BaseModel):
+    password: str = Field(..., min_length=1)
+
+
+class AdminLoginResponse(BaseModel):
+    token: str
+    expires_at: datetime
+
+
+class SchoolUpdateRequest(BaseModel):
+    """관리자용 학교 메타데이터 수정 요청."""
+
+    name: str | None = Field(default=None, min_length=1)
+    base_url: str | None = None
+    image_url: str | None = None
+    crawl_schedule: str | None = None
+
+    @field_validator("base_url", "image_url")
+    @classmethod
+    def _http_url_or_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            return None
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("URL은 http:// 또는 https:// 로 시작해야 합니다.")
+        return value
+
+    @model_validator(mode="after")
+    def _not_empty(self):
+        # ``image_url: null`` 은 대표 이미지를 제거하라는 유효한 수정이다.
+        # 값 자체가 아닌, 요청에 수정 필드가 포함됐는지를 검사해야 한다.
+        if not self.model_fields_set:
+            raise ValueError("수정할 필드가 필요합니다.")
+        return self
+
+
 class SchoolResponse(BaseModel):
     """학교 응답 (등록·상세 공통)."""
 
     school_id: int
     name: str
     base_url: str
+    image_url: str | None = None
     crawl_schedule: str | None = None
     status: str
     created_at: datetime
@@ -220,6 +273,7 @@ class SchoolListItem(BaseModel):
 
     school_id: int
     name: str
+    image_url: str | None = None
     status: str
     entity_count: int = 0
     updated_at: datetime
@@ -280,6 +334,7 @@ class SchoolDetailResponse(BaseModel):
     school_id: int
     name: str
     base_url: str
+    image_url: str | None = None
     crawl_schedule: str | None = None
     status: str
     stats: SchoolDetailStats
@@ -306,6 +361,23 @@ class QueryResponse(BaseModel):
     source_type: Literal["graph", "document"] | None = None
 
 
+class RetrieveResponse(BaseModel):
+    """POST /schools/{id}/retrieve 응답 — 검색만 하고 답변은 만들지 않는다.
+
+    사용자가 자기 Gemini 나 자기 PC Ollama 를 골랐을 때 쓰는 경로다. 브라우저가
+    ``instruction`` 과 ``context`` 로 자기 모델을 부르므로, 서버 답변과 같은 지시문·
+    같은 근거를 쓴다. 근거가 없으면 ``source_type`` 이 ``null`` 이고 프론트는
+    ``no_evidence_answer`` 를 모델 호출 없이 그대로 보여준다.
+    """
+
+    context: str
+    instruction: str
+    sources: list[Source] = Field(default_factory=list)
+    entity_ids: list[str] = Field(default_factory=list)
+    source_type: Literal["graph", "document"] | None = None
+    no_evidence_answer: str
+
+
 class AttachmentItem(BaseModel):
     """첨부 문서 한 건 (업로드·목록 공통)."""
 
@@ -317,6 +389,7 @@ class AttachmentItem(BaseModel):
     chunk_count: int = 0
     status: str  # pending | indexing | ready | failed
     error_code: str | None = None
+    truncated: bool = False  # 청크 상한에 걸려 문서 뒷부분이 색인되지 않았다
     uploaded_at: datetime | None = None
 
 

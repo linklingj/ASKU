@@ -9,12 +9,21 @@
   try { stored = localStorage.getItem("asku_api"); } catch (_) {}
   var BASE = (qp || stored || "https://asku-production-ef66.up.railway.app").replace(/\/+$/, "");
 
-  function req(method, path, body) {
+  function req(method, path, body, admin) {
     var opts = { method: method, headers: { Accept: "application/json" } };
+    if (admin) {
+      var token = null;
+      try { token = sessionStorage.getItem("asku_admin_token"); } catch (_) {}
+      if (token) opts.headers.Authorization = "Bearer " + token;
+    }
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
+    return send(path, opts);
+  }
+
+  function send(path, opts) {
     return fetch(BASE + path, opts).then(function (res) {
       return res.text().then(function (txt) {
         var data = txt ? JSON.parse(txt) : null;
@@ -23,6 +32,7 @@
           var err = new Error((e && e.message) || ("요청 실패 (" + res.status + ")"));
           err.status = res.status;
           err.code = e && e.code;
+          err.details = e && e.details;   // 415 NO_SUPPORTED_ATTACHMENT 의 rejected 목록 등
           throw err;
         }
         return data;
@@ -30,9 +40,27 @@
     });
   }
 
+  // multipart/form-data 업로드. Content-Type 은 브라우저가 boundary 와 함께 붙이므로
+  // 직접 지정하지 않는다 — 지정하면 boundary 가 빠져 서버가 파싱하지 못한다.
+  function upload(path, field, files) {
+    var form = new FormData();
+    for (var i = 0; i < files.length; i++) form.append(field, files[i], files[i].name);
+    return send(path, { method: "POST", headers: { Accept: "application/json" }, body: form });
+  }
+
   window.ASKU = {
     base: BASE,
     get: function (p) { return req("GET", p); },
     post: function (p, b) { return req("POST", p, b || {}); },
+    upload: upload,
+    patchAdmin: function (p, b) { return req("PATCH", p, b, true); },
+    deleteAdmin: function (p) { return req("DELETE", p, undefined, true); },
+    adminLogin: function (password) {
+      return req("POST", "/admin/login", { password: password }).then(function (data) {
+        try { sessionStorage.setItem("asku_admin_token", data.token); } catch (_) {}
+        return data;
+      });
+    },
+    adminLogout: function () { try { sessionStorage.removeItem("asku_admin_token"); } catch (_) {} },
   };
 })();
