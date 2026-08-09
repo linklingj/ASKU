@@ -383,6 +383,22 @@ class RecrawlResponse(BaseModel):
     message: str
 
 
+class ResetStatusResponse(BaseModel):
+    """POST /schools/{id}/reset-status 응답."""
+
+    school_id: int
+    status: str
+    message: str
+
+
+class ForceCompleteResponse(BaseModel):
+    """POST /schools/{id}/force-complete 응답."""
+
+    school_id: int
+    status: str
+    message: str
+
+
 class StatusProgressDetail(BaseModel):
     """크롤링·인덱싱 단계별 상세 카운트."""
 

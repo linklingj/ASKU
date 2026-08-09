@@ -50,13 +50,14 @@ Extraction { entities: [ExtractedEntity], relations: [ExtractedRelation] }
 `app/llm.py`에 구현된 것(실제로 쓰는 것만):
 
 ```
-GeminiProvider(Generator, Extractor)   # 답변·추출(API).  키·모델: GEMINI_API_KEY · GEMINI_MODEL
-LocalEmbedder(Embedder)                # 임베딩(로컬 bge-m3).  모델: BGE_M3_MODEL(기본 BAAI/bge-m3)
-OllamaProvider(Generator)              # 선택: 답변 로컬화.  모델·엔드포인트: OLLAMA_MODEL · OLLAMA_HOST
+OpenAIProvider(Generator, Extractor, SpecDrafter)   # 답변·추출(API, 기본).  키·모델: OPENAI_API_KEY · OPENAI_MODEL
+GeminiProvider(Generator, Extractor, SpecDrafter)   # 답변·추출(API).       키·모델: GEMINI_API_KEY · GEMINI_MODEL
+LocalEmbedder(Embedder)                             # 임베딩(로컬 bge-m3).   모델: BGE_M3_MODEL(기본 BAAI/bge-m3)
+OllamaProvider(Generator)                           # 선택: 답변 로컬화.     모델·엔드포인트: OLLAMA_MODEL · OLLAMA_HOST
 ```
 
+- **제공자 선택**: `make_llm_provider()`(`app/llm.py`)가 `LLM_PROVIDER`(`openai` 기본 · `gemini`)로 답변·추출 제공자를 고른다. 호출부(`api.py`)는 이 팩토리만 부르고 구체 제공자를 모른다. 임베딩은 항상 `LocalEmbedder`다.
 - API 키·모델명·엔드포인트는 환경변수/설정으로 주입. 코드에 하드코딩 금지. SDK는 **지연 import**(인터페이스만 쓰는 모듈에 무거운 의존을 강제하지 않는다).
-- 구조화 출력: Gemini는 JSON MIME 응답을 받아 `Extraction`으로 파싱한다(자유형 `attributes` 때문에 스키마 강제 대신 pydantic 검증).
-- `OpenAIProvider` 등 대체 제공자는 전환이 필요할 때 같은 인터페이스로 추가한다.
+- 구조화 출력: OpenAI는 Chat Completions JSON 모드, Gemini는 JSON MIME 응답을 받아 `Extraction`으로 파싱한다(자유형 `attributes` 때문에 스키마 강제 대신 pydantic 검증). 빈 응답은 형식 오류가 아니라 재시도 대상으로 분리한다.
 
 관련: [`04_extractor.md`](04_extractor.md), [`05_graph-builder.md`](05_graph-builder.md), [`07_graph-rag-engine.md`](07_graph-rag-engine.md).
