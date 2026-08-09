@@ -322,18 +322,20 @@ class AttachmentStorage(Protocol):
         page_count: int | None = None,
         chunk_count: int | None = None,
         error_code: str | None = None,
+        truncated: bool | None = None,
     ) -> Attachment | None: ...
 
 
 @dataclass(frozen=True)
 class AttachmentIngestResult:
-    """첨부 한 건 처리 결과."""
+    """첨부 한 건 처리 결과. ``truncated`` 면 청크 상한에 걸려 뒷부분을 넣지 않았다."""
 
     attachment_id: int
     filename: str
     unit_count: int
     chunk_count: int
     doc_ids: list[int]
+    truncated: bool = False
 
 
 class AttachmentIngestor:
@@ -346,12 +348,21 @@ class AttachmentIngestor:
         *,
         chunk_chars: int = DEFAULT_CHUNK_CHARS,
         overlap_chars: int = DEFAULT_OVERLAP_CHARS,
+        max_chunks: int = 0,
         parser: Callable[[str, bytes], ParsedAttachment] = parse_attachment,
     ) -> None:
+        """``max_chunks`` 는 첨부 한 건이 만들 수 있는 청크 수 상한이다(0 이하면 무제한).
+
+        비용은 파일 크기가 아니라 **텍스트 양**에 붙는다 — 청크마다 임베딩 1회와 DB
+        쓰기 1회가 든다. 그래서 바이트가 아니라 청크로 상한을 잡는다(스캔 PDF 는
+        200MB 여도 청크가 0이고, 텍스트가 빽빽한 5MB 가 훨씬 무겁다).
+        """
+
         self.storage = storage
         self.embedder = embedder
         self.chunk_chars = chunk_chars
         self.overlap_chars = overlap_chars
+        self.max_chunks = max_chunks
         self.parser = parser
 
     def ingest(self, attachment: Attachment, data: bytes) -> AttachmentIngestResult:
@@ -372,7 +383,7 @@ class AttachmentIngestor:
 
         try:
             parsed = self.parser(attachment.filename, data)
-            doc_ids = self._store_chunks(attachment, source_url, parsed)
+            doc_ids, truncated = self._store_chunks(attachment, source_url, parsed)
             if not doc_ids:
                 # 스캔 이미지만 있는 PDF 처럼 텍스트 계층이 없는 파일이 여기 걸린다.
                 raise AttachmentParseError("EMPTY_CONTENT", "첨부에서 텍스트를 찾지 못했습니다")
@@ -387,12 +398,14 @@ class AttachmentIngestor:
             )
             raise
 
+        # 상한에 걸린 것은 실패가 아니다 — 의도한 중단이라 ready 로 남기고 표시만 한다.
         self.storage.update_attachment_status(
             school_id,
             attachment_id,
             "ready",
             page_count=len(parsed.units),
             chunk_count=len(doc_ids),
+            truncated=truncated,
         )
         return AttachmentIngestResult(
             attachment_id=attachment_id,
@@ -400,15 +413,20 @@ class AttachmentIngestor:
             unit_count=len(parsed.units),
             chunk_count=len(doc_ids),
             doc_ids=doc_ids,
+            truncated=truncated,
         )
 
     def _store_chunks(
         self, attachment: Attachment, source_url: str, parsed: ParsedAttachment
-    ) -> list[int]:
+    ) -> tuple[list[int], bool]:
+        """청크를 저장하고 (doc_id 목록, 상한으로 잘렸는지)를 돌려준다."""
+
         doc_ids: list[int] = []
         chunk_index = 0
         for unit_number, unit_text in enumerate(parsed.units, start=1):
             for content, _local_index in chunk_document(unit_text, self.chunk_chars, self.overlap_chars):
+                if 0 < self.max_chunks <= chunk_index:
+                    return doc_ids, True
                 doc_id = self.storage.upsert_document(
                     attachment.school_id,
                     source_url,
@@ -423,4 +441,4 @@ class AttachmentIngestor:
                 )
                 doc_ids.append(doc_id)
                 chunk_index += 1
-        return doc_ids
+        return doc_ids, False

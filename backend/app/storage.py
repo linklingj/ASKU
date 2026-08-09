@@ -15,6 +15,7 @@ from typing import Any
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BIGINT,
+    BOOLEAN,
     INTEGER,
     TIMESTAMP,
     TEXT,
@@ -106,6 +107,9 @@ attachments = Table(
     Column("chunk_count", INTEGER, nullable=False, server_default=text("0")),
     Column("status", TEXT, nullable=False, server_default=text("'pending'")),
     Column("error_code", TEXT),
+    # 청크 상한에 걸려 뒷부분을 색인하지 않았다는 표시. 성공(ready)이지만 문서 전체가
+    # 들어가지 않았음을 알려야 답이 비는 이유를 알 수 있다.
+    Column("truncated", BOOLEAN, nullable=False, server_default=text("false")),
     Column("uploaded_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     # 같은 학교에 같은 파일을 다시 올리면 새 행을 만들지 않고 기존 첨부를 다시 색인한다.
     UniqueConstraint("school_id", "file_hash", name="uq_attachments_school_file_hash"),
@@ -243,6 +247,7 @@ def _attachment(row: RowMapping) -> Attachment:
         chunk_count=int(row["chunk_count"]),
         status=row["status"],
         error_code=row["error_code"],
+        truncated=bool(row["truncated"]),
         uploaded_at=row["uploaded_at"],
     )
 
@@ -317,6 +322,9 @@ class Storage:
                 )
             )
             connection.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS page INT"))
+            connection.execute(
+                text("ALTER TABLE attachments ADD COLUMN IF NOT EXISTS truncated BOOLEAN NOT NULL DEFAULT false")
+            )
             connection.execute(
                 text(
                     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS attachment_id BIGINT "
@@ -611,6 +619,7 @@ class Storage:
         page_count: int | None = None,
         chunk_count: int | None = None,
         error_code: str | None = None,
+        truncated: bool | None = None,
     ) -> Attachment | None:
         """첨부의 색인 상태·집계를 갱신한다. 주지 않은 집계 값은 그대로 둔다."""
 
@@ -619,6 +628,8 @@ class Storage:
             values["page_count"] = page_count
         if chunk_count is not None:
             values["chunk_count"] = chunk_count
+        if truncated is not None:
+            values["truncated"] = truncated
 
         statement = (
             attachments.update()

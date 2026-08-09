@@ -81,11 +81,11 @@ def _get_rag_engine():
     """HybridRAG 엔진 싱글턴을 반환한다(그래프 RAG → 문서 RAG fallback). 최초 호출 시 초기화."""
     global _rag_engine
     if _rag_engine is None:
-        from app.llm import make_llm_provider, LocalEmbedder
+        from app.llm import make_llm_provider
         from app.rag import DocumentRAG, GraphRAG, HybridRAG
 
         storage = _get_storage()
-        embedder = LocalEmbedder()
+        embedder = _get_embedder()
         provider = make_llm_provider()
         graph_rag = GraphRAG(
             storage=storage,
@@ -99,7 +99,13 @@ def _get_rag_engine():
 
 
 def _get_embedder():
-    """첨부 색인용 Embedder 싱글턴. 모델 로딩이 무거워 요청마다 만들지 않는다."""
+    """프로세스 전역 Embedder 싱글턴 — 크롤 인덱싱·첨부 색인·질의가 함께 쓴다.
+
+    bge-m3 는 인스턴스마다 모델을 통째로 메모리에 올린다. 예전처럼 각자 새로 만들면
+    학교 등록 직후 첨부를 올리는 흐름(크롤 + 첨부 색인 동시 진행)에서 모델이 겹쳐 떠
+    컨테이너가 죽는다(크롤 직렬화와 같은 이유 — `_CRAWL_LOCK`). `embed()` 는 호출 간
+    상태를 남기지 않아 스레드끼리 나눠 써도 된다.
+    """
     global _embedder
     if _embedder is None:
         from app.llm import LocalEmbedder
@@ -471,9 +477,9 @@ def _run_crawl_inner(school_id: int, base_url: str, mode: str, max_nodes: int = 
         _PROGRESS_MAP[school_id]["progress"] = 0.4
         _PROGRESS_MAP[school_id]["message"] = "본문 파싱 및 엔티티 추출 중..."
 
-        from app.llm import make_llm_provider, LocalEmbedder
+        from app.llm import make_llm_provider
 
-        embedder = LocalEmbedder()
+        embedder = _get_embedder()
         provider = make_llm_provider()
         extractor = DocumentExtractor(llm_extractor=provider, spec=spec)
         builder = GraphBuilder(storage=storage, embedder=embedder)
@@ -758,8 +764,19 @@ def query_school(school_id: int, body: QueryRequest):
 
 # ── 첨부 문서 (사용자 업로드) ──────────────────────────────────────────
 
-# 업로드 파일 1건 상한. 수강편람 PDF(수백 페이지)도 통상 이 안에 들어간다.
-MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+# 업로드 파일 1건 크기 상한. 수강편람 PDF(수백 페이지)도 통상 이 안에 들어간다.
+# `upload.read()` 가 파일을 통째로 메모리에 올린 뒤 검사하므로, 이 값이 곧 한 요청이
+# 잡을 수 있는 메모리다(여러 파일이면 그만큼 곱해진다). bge-m3 가 이미 3~4GB 를 물고
+# 있어 무작정 키우면 컨테이너가 죽는다(deployment.md).
+MAX_ATTACHMENT_MB = int(os.getenv("MAX_ATTACHMENT_MB", "100"))
+MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024
+
+# 첨부 한 건이 만들 수 있는 청크 수 상한. 진짜 비용은 파일 크기가 아니라 텍스트 양이다
+# — 청크마다 임베딩 1회(bge-m3, 배치 없음)와 DB 쓰기 1회가 든다. 크기 상한만으로는
+# 텍스트가 빽빽한 파일 하나가 색인을 수십 분 붙잡는 것을 막지 못한다.
+# 기본 2000 청크 ≈ 400만 자 ≈ 1300페이지 안팎으로, 수강편람 한 권은 통째로 들어간다.
+# `MAX_GRAPH_NODES` 처럼 재배포 없이 조정하려고 환경변수로 열어 둔다.
+MAX_ATTACHMENT_CHUNKS = int(os.getenv("MAX_ATTACHMENT_CHUNKS", "2000"))
 
 
 def _attachment_item(attachment: Attachment) -> AttachmentItem:
@@ -772,6 +789,7 @@ def _attachment_item(attachment: Attachment) -> AttachmentItem:
         chunk_count=attachment.chunk_count,
         status=attachment.status,
         error_code=attachment.error_code,
+        truncated=attachment.truncated,
         uploaded_at=attachment.uploaded_at,
     )
 
@@ -785,11 +803,14 @@ def _run_attachment_ingest(attachment: Attachment, data: bytes) -> None:
     try:
         from app.attachment_ingest import AttachmentIngestor
 
-        ingestor = AttachmentIngestor(storage=_get_storage(), embedder=_get_embedder())
+        ingestor = AttachmentIngestor(
+            storage=_get_storage(), embedder=_get_embedder(), max_chunks=MAX_ATTACHMENT_CHUNKS
+        )
         result = ingestor.ingest(attachment, data)
         logger.info(
-            "첨부 색인 완료: school_id=%d, file=%s, units=%d, chunks=%d",
+            "첨부 색인 완료: school_id=%d, file=%s, units=%d, chunks=%d%s",
             attachment.school_id, result.filename, result.unit_count, result.chunk_count,
+            f" (청크 상한 {MAX_ATTACHMENT_CHUNKS} 도달로 중단)" if result.truncated else "",
         )
     except Exception:
         logger.exception(

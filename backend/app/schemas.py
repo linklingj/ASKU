@@ -317,6 +317,7 @@ class AttachmentItem(BaseModel):
     chunk_count: int = 0
     status: str  # pending | indexing | ready | failed
     error_code: str | None = None
+    truncated: bool = False  # 청크 상한에 걸려 문서 뒷부분이 색인되지 않았다
     uploaded_at: datetime | None = None
 
 

@@ -80,6 +80,7 @@ CREATE TABLE attachments (
   chunk_count   INT NOT NULL DEFAULT 0,
   status        TEXT NOT NULL DEFAULT 'pending',  -- pending|indexing|ready|failed
   error_code    TEXT,                   -- status='failed' 일 때만
+  truncated     BOOLEAN NOT NULL DEFAULT false,   -- 청크 상한에 걸려 뒷부분 미색인(status='ready')
   uploaded_at   TIMESTAMPTZ DEFAULT now()
 );
 
@@ -163,7 +164,8 @@ create_attachment(school_id, filename, content_type, byte_size, file_hash) -> at
 get_attachment(school_id, attachment_id) -> attachment | None
 list_attachments(school_id) -> [attachment]                    # 최신 업로드 순
 update_attachment_status(school_id, attachment_id, status,
-                         *, page_count=None, chunk_count=None, error_code=None) -> attachment | None
+                         *, page_count=None, chunk_count=None, error_code=None,
+                         truncated=None) -> attachment | None
 delete_attachment(school_id, attachment_id) -> bool            # 첨부 + 그 청크 함께 삭제
 count_ready_attachments(school_id) -> int                      # 질의 가능 여부 판정용
 ```

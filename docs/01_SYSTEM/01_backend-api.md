@@ -219,7 +219,13 @@ DELETE /schools/{school_id}/attachments/{attachment_id}
 **학교 등록 직후에도, 이미 등록된 학교에도** 같은 경로로 올린다. 크롤러는 이 경로에
 관여하지 않는다 — 첨부 본문 파싱은 여전히 크롤러 범위 밖이다([`03_crawler.md`](03_crawler.md)).
 
-지원 형식: `.pdf` · `.hwp` · `.hwpx` · `.txt` · `.md`. 파일당 최대 50MB.
+지원 형식: `.pdf` · `.hwp` · `.hwpx` · `.txt` · `.md`. 파일당 최대 100MB(`MAX_ATTACHMENT_MB`).
+
+상한이 둘인 이유가 있다. 크기 상한은 **업로드 순간의 메모리**를 막고(파일을 통째로
+읽어 검사한다), 청크 상한(`MAX_ATTACHMENT_CHUNKS`, 기본 2000)은 **색인 시간**을 막는다.
+진짜 비용은 바이트가 아니라 텍스트 양에 붙기 때문이다 — 청크마다 임베딩 1회와 DB 쓰기
+1회가 든다. 스캔본 PDF 는 200MB 여도 청크가 0이고, 텍스트가 빽빽한 5MB 가 더 무겁다.
+둘 다 환경변수로 조정한다([`02_FEATURES/deployment.md`](../02_FEATURES/deployment.md) §2).
 
 **응답 `202 Accepted`** — 파싱·임베딩은 백그라운드에서 이어진다.
 
@@ -235,6 +241,7 @@ DELETE /schools/{school_id}/attachments/{attachment_id}
       "chunk_count": 0,
       "status": "pending",
       "error_code": null,
+      "truncated": false,
       "uploaded_at": "2026-08-05T09:00:00Z"
     }
   ],
@@ -251,6 +258,9 @@ DELETE /schools/{school_id}/attachments/{attachment_id}
 - 색인 진행은 `GET .../attachments` 의 `status`(`pending` → `indexing` → `ready`/`failed`)로
   확인한다. 실패 시 `error_code`(예: `HWP_ENCRYPTED`, `EMPTY_CONTENT`)가 사유를 알린다.
   스캔 이미지만 있어 텍스트 계층이 없는 PDF 는 `EMPTY_CONTENT`로 실패한다(OCR 미지원).
+- 청크 상한에 걸리면 **실패가 아니라 `truncated: true` 인 `ready`** 다 — 상한까지는 색인해
+  질의에 쓰고, 문서 뒷부분이 빠졌다는 사실만 알린다(그러지 않으면 답이 비는 이유를 알 수
+  없다). 통째로 넣어야 하면 `MAX_ATTACHMENT_CHUNKS` 를 올리고 다시 올린다.
 - `DELETE`는 첨부와 그 청크를 함께 지운다(`204 No Content`). 지운 뒤에는 문서 RAG 검색
   대상에서 빠진다.
 
