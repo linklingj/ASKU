@@ -133,6 +133,64 @@ class GeminiProvider(Generator, Extractor, SpecDrafter):
         return resp.text
 
 
+class OpenAIProvider(Generator, Extractor, SpecDrafter):
+    """OpenAI(GPT) API 로 답변 생성·구조화 추출을 담당한다(임베딩은 LocalEmbedder 몫).
+
+    GeminiProvider 와 같은 3개 인터페이스를 구현하므로 호출부는 동일하다. api_key·model 은
+    환경변수/인자로 주입한다(하드코딩 금지): `OPENAI_API_KEY`, `OPENAI_MODEL`. SDK(openai)는
+    생성 시에만 지연 import 한다. 구조화 추출은 Chat Completions 의 JSON 모드로 강제한다.
+    """
+
+    def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
+        from openai import OpenAI
+
+        key = api_key or os.getenv("OPENAI_API_KEY")
+        self._model = model or os.getenv("OPENAI_MODEL")
+        if not key or not self._model:
+            raise ValueError("OPENAI_API_KEY·OPENAI_MODEL 를 환경변수/인자로 주입해야 한다")
+        self._client = OpenAI(api_key=key)
+
+    def generate(self, prompt: str, context: str) -> str:
+        resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=[{"role": "user", "content": f"[컨텍스트]\n{context}\n\n[요청]\n{prompt}"}],
+        )
+        return resp.choices[0].message.content or ""
+
+    def extract(self, text: str) -> Extraction:
+        resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=[{"role": "user", "content": f"{EXTRACT_JSON_INSTRUCTION}\n\n본문:\n{text}"}],
+            response_format={"type": "json_object"},
+        )
+        content = resp.choices[0].message.content
+        # 응답이 비는 경우(길이 제한·안전 필터·한도 근접)는 형식 오류가 아니라 재시도 대상이다.
+        if not content:
+            reason = resp.choices[0].finish_reason if resp.choices else None
+            raise RuntimeError(f"빈 응답 (finish_reason={reason})")
+        return Extraction.model_validate_json(content)
+
+    def draft_spec(self, prompt: str) -> str:
+        resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        return resp.choices[0].message.content or ""
+
+
+def make_llm_provider() -> GeminiProvider | OpenAIProvider:
+    """답변 생성·추출 제공자를 `LLM_PROVIDER`(openai|gemini) 로 고른다. 기본 openai.
+
+    두 제공자 모두 Generator·Extractor·SpecDrafter 를 구현하므로 호출부는 동일하다.
+    임베딩은 항상 로컬 bge-m3(LocalEmbedder)라 여기서 다루지 않는다.
+    """
+    name = os.getenv("LLM_PROVIDER", "openai").lower()
+    if name == "gemini":
+        return GeminiProvider()
+    return OpenAIProvider()
+
+
 class LocalEmbedder(Embedder):
     """로컬 bge-m3 임베딩 — dense 전용. sparse·ColBERT 표현은 뽑지 않는다(저장소가
     dense `vector(1024)` 만 쓰기 때문, 06_storage.md). 모델명은 `BGE_M3_MODEL` 로

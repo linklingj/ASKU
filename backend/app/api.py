@@ -15,6 +15,8 @@ import base64
 import binascii
 import hashlib
 import hmac
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -42,6 +44,7 @@ from app.schemas import (
     EntityNeighbor,
     ErrorDetail,
     ErrorResponse,
+    ForceCompleteResponse,
     GraphEdge,
     GraphNode,
     GraphResponse,
@@ -49,6 +52,7 @@ from app.schemas import (
     QueryResponse,
     RecrawlResponse,
     RejectedAttachment,
+    ResetStatusResponse,
     SchoolCreateRequest,
     SchoolDetailResponse,
     SchoolDetailStats,
@@ -128,12 +132,12 @@ def _get_rag_engine():
     """HybridRAG 엔진 싱글턴을 반환한다(그래프 RAG → 문서 RAG fallback). 최초 호출 시 초기화."""
     global _rag_engine
     if _rag_engine is None:
-        from app.llm import GeminiProvider, LocalEmbedder
+        from app.llm import make_llm_provider, LocalEmbedder
         from app.rag import DocumentRAG, GraphRAG, HybridRAG
 
         storage = _get_storage()
         embedder = LocalEmbedder()
-        provider = GeminiProvider()
+        provider = make_llm_provider()
         graph_rag = GraphRAG(
             storage=storage,
             embedder=embedder,
@@ -228,9 +232,9 @@ def _provision_adapter_spec(storage, crawler, request, base_url: str):
         return None
 
     try:
-        from app.llm import GeminiProvider
+        from app.llm import make_llm_provider
 
-        result = generate_spec(GeminiProvider(), host, listing, details)
+        result = generate_spec(make_llm_provider(), host, listing, details)
     except Exception:
         logger.exception("규격 자동 생성 실패: host=%s", host)
         return None
@@ -339,9 +343,9 @@ def _refresh_broken_spec(storage, crawler, request, base_url: str, spec, reports
         logger.warning("규격이 어긋났으나 자동 생성이 꺼져 있습니다: host=%s", host)
         return
     try:
-        from app.llm import GeminiProvider
+        from app.llm import make_llm_provider
 
-        result = generate_spec(GeminiProvider(), host, listing, details)
+        result = generate_spec(make_llm_provider(), host, listing, details)
     except Exception:
         logger.exception("규격 재생성 실패: host=%s", host)
         return
@@ -393,12 +397,49 @@ def _school_not_found(school_id: int) -> JSONResponse:
 
 _PROGRESS_MAP: dict[int, dict] = {}
 
+# 학교 하나가 가질 수 있는 그래프 노드(엔티티) 상한. 노드가 늘수록 그래프 조회·검색이
+# 잡아먹는 메모리가 커져 실제로 컨테이너가 죽었다. 운영 중 조정하는 값이라 환경변수로
+# 열어 둔다(재배포 없이 바꾸기 위함). 호출자가 넘기면 그 값이 우선한다.
+DEFAULT_MAX_NODES = int(os.getenv("MAX_GRAPH_NODES", "1200"))
 
-def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
+# 크롤은 프로세스 전체에서 한 번에 하나만 돈다. `try_start_crawl` 은 같은 학교의 중복만
+# 막아 다른 학교끼리는 동시에 돌 수 있었고, 크롤마다 bge-m3 임베더를 새로 만들기 때문에
+# 동시 실행 수만큼 모델이 메모리에 겹쳐 떠 24GB 를 넘겼다. 크롤 대상 서버 부하와 LLM
+# 레이트리밋에도 직렬 실행이 낫다.
+# ponytail: 프로세스 안에서만 유효한 락. 워커를 늘리면 DB 기반 잠금이 필요하다
+#           (배포는 워커 1개 고정 — deployment.md).
+_CRAWL_LOCK = threading.Lock()
+
+# 차례를 기다리는 크롤이 FastAPI 스레드풀을 붙잡지 않도록 전용 워커에서 돌린다.
+# 엔드포인트가 동기 함수라 스레드풀이 마르면 API 전체가 응답하지 못한다.
+_CRAWL_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asku-crawl")
+
+
+def _run_crawl(school_id: int, base_url: str, mode: str, max_nodes: int = 0) -> None:
+    """크롤 파이프라인을 한 번에 하나만 실행한다(직렬화 래퍼).
+
+    스케줄러·API 등 모든 호출부가 이 함수를 지나므로 여기 한 곳에서만 막는다.
+    """
+    # 대기 중임을 먼저 알린다. 이 표시가 없으면 차례를 기다리는 학교가 끼어버린
+    # 크롤과 구분되지 않는다.
+    _PROGRESS_MAP[school_id] = {
+        "pages": 0, "chunks": 0, "entities": 0, "edges": 0,
+        "progress": 0.05, "stage": "crawling",
+        "message": "다른 학교 크롤이 끝나기를 기다리는 중입니다.",
+    }
+    with _CRAWL_LOCK:
+        _run_crawl_inner(school_id, base_url, mode, max_nodes)
+
+
+def _run_crawl_inner(school_id: int, base_url: str, mode: str, max_nodes: int = 0) -> None:
     """백그라운드에서 크롤링 파이프라인을 실행한다.
 
     crawling → indexing → ready 상태 전이를 추적한다.
     실패 시 failed 또는 partial_failed 로 전이한다.
+
+    ``max_nodes`` 는 이 학교의 그래프 노드 상한이다. 0 이하면 ``DEFAULT_MAX_NODES``
+    를 쓴다(스케줄러처럼 3인자로 부르는 기존 호출부를 그대로 두기 위한 기본값).
+    상한에 닿으면 남은 페이지를 더 추출하지 않고 멈춘다 — LLM 호출도 같이 아낀다.
     """
     storage = _get_storage()
     crawl_ok = False
@@ -481,17 +522,21 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
         _PROGRESS_MAP[school_id]["progress"] = 0.4
         _PROGRESS_MAP[school_id]["message"] = "본문 파싱 및 엔티티 추출 중..."
 
-        from app.llm import GeminiProvider, LocalEmbedder
+        from app.llm import make_llm_provider, LocalEmbedder
 
         embedder = LocalEmbedder()
-        provider = GeminiProvider()
+        provider = make_llm_provider()
         extractor = DocumentExtractor(llm_extractor=provider, spec=spec)
         builder = GraphBuilder(storage=storage, embedder=embedder)
 
         has_failures = len(run.failures) > 0
         total_pages = max(len(pages), 1)
+        node_cap = max_nodes if max_nodes > 0 else DEFAULT_MAX_NODES
+        node_limit_hit = False
 
         for i, page in enumerate(pages):
+            if node_limit_hit:
+                break
             try:
                 _PROGRESS_MAP[school_id]["stage"] = "extracting"
                 result = extractor.process(page)
@@ -515,6 +560,15 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
                         if build_result.status == "partial":
                             has_failures = True
 
+                    # 노드 수는 DB 로 센다. 청크마다 같은 엔티티가 다시 나오면
+                    # upsert 로 합쳐지므로 build 결과를 더하면 실제보다 부풀려진다.
+                    if storage.get_school_stats(school_id)["entity_count"] >= node_cap:
+                        node_limit_hit = True
+                        logger.info(
+                            "노드 상한 도달로 인덱싱 중단: school_id=%d, cap=%d", school_id, node_cap
+                        )
+                        break
+
                 # 진행률 계산 (0.4 ~ 0.9)
                 curr_p = 0.4 + (0.5 * (i + 1) / total_pages)
                 _PROGRESS_MAP[school_id]["progress"] = round(curr_p, 2)
@@ -524,12 +578,17 @@ def _run_crawl(school_id: int, base_url: str, mode: str) -> None:
                 logger.exception("파이프라인 실패: school_id=%d, url=%s", school_id, page.source_url)
 
         # 3. 완료
+        # 상한에 걸린 것은 실패가 아니다 — 의도한 중단이라 상태를 낮추지 않는다.
         final_status = "partial_failed" if has_failures else "ready"
         storage.update_school_status(school_id, final_status)
 
         _PROGRESS_MAP[school_id]["stage"] = "done" if final_status == "ready" else final_status
         _PROGRESS_MAP[school_id]["progress"] = 1.0
-        _PROGRESS_MAP[school_id]["message"] = "인덱싱이 완료되었습니다."
+        _PROGRESS_MAP[school_id]["message"] = (
+            f"노드 상한({node_cap}개)에 도달해 인덱싱을 중단했습니다."
+            if node_limit_hit
+            else "인덱싱이 완료되었습니다."
+        )
         crawl_ok = final_status in ("ready", "partial_failed")
 
     except Exception:
@@ -577,6 +636,9 @@ async def lifespan(app: FastAPI):
         await scheduler.stop()
     except Exception:
         logger.warning("스케줄러 정지 실패", exc_info=True)
+    # 진행 중인 크롤을 기다리지 않는다. 종료는 대개 재배포라 어차피 컨테이너가 사라지고,
+    # 여기서 붙잡으면 배포가 크롤 시간만큼 지연된다.
+    _CRAWL_EXECUTOR.shutdown(wait=False)
     storage.close()
 
 
@@ -677,7 +739,9 @@ def create_school(body: SchoolCreateRequest, background_tasks: BackgroundTasks):
         logger.exception("스케줄러 등록 실패: school_id=%s", school.school_id)
 
     # 백그라운드에서 크롤링 시작
-    background_tasks.add_task(_run_crawl, school.school_id, school.base_url, "initial")
+    # 전용 워커에 넘긴다. BackgroundTasks 로 붙이면 FastAPI 스레드풀에서 돌아,
+    # 앞선 크롤을 기다리는 동안 동기 엔드포인트용 스레드를 붙잡는다.
+    _CRAWL_EXECUTOR.submit(_run_crawl, school.school_id, school.base_url, "initial")
 
     return SchoolResponse(
         school_id=updated.school_id,
@@ -945,8 +1009,17 @@ def delete_attachment(school_id: int, attachment_id: int):
 
 
 @app.post("/schools/{school_id}/recrawl", status_code=202, response_model=RecrawlResponse)
-def recrawl_school(school_id: int, background_tasks: BackgroundTasks):
-    """해당 학교의 크롤링을 수동으로 다시 실행한다 (원자적 상태 변경으로 중복 방지)."""
+def recrawl_school(
+    school_id: int,
+    background_tasks: BackgroundTasks,
+    max_nodes: int = Query(
+        DEFAULT_MAX_NODES, ge=1, description="이 학교 그래프의 노드(엔티티) 상한"
+    ),
+):
+    """해당 학교의 크롤링을 수동으로 다시 실행한다 (원자적 상태 변경으로 중복 방지).
+
+    ``max_nodes`` 로 이번 실행의 노드 상한을 조절한다. 생략하면 `DEFAULT_MAX_NODES`.
+    """
     storage = _get_storage()
 
     # 원자적 한 줄 UPDATE로 상태 변경 시도
@@ -957,7 +1030,7 @@ def recrawl_school(school_id: int, background_tasks: BackgroundTasks):
             return _school_not_found(school_id)
         return _error_response(409, "CRAWL_IN_PROGRESS", "이미 크롤링이 진행 중입니다.")
 
-    background_tasks.add_task(_run_crawl, school_id, updated.base_url, "recrawl")
+    _CRAWL_EXECUTOR.submit(_run_crawl, school_id, updated.base_url, "recrawl", max_nodes)
 
     try:
         from app.scheduler import calculate_next_run, get_scheduler
@@ -977,6 +1050,64 @@ def recrawl_school(school_id: int, background_tasks: BackgroundTasks):
         school_id=school_id,
         status="crawling",
         message="재크롤링이 시작되었습니다.",
+    )
+
+
+@app.post("/schools/{school_id}/reset-status", response_model=ResetStatusResponse)
+def reset_school_status(school_id: int):
+    """끼어버린 크롤링·인덱싱 상태를 관리용으로 강제 되돌린다.
+
+    컨테이너가 재배포·OOM 등으로 죽으면 `_run_crawl`의 예외 핸들러가 실행되지
+    않아 상태가 crawling/indexing 에 영구히 남는다(`try_start_crawl` 이 이후
+    모든 recrawl 을 409 로 막는다). 자동 판별 없이, 운영자가 `/status` 로 직접
+    확인한 뒤 호출하는 수동 복구 경로다.
+    """
+    storage = _get_storage()
+    school = storage.get_school(school_id)
+    if school is None:
+        return _school_not_found(school_id)
+
+    if school.status not in ("crawling", "indexing"):
+        return _error_response(
+            409, "NOT_STUCK", f"현재 상태가 '{school.status}' 라 리셋 대상이 아닙니다."
+        )
+
+    storage.update_school_status(school_id, "failed")
+    _PROGRESS_MAP.pop(school_id, None)
+
+    return ResetStatusResponse(
+        school_id=school_id,
+        status="failed",
+        message="상태를 failed 로 되돌렸습니다. 다시 재크롤링을 시작할 수 있습니다.",
+    )
+
+
+@app.post("/schools/{school_id}/force-complete", response_model=ForceCompleteResponse)
+def force_complete_school(school_id: int):
+    """indexing/partial_failed 상태를 관리용으로 강제 ready(완료) 처리한다.
+
+    인덱싱이 끼었거나 일부만 실패했지만 이미 쌓인 데이터로 질의해도 충분하다고
+    운영자가 판단했을 때 쓴다. 실제로 색인을 다시 돌리지 않는다 — 상태값만
+    바꾼다. `crawling`(아직 아무것도 색인 안 됨)·`failed`(색인 결과 없음)·
+    `ready`(이미 완료)에서는 데이터 없이 완료로 속일 수 있어 거부한다.
+    """
+    storage = _get_storage()
+    school = storage.get_school(school_id)
+    if school is None:
+        return _school_not_found(school_id)
+
+    if school.status not in ("indexing", "partial_failed"):
+        return _error_response(
+            409, "NOT_ELIGIBLE", f"현재 상태가 '{school.status}' 라 강제 완료 대상이 아닙니다."
+        )
+
+    storage.update_school_status(school_id, "ready")
+    _PROGRESS_MAP.pop(school_id, None)
+
+    return ForceCompleteResponse(
+        school_id=school_id,
+        status="ready",
+        message="상태를 ready 로 강제 완료 처리했습니다. 지금까지 색인된 데이터로 질의할 수 있습니다.",
     )
 
 

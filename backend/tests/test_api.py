@@ -157,8 +157,15 @@ def mock_storage():
 
 @pytest.fixture
 def client(mock_storage):
-    """모킹된 Storage로 FastAPI TestClient를 반환한다."""
-    with patch("app.api._get_storage", return_value=mock_storage):
+    """모킹된 Storage로 FastAPI TestClient를 반환한다.
+
+    크롤 실행기도 모킹한다. 실제로 제출하면 백그라운드 스레드가 모킹된 Storage 를
+    건드려 다른 테스트의 호출 검증과 뒤섞인다.
+    """
+    with (
+        patch("app.api._get_storage", return_value=mock_storage),
+        patch("app.api._CRAWL_EXECUTOR"),
+    ):
         from app.api import app
 
         with TestClient(app, raise_server_exceptions=False) as c:
@@ -396,6 +403,195 @@ class TestRecrawl:
         resp = client.post("/schools/999/recrawl")
         assert resp.status_code == 404
 
+    def test_max_nodes_defaults_when_omitted(self, client, mock_storage):
+        resp = client.post("/schools/1/recrawl")
+        assert resp.status_code == 202
+        # submit(_run_crawl, school_id, base_url, mode, max_nodes)
+        assert app.api._CRAWL_EXECUTOR.submit.call_args.args[4] == app.api.DEFAULT_MAX_NODES
+
+    def test_max_nodes_can_be_overridden(self, client, mock_storage):
+        resp = client.post("/schools/1/recrawl?max_nodes=50")
+        assert resp.status_code == 202
+        assert app.api._CRAWL_EXECUTOR.submit.call_args.args[4] == 50
+
+    def test_max_nodes_must_be_positive(self, client, mock_storage):
+        # 검증 오류는 이 앱의 공통 규약대로 400 INVALID_REQUEST 로 나온다.
+        resp = client.post("/schools/1/recrawl?max_nodes=0")
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "INVALID_REQUEST"
+
+
+# ── 크롤 직렬화 ────────────────────────────────────────────────────────
+
+
+class TestCrawlSerialization:
+    """크롤은 한 번에 하나만 돌아야 한다.
+
+    동시에 돌면 크롤마다 만드는 bge-m3 임베더가 그 수만큼 메모리에 겹쳐 뜬다.
+    """
+
+    def test_only_one_crawl_runs_at_a_time(self):
+        import threading
+
+        overlap = []
+        running = []
+        lock = threading.Lock()
+
+        def fake_inner(school_id, base_url, mode, max_nodes):
+            with lock:
+                running.append(school_id)
+                if len(running) > 1:  # 겹쳐 들어왔다 = 직렬화 실패
+                    overlap.append(tuple(running))
+            import time
+
+            time.sleep(0.05)
+            with lock:
+                running.remove(school_id)
+
+        with patch("app.api._run_crawl_inner", side_effect=fake_inner):
+            threads = [
+                threading.Thread(target=app.api._run_crawl, args=(i, "https://x.ac.kr", "recrawl", 10))
+                for i in range(4)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert overlap == []
+
+
+# ── 노드 상한 (_run_crawl) ─────────────────────────────────────────────
+
+
+class TestNodeLimit:
+    """상한에 닿으면 남은 페이지를 더 추출하지 않고 멈춰야 한다.
+
+    멈추지 않으면 노드가 계속 늘어 그래프 조회가 메모리를 다 먹는다.
+    """
+
+    def _run(self, mock_storage, entity_counts, max_nodes, page_count=3):
+        pages = [MagicMock(source_url=f"https://x.ac.kr/{i}") for i in range(page_count)]
+        chunk = MagicMock()
+        build_result = BuildResult(
+            school_id=1, source_url="https://x.ac.kr/0", content_hash="h",
+            doc_id=1, entity_ids=[1], edge_ids=[], status="complete",
+        )
+        # 청크 빌드 직후 세는 노드 수. 상한을 넘는 시점을 여기서 조종한다.
+        mock_storage.get_school_stats.side_effect = [
+            {"document_count": 0, "entity_count": n, "attachment_count": 0, "last_crawled_at": None}
+            for n in entity_counts
+        ]
+        extractor = MagicMock()
+        extractor.process.return_value = [chunk]
+
+        crawler = MagicMock()
+        crawler.pages_for_extractor.return_value = pages
+
+        with (
+            patch("app.api._get_storage", return_value=mock_storage),
+            patch("app.api._ensure_adapter_spec", return_value=None),
+            patch("app.api._record_crawl_quality", return_value=[]),
+            patch("app.api._refresh_broken_spec"),
+            patch("app.crawler.Crawler") as crawler_cls,
+            patch("app.crawler.adapter_for"),
+            patch("app.crawler.boards_for", return_value=[]),
+            patch("app.extractor.DocumentExtractor", return_value=extractor),
+            patch("app.graph_builder.GraphBuilder") as builder_cls,
+            patch("app.llm.LocalEmbedder"),
+            patch("app.llm.make_llm_provider"),
+        ):
+            crawler_cls.from_storage.return_value = crawler
+            builder_cls.return_value.build.return_value = build_result
+            app.api._run_crawl(1, "https://x.ac.kr", "recrawl", max_nodes)
+
+        return extractor
+
+    def test_stops_extracting_once_cap_is_reached(self, mock_storage):
+        # 첫 페이지에서 이미 상한(10)에 닿으면 나머지 2페이지는 추출하지 않는다.
+        extractor = self._run(mock_storage, entity_counts=[10, 10, 10], max_nodes=10)
+        assert extractor.process.call_count == 1
+
+    def test_keeps_going_below_the_cap(self, mock_storage):
+        # 상한(100)에 못 미치면 3페이지를 모두 추출한다.
+        extractor = self._run(mock_storage, entity_counts=[1, 2, 3], max_nodes=100)
+        assert extractor.process.call_count == 3
+
+
+# ── POST /schools/{id}/reset-status ────────────────────────────────────
+
+
+class TestResetStatus:
+    def test_200_resets_stuck_crawling(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="crawling")
+        resp = client.post("/schools/1/reset-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "failed"
+        mock_storage.update_school_status.assert_called_once_with(1, "failed")
+
+    def test_200_resets_stuck_indexing(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="indexing")
+        resp = client.post("/schools/1/reset-status")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "failed"
+
+    def test_409_when_not_stuck(self, client, mock_storage):
+        # ready 상태는 리셋 대상이 아니다 — 정상 종료된 상태를 실수로 되돌리지 않는다.
+        mock_storage.get_school.return_value = _make_school(status="ready")
+        resp = client.post("/schools/1/reset-status")
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "NOT_STUCK"
+        mock_storage.update_school_status.assert_not_called()
+
+    def test_404_not_found(self, client, mock_storage):
+        mock_storage.get_school.return_value = None
+        resp = client.post("/schools/999/reset-status")
+        assert resp.status_code == 404
+
+
+# ── POST /schools/{id}/force-complete ──────────────────────────────────
+
+
+class TestForceComplete:
+    def test_200_completes_indexing(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="indexing")
+        resp = client.post("/schools/1/force-complete")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ready"
+        mock_storage.update_school_status.assert_called_once_with(1, "ready")
+
+    def test_200_completes_partial_failed(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="partial_failed")
+        resp = client.post("/schools/1/force-complete")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ready"
+
+    def test_409_when_crawling(self, client, mock_storage):
+        # 아직 아무것도 색인되지 않았으므로 완료로 속이면 안 된다.
+        mock_storage.get_school.return_value = _make_school(status="crawling")
+        resp = client.post("/schools/1/force-complete")
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "NOT_ELIGIBLE"
+        mock_storage.update_school_status.assert_not_called()
+
+    def test_409_when_already_ready(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="ready")
+        resp = client.post("/schools/1/force-complete")
+        assert resp.status_code == 409
+        mock_storage.update_school_status.assert_not_called()
+
+    def test_409_when_failed(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="failed")
+        resp = client.post("/schools/1/force-complete")
+        assert resp.status_code == 409
+
+    def test_404_not_found(self, client, mock_storage):
+        mock_storage.get_school.return_value = None
+        resp = client.post("/schools/999/force-complete")
+        assert resp.status_code == 404
+
 
 # ── GET /schools/{id}/status ───────────────────────────────────────────
 
@@ -513,7 +709,7 @@ class TestRunCrawlPipeline:
             patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
             patch("app.extractor.DocumentExtractor", return_value=mock_extractor),
             patch("app.graph_builder.GraphBuilder", return_value=mock_builder),
-            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.make_llm_provider", return_value=MagicMock()),
             patch("app.llm.LocalEmbedder", return_value=MagicMock()),
         ):
             MockCrawlerModule.from_storage.return_value = mock_crawler
@@ -568,7 +764,7 @@ class TestRunCrawlPipeline:
             patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
             patch("app.extractor.DocumentExtractor", return_value=mock_extractor),
             patch("app.graph_builder.GraphBuilder", return_value=mock_builder),
-            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.make_llm_provider", return_value=MagicMock()),
             patch("app.llm.LocalEmbedder", return_value=MagicMock()),
         ):
             MockCrawlerModule.from_storage.return_value = mock_crawler
@@ -604,7 +800,7 @@ class TestRunCrawlPipeline:
             patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
             patch("app.extractor.DocumentExtractor", return_value=mock_extractor),
             patch("app.graph_builder.GraphBuilder", return_value=MagicMock()),
-            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.make_llm_provider", return_value=MagicMock()),
             patch("app.llm.LocalEmbedder", return_value=MagicMock()),
         ):
             MockCrawlerModule.from_storage.return_value = mock_crawler
@@ -630,7 +826,7 @@ class TestRunCrawlPipeline:
             patch("app.crawler.CommonNoticeAdapter", return_value=MagicMock()),
             patch("app.extractor.DocumentExtractor", return_value=MagicMock()),
             patch("app.graph_builder.GraphBuilder", return_value=MagicMock()),
-            patch("app.llm.GeminiProvider", return_value=MagicMock()),
+            patch("app.llm.make_llm_provider", return_value=MagicMock()),
             patch("app.llm.LocalEmbedder", return_value=MagicMock()),
         ):
             MockCrawlerModule.from_storage.return_value = mock_crawler
