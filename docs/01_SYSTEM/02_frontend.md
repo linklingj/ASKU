@@ -150,6 +150,20 @@
   GIF 딜레이는 1/100초 단위이고 20ms 미만은 브라우저가 100ms 로 되돌리므로, 더 빠르게 하려면 딜레이가 아니라 프레임을 솎는다.
 - `≤820px` 또는 `prefers-reduced-motion` 이면 고정하지 않고 전부 표시한다.
 
+**지원 학교 마퀴 (`#schools`)**
+
+- 데이터는 `GET /schools` 실측이다. 목록이 비거나 백엔드에 닿지 못하면 섹션을 `display:none` 으로
+  둔다 — 등록 안 된 학교를 노출하지 않는다(허위 노출 방지).
+- 항목은 **학교 대표 이미지(`image_url`) 로고**다. `image_url` 이 없거나 이미지 로드가 실패하면
+  (`onerror`) 학교명 텍스트로 되돌린다 — `admin.html` 의 "대표 이미지 URL을 비우면 기본 표시로
+  돌아갑니다" 와 같은 규칙이라, 깨진 URL 이 마퀴에 빈칸을 남기지 않는다.
+- 로고는 원형 크롭(흰 배경 + `border-radius:50%`)에 **`object-fit:contain`** 이다. 엠블럼 비율이
+  학교마다 달라 `cover` 로 자르면 가로로 긴 로고가 깨진다.
+- `loading="lazy"` 는 쓰지 않는다. 마퀴가 `transform` 으로 흐르는 동안 뒤쪽 로고가 늦게 떠
+  빈칸이 보인다.
+- 무한 루프는 목록을 **두 번 이어붙여** 만든다(`keyframes marquee` 가 `-50%→0`). 개수 카운터는
+  슬롯머신으로 실제 학교 수까지 굴린다.
+
 ### 3.2 학교 찾기 (`/find`) — 휠 선택
 
 등록된 학교를 **원호(아크) 휠**로 훑어 하나를 고른다.
@@ -233,6 +247,40 @@
 - 단, `failed` 라도 **색인이 끝난 첨부가 있으면** 완료로 끝낸다 — 백엔드가 그 학교의 질의를 열어주기 때문이다
   ([`01_backend-api.md`](01_backend-api.md) §2.4). 완료 화면은 크롤 통계 대신 첨부 색인 결과를 보인다.
 
+### 3.5 관리자 (`admin.html`) — 구현됨
+
+등록된 학교의 메타데이터와 첨부 문서를 고치는 운영 화면.
+[`frontend/src/admin.html`](../../frontend/src/admin.html) 한 파일이다.
+
+**진입**
+
+- 경로는 `admin.html`(배포본 `…/ASKU/admin.html`). 랜딩 내비 우측 **"관리자 설정"** 링크로 들어간다.
+- 숨겨진 경로가 아니다 — 접근 제어는 URL 을 감추는 방식이 아니라 아래 토큰으로만 한다.
+
+**인증 (`POST /admin/login`)**
+
+- 비밀번호 한 칸. 성공하면 토큰을 **`sessionStorage["asku_admin_token"]`** 에 넣고 관리 화면을 연다.
+  탭을 닫으면 사라지고, 토큰 수명도 1시간이다([`01_backend-api.md`](01_backend-api.md) §2.5-3).
+- 비밀번호는 **프론트엔드에 절대 넣지 않는다.** 화면은 입력만 받고 검증은 서버가 한다.
+- 관리자 요청은 `api.js` 의 `patchAdmin`·`deleteAdmin` 으로 보낸다 — `sessionStorage` 의 토큰을
+  `Authorization: Bearer` 로 붙여 주는 래퍼다. 일반 `get`/`post` 는 토큰을 붙이지 않는다.
+- 새로고침하면 토큰이 남아 있으면 로그인 화면을 건너뛴다(`authenticated()`). 로그아웃은
+  `sessionStorage` 에서 토큰만 지운다 — 서버에 세션이 없어 무효화할 대상도 없다.
+
+**하는 일**
+
+| 작업 | 호출 | 비고 |
+|---|---|---|
+| 학교명·공지 URL·대표 이미지 수정 | `PATCH /schools/{id}` | 대표 이미지 URL 을 비우면 기본 표시로 돌아간다 |
+| 학교 삭제 | `DELETE /schools/{id}` | 딸린 문서·첨부·그래프까지 사라진다 |
+| 학교별 문서 추가 | `POST /schools/{id}/attachments` | 등록 화면과 **같은 공개 경로** — 인증 없음 |
+| 학교별 문서 삭제 | `DELETE /schools/{id}/attachments/{aid}` | 확인창을 거친다 |
+
+- 문서 목록은 `pending`/`indexing` 이 남아 있으면 **2초 간격으로 상태만 다시 확인**한다.
+  카드가 갈아끼워지면(`wrap.isConnected` 가 거짓) 폴링도 멈춘다 — 목록을 재로드할 때
+  타이머가 겹쳐 쌓이지 않게 하는 조건이다.
+- 업로드에서 일부 파일이 걸러지면 `rejected` 목록을 파일명·사유로 묶어 알린다(§3.4 와 같은 규칙).
+
 ---
 
 ## 4. 백엔드 인터페이스 (프론트가 소비)
@@ -250,6 +298,10 @@
 | POST | `/schools/{id}/attachments` | 등록 | 문서 첨부(multipart, 필드명 `files`) — 선택 |
 | GET | `/schools/{id}/attachments` | 등록 로딩 | 첨부별 색인 상태 |
 | GET | `/schools/{id}/status` | 등록 로딩 | 단계·진행도 (SSE 권장) |
+| POST | `/admin/login` | 관리자 | 비밀번호 → 1시간 토큰 |
+| PATCH | `/schools/{id}` | 관리자 | 학교명·공지 URL·대표 이미지 수정 — **토큰 필요** |
+| DELETE | `/schools/{id}` | 관리자 | 학교 삭제 — **토큰 필요** |
+| DELETE | `/schools/{id}/attachments/{aid}` | 관리자 | 첨부 삭제 — **토큰 필요** |
 
 **그래프 payload** (`/graph`, `/entities/{eid}` 로 확장 로드):
 

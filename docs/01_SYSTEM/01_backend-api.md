@@ -403,6 +403,94 @@ POST /schools/{school_id}/force-complete
 
 ---
 
+### 2.5-3 관리자 로그인
+
+```
+POST /admin/login
+```
+
+관리자 비밀번호를 검증하고 **짧은 수명 토큰**을 발급한다. 비밀번호는 서버 환경변수에만
+있고 프론트엔드 코드·응답 어디에도 들어가지 않는다.
+
+**요청**
+
+```json
+{ "password": "…" }
+```
+
+**응답 `200 OK`**
+
+```json
+{
+  "token": "<payload>.<signature>",
+  "expires_at": "2026-08-10T12:00:00Z"
+}
+```
+
+- 토큰은 서버 상태를 만들지 않는다. `base64url("admin:<만료 epoch>")` 를 페이로드로 두고
+  `ADMIN_TOKEN_SECRET` 으로 **HMAC-SHA256** 서명한 값을 이어 붙인 형태다. 검증은 서명 재계산과
+  만료 확인뿐이라 세션 저장소가 없다.
+- **수명 1시간**(`_ADMIN_TOKEN_TTL_SECONDS`). 만료된 토큰은 `401` 이고 갱신 경로는 없다 —
+  다시 로그인한다.
+- 비밀번호 비교는 `hmac.compare_digest` 로 상수 시간이다. 한글 비밀번호도 되도록 **UTF-8
+  바이트로** 비교한다(`str` 비교는 비ASCII 에서 `TypeError` 가 난다).
+- `ADMIN_PASSWORD`·`ADMIN_TOKEN_SECRET` 중 하나라도 비어 있으면 로그인은
+  `503 ADMIN_NOT_CONFIGURED` 다([`02_FEATURES/deployment.md`](../02_FEATURES/deployment.md)).
+
+### 2.5-4 학교 메타데이터 수정 (관리자)
+
+```
+PATCH /schools/{school_id}        Authorization: Bearer <token>
+```
+
+학교명·공지 URL·대표 이미지 URL·크롤 주기를 수정한다. **보낸 필드만** 바뀐다
+(`exclude_unset`). 수정 필드가 하나도 없으면 `400 INVALID_REQUEST` 다.
+
+| 필드 | 비고 |
+|---|---|
+| `name` | 1자 이상 |
+| `base_url` | `http://`·`https://` 로 시작해야 한다. 게시판이 폐지·이전됐을 때 이 경로로 고친다 |
+| `image_url` | 랜딩 로고·찾기 화면에 쓰는 대표 이미지. `null` 또는 빈 문자열은 **제거**로 해석한다 |
+| `crawl_schedule` | 재크롤 주기([`09_scheduler.md`](09_scheduler.md)) |
+
+응답은 `SchoolResponse`(등록 응답과 같은 형태). 없는 학교면 `404 SCHOOL_NOT_FOUND`.
+
+### 2.5-5 학교 삭제 (관리자)
+
+```
+DELETE /schools/{school_id}       Authorization: Bearer <token>
+```
+
+학교와 딸린 데이터(문서·첨부·그래프·품질 이력)를 지우고 스케줄 등록도 해제한다.
+성공은 `204 No Content`.
+
+- `crawling`/`indexing` 중이면 `409 CRAWL_IN_PROGRESS` 로 막는다. 진행 중인 작업이
+  삭제된 학교에 계속 쓰는 상황을 만들지 않기 위해서다.
+- 스케줄 해제가 실패해도 삭제는 되돌리지 않고 로그만 남긴다(데이터는 이미 지워졌다).
+
+### 2.5-6 첨부 삭제 (관리자)
+
+```
+DELETE /schools/{school_id}/attachments/{attachment_id}   Authorization: Bearer <token>
+```
+
+§2.4-1 참고. 첨부 **추가**(`POST /schools/{id}/attachments`)는 등록 화면과 같은 공개 경로라
+인증이 없고, **삭제만** 관리자 전용이다.
+
+> **인증이 필요한 엔드포인트는 위 세 개뿐이다.** `reset-status`·`force-complete`·`recrawl`
+> 같은 다른 관리용 경로는 아직 인증이 없다(§2.5-1). 되돌릴 수 없는 파괴적 변경(수정·삭제)에
+> 먼저 게이트를 씌운 상태다.
+
+**인증 실패 응답** — `_require_admin` 은 공통 에러 형식이 아니라 FastAPI 기본
+`{"detail": …}` 로 답한다(§4 표 아래 주석 참고).
+
+| HTTP | 상황 |
+|---|---|
+| 401 | `Authorization` 헤더 없음 / `Bearer ` 접두 없음 / 서명 불일치 / 만료 |
+| 503 | 서버에 `ADMIN_PASSWORD`·`ADMIN_TOKEN_SECRET` 이 설정되지 않음 |
+
+---
+
 ### 2.6 크롤링·인덱싱 상태
 
 ```
@@ -521,6 +609,14 @@ GET /schools/{school_id}/entities/{entity_id}
 | 404 | `ATTACHMENT_NOT_FOUND` | 삭제·조회 대상 첨부가 없음 |
 | 500 | `INTERNAL_ERROR` | 서버 내부 오류 |
 | 503 | `SCHOOL_NOT_READY` | 학교 데이터가 아직 준비되지 않음 (크롤링·인덱싱 중이고 색인된 첨부도 없을 때) |
+| 401 | `INVALID_ADMIN_CREDENTIALS` | 관리자 비밀번호 불일치 (`POST /admin/login`) |
+| 503 | `ADMIN_NOT_CONFIGURED` | 서버에 관리자 비밀번호·토큰 비밀키가 없음 (§2.5-3) |
+
+> 관리자 **토큰 검증** 실패(§2.5-4~6)는 이 형식이 아니라 FastAPI 기본 `{"detail": …}` 로
+> 나간다. `_require_admin` 이 의존성이라 `HTTPException` 을 던지기 때문이다.
+> `api.js` 의 `send()` 는 `data.error.message` 만 읽으므로, 이 응답들은 화면에
+> `"요청 실패 (401)"` 로만 보이고 서버가 적은 사유(만료/서명 불일치)는 전달되지 않는다.
+> 사유를 보여주려면 `_require_admin` 도 `_error_response` 형식으로 맞추는 편이 낫다(미해결).
 
 ## 5. 다른 시스템과의 연동
 
