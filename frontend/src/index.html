@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ASKU — 우리 학교 정보, 그만 찾고 물어보세요</title>
+<link rel="icon" type="image/svg+xml" href="assets/logo_A.svg">
 <link rel="stylesheet" href="_ds/modernist-c94de0c9-726d-442a-9bb3-d3b24f39b8cb/styles.css">
 <script src="api.js"></script>
 <style>
@@ -18,8 +19,13 @@ a:hover { color:var(--asku-accent,#ec3013); }
 [data-reveal].vis{ opacity:1; transform:none; }
 .rise{ display:inline-block; transform:translateY(118%); transition:transform 1.05s cubic-bezier(.16,1,.3,1); }
 .rise.vis{ transform:translateY(0); }
-/* line-height:.8 보다 글자가 커서 overflow:hidden 이 윗부분을 자름 → 위쪽 여백만 확보하고 margin 으로 상쇄(위치·리빌 유지) */
-.hero-letter{ display:inline-flex; overflow:hidden; vertical-align:bottom; padding-top:.28em; margin-top:-.28em; }
+.hero-letter{ display:inline-flex; overflow:hidden; vertical-align:bottom; }
+/* 로고 글자 SVG: 원본은 밑선이 맞춰진 상태로 잘려 있어, 높이만 원본 비율(--lh/235)대로 주면 정렬이 그대로 산다. */
+/* 네 글자 가로합 ≈ 높이×3.24 라, 좁은 화면에선 하한(88px)이 아니라 24vw 가 이기게 둬야 가로가 안 넘친다. */
+.hero-logo{ --logo-h:clamp(64px,min(24vw,30vh),340px); }
+.hero-logo img{ display:block; width:auto; height:calc(var(--logo-h) * var(--lh) / 235); }
+/* 어두운 배경(네비 light 테마·푸터) 위에서는 잉크색을 반전시켜 쓴다. */
+[data-navbar][data-theme="light"] .logo-ink, .logo-ink[data-invert]{ filter:invert(1); }
 .arrow .draw{ stroke-dasharray:1; stroke-dashoffset:1; transition:stroke-dashoffset 1.05s cubic-bezier(.65,0,.35,1); }
 .arrow.vis .draw{ stroke-dashoffset:0; }
 #asku-root[data-grid="on"]::after{ content:""; position:fixed; inset:0; z-index:60; pointer-events:none; background:repeating-linear-gradient(90deg, transparent 0, transparent calc((100% - 11px) / 12), color-mix(in srgb, var(--asku-accent,#ec3013) 18%, transparent) calc((100% - 11px) / 12), color-mix(in srgb, var(--asku-accent,#ec3013) 18%, transparent) calc((100% - 11px) / 12 + 1px)); }
@@ -40,7 +46,7 @@ a:hover { color:var(--asku-accent,#ec3013); }
 <div id="asku-root" data-grid="off">
 
   <nav data-navbar data-theme="dark" style="position:sticky; top:0; z-index:50; display:flex; align-items:center; justify-content:space-between; padding:20px clamp(20px,5vw,72px); mix-blend-mode:normal;">
-    <a href="#top" style="font-family:'Hostero',var(--font-heading); font-size:28px; letter-spacing:.03em; color:inherit;">ASKU</a>
+    <a href="#top" style="display:flex; align-items:center; color:inherit;"><img class="logo-ink" src="assets/logo_full.svg" alt="ASKU" style="display:block; height:30px; width:auto;"></a>
     <div class="nav-links" style="display:flex; align-items:center; gap:clamp(16px,2vw,34px);">
       <a href="find.html" class="nav-find" style="color:inherit; font-weight:600; font-size:15px;" style-hover="color:var(--asku-accent,#ec3013)">학교 찾기</a>
       <a href="register.html" style="color:inherit; font-family:var(--font-heading); font-weight:800; font-size:14px; border:1.5px solid currentColor; padding:9px 18px;" style-hover="background:var(--asku-accent,#ec3013); border-color:var(--asku-accent,#ec3013); color:#f3f2f2">학교 등록</a>
@@ -49,8 +55,8 @@ a:hover { color:var(--asku-accent,#ec3013); }
   </nav>
 
   <section id="top" data-nav="dark" style="background:#f3f2f2; color:#201e1d; padding:clamp(24px,4vh,56px) clamp(20px,5vw,72px); min-height:calc(100svh - 74px); display:flex; flex-direction:column; justify-content:center;">
-    <h1 style="margin:0; font-family:'Hostero',var(--font-heading); font-weight:400; line-height:.8; letter-spacing:.005em; font-size:clamp(88px,min(24vw,30vh),340px);">
-      <span class="hero-letter"><span class="rise" style="transition-delay:.04s">A</span></span><span class="hero-letter"><span class="rise" style="transition-delay:.12s">S</span></span><span class="hero-letter"><span class="rise" style="transition-delay:.2s">K</span></span><span class="hero-letter"><span class="rise" style="transition-delay:.28s">U</span></span>
+    <h1 class="hero-logo" aria-label="ASKU" style="margin:0; display:flex; align-items:flex-end; gap:clamp(6px,1.1vw,22px);">
+      <span class="hero-letter"><img class="rise" src="assets/logo_A.svg" alt="" style="--lh:235; transition-delay:.04s"></span><span class="hero-letter"><img class="rise" src="assets/logo_S.svg" alt="" style="--lh:227; transition-delay:.12s"></span><span class="hero-letter"><img class="rise" src="assets/logo_K.svg" alt="" style="--lh:232; transition-delay:.2s"></span><span class="hero-letter"><img class="rise" src="assets/logo_U.svg" alt="" style="--lh:232; transition-delay:.28s"></span>
     </h1>
     <div style="margin-top:clamp(20px,3.5vh,44px); font-family:var(--font-heading); font-weight:800; line-height:1.02; letter-spacing:-.02em; font-size:clamp(26px,min(5vw,6vh),60px);">
       <span style="display:block; overflow:hidden;"><span class="rise" style="display:block; transition-delay:.34s">우리 학교 정보,</span></span>
@@ -152,7 +158,7 @@ a:hover { color:var(--asku-accent,#ec3013); }
     <div data-reveal style="font-family:var(--font-heading); font-weight:800; letter-spacing:-.02em; line-height:1.0; font-size:clamp(34px,6vw,82px); max-width:14ch;">그만 찾고,<br>물어보세요.</div>
     <div data-reveal style="transition-delay:.1s; margin-top:clamp(30px,4vh,44px);"><a href="find.html" style="display:inline-flex; align-items:center; gap:10px; background:var(--asku-accent,#ec3013); color:#f3f2f2; font-family:var(--font-heading); font-weight:800; font-size:15px; padding:15px 28px;" style-hover="filter:brightness(.9)">학교 찾기 <span style="font-size:18px; line-height:1;">→</span></a></div>
     <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:20px; margin-top:clamp(56px,9vh,96px); padding-top:24px; border-top:2px solid color-mix(in srgb,#f3f2f2 24%,transparent);">
-      <span style="font-family:'Hostero'; font-size:clamp(28px,4vw,48px); letter-spacing:.03em;">ASKU</span>
+      <img class="logo-ink" data-invert src="assets/logo_full.svg" alt="ASKU" style="display:block; height:clamp(26px,4vw,44px); width:auto;">
       <span style="font-size:13px; color:color-mix(in srgb,#f3f2f2 60%,transparent);">© 2026 ASKU · University QA with Graph RAG</span>
     </div>
   </footer>
