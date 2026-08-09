@@ -2,7 +2,7 @@
 // that gate the backend call: valid() / normalizeUrl() / deriveName() / stageToPhase().
 const fs = require("fs");
 const assert = require("assert");
-const html = fs.readFileSync(process.argv[2], "utf8");
+const html = fs.readFileSync(process.argv[2], "utf8").replace(/\r\n/g, "\n");
 
 // Grab the IIFE body verbatim (the inline <script> without src).
 const start = html.indexOf("(function () {\n  \"use strict\";");
