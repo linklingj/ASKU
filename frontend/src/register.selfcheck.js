@@ -52,6 +52,9 @@ assert.equal(RG.fileError("", 10).code, "INVALID_FILENAME");
 assert.equal(RG.fileError("빈파일.txt", 0).code, "EMPTY_FILE");
 assert.equal(RG.fileError("큰파일.pdf", RG.MAX_FILE_BYTES + 1).code, "FILE_TOO_LARGE");
 assert.equal(RG.fileError("경계.pdf", RG.MAX_FILE_BYTES), null, "exactly the limit is allowed");
+// 상한이 바뀌어도 안내 문구가 따라오도록 상수에서 만들어야 한다 (백엔드 MAX_ATTACHMENT_MB 와 같은 값)
+assert.equal(RG.MAX_FILE_BYTES, RG.MAX_FILE_MB * 1024 * 1024);
+assert(RG.fileError("큰파일.pdf", RG.MAX_FILE_BYTES + 1).message.includes(String(RG.MAX_FILE_MB)));
 
 // formatBytes(): bytes stay integral, larger units get one decimal
 assert.equal(RG.formatBytes(0), "0 B");
@@ -70,6 +73,16 @@ assert.deepEqual(
   { total: sum.total, ready: sum.ready, failed: sum.failed, working: sum.working, chunks: sum.chunks, settled: sum.settled },
   { total: 4, ready: 2, failed: 1, working: 1, chunks: 15, settled: false }
 );
+// 분량 상한에 걸린 첨부는 ready 로 세되 따로 표시해 완료 화면에서 알린다
+const capped = RG.attachSummary([
+  { status: "ready", chunk_count: 2000, truncated: true },
+  { status: "ready", chunk_count: 5 },
+]);
+assert.equal(capped.ready, 2);
+assert.equal(capped.truncated, 1, "truncated counted separately from ready");
+assert.equal(capped.settled, true);
+assert.equal(RG.attachSummary([{ status: "ready", chunk_count: 1 }]).truncated, 0);
+
 assert.equal(RG.attachSummary([]).settled, true, "no attachments = nothing to wait for");
 assert.equal(RG.attachSummary([{ status: "ready", chunk_count: 1 }, { status: "failed" }]).settled, true);
 assert.equal(RG.attachSummary([{ status: "pending" }]).settled, false);

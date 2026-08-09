@@ -849,14 +849,19 @@ class TestUploadAttachments:
         assert resp.status_code == 415
         assert resp.json()["error"]["details"]["rejected"][0]["code"] == "EMPTY_FILE"
 
-    def test_oversized_file_is_rejected(self, client, mock_storage):
-        from app.api import MAX_ATTACHMENT_BYTES
-
-        oversized = b"a" * (MAX_ATTACHMENT_BYTES + 1)
-        resp = client.post("/schools/1/attachments", files=[("files", ("큰.pdf", oversized, "application/pdf"))])
+    def test_oversized_file_is_rejected(self, client, mock_storage, monkeypatch):
+        # 상한은 환경변수(MAX_ATTACHMENT_MB)로 바뀐다. 실제 상한만큼 바이트를 만들면
+        # 상한을 올릴수록 테스트가 그만큼 메모리를 먹으므로, 상한 쪽을 낮춰 검사한다.
+        monkeypatch.setattr("app.api.MAX_ATTACHMENT_BYTES", 10)
+        resp = client.post("/schools/1/attachments", files=[("files", ("큰.pdf", b"a" * 11, "application/pdf"))])
 
         assert resp.status_code == 415
         assert resp.json()["error"]["details"]["rejected"][0]["code"] == "FILE_TOO_LARGE"
+
+    def test_size_limit_comes_from_env_megabytes(self):
+        from app.api import MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB
+
+        assert MAX_ATTACHMENT_BYTES == MAX_ATTACHMENT_MB * 1024 * 1024
 
     def test_404_when_school_missing(self, client, mock_storage):
         mock_storage.get_school.return_value = None
@@ -880,6 +885,20 @@ class TestListAttachments:
         assert [item["status"] for item in items] == ["ready", "failed"]
         assert items[0]["chunk_count"] == 340
         assert items[1]["error_code"] == "HWP_ENCRYPTED"
+        assert items[0]["truncated"] is False
+
+    def test_truncated_attachment_is_ready_but_flagged(self, client, mock_storage):
+        # 분량 상한에 걸린 첨부는 실패가 아니라 '일부만 색인된 성공'이다. 이 표시가
+        # 없으면 문서 뒷부분이 왜 답에 안 나오는지 알 방법이 없다.
+        mock_storage.list_attachments.return_value = [
+            _make_attachment(status="ready", page_count=3000, chunk_count=2000, truncated=True)
+        ]
+
+        item = client.get("/schools/1/attachments").json()["attachments"][0]
+
+        assert item["status"] == "ready"
+        assert item["truncated"] is True
+        assert item["error_code"] is None
 
     def test_404_when_school_missing(self, client, mock_storage):
         mock_storage.get_school.return_value = None

@@ -74,9 +74,17 @@ class FakeStorage:
         return doc_id
 
     def update_attachment_status(
-        self, school_id, attachment_id, status, *, page_count=None, chunk_count=None, error_code=None
+        self,
+        school_id,
+        attachment_id,
+        status,
+        *,
+        page_count=None,
+        chunk_count=None,
+        error_code=None,
+        truncated=None,
     ):
-        self.status_calls.append((status, page_count, chunk_count, error_code))
+        self.status_calls.append((status, page_count, chunk_count, error_code, truncated))
         return None
 
     def statuses(self) -> list[str]:
@@ -148,7 +156,45 @@ class IngestTests(unittest.TestCase):
         ingestor(storage, parser=lambda name, data: parsed).ingest(make_attachment(), b"x")
 
         self.assertEqual(storage.statuses(), ["indexing", "ready"])
-        self.assertEqual(storage.status_calls[-1], ("ready", 2, 2, None))
+        self.assertEqual(storage.status_calls[-1], ("ready", 2, 2, None, False))
+
+    def test_chunk_cap_stops_indexing_and_marks_truncated(self) -> None:
+        storage = FakeStorage()
+        parsed = ParsedAttachment(units=["본문 1", "본문 2", "본문 3", "본문 4"], paginated=True)
+
+        result = ingestor(storage, parser=lambda name, data: parsed, max_chunks=2).ingest(
+            make_attachment(), b"x"
+        )
+
+        # 상한을 넘는 청크는 임베딩도 저장도 하지 않는다 — 아끼려고 두는 상한이다.
+        self.assertEqual(result.chunk_count, 2)
+        self.assertEqual(len(storage.documents), 2)
+        self.assertTrue(result.truncated)
+        # 상한은 의도한 중단이라 실패가 아니다. ready 로 남기되 잘렸음을 표시한다.
+        self.assertEqual(storage.statuses(), ["indexing", "ready"])
+        self.assertEqual(storage.status_calls[-1], ("ready", 4, 2, None, True))
+
+    def test_chunk_cap_not_reached_leaves_attachment_whole(self) -> None:
+        storage = FakeStorage()
+        parsed = ParsedAttachment(units=["본문 1", "본문 2"], paginated=True)
+
+        result = ingestor(storage, parser=lambda name, data: parsed, max_chunks=5).ingest(
+            make_attachment(), b"x"
+        )
+
+        self.assertEqual(result.chunk_count, 2)
+        self.assertFalse(result.truncated)
+
+    def test_chunk_cap_zero_means_unlimited(self) -> None:
+        storage = FakeStorage()
+        parsed = ParsedAttachment(units=[f"본문 {i}" for i in range(20)], paginated=True)
+
+        result = ingestor(storage, parser=lambda name, data: parsed, max_chunks=0).ingest(
+            make_attachment(), b"x"
+        )
+
+        self.assertEqual(result.chunk_count, 20)
+        self.assertFalse(result.truncated)
 
     def test_parse_failure_marks_attachment_failed_and_reraises(self) -> None:
         storage = FakeStorage()

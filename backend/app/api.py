@@ -764,8 +764,19 @@ def query_school(school_id: int, body: QueryRequest):
 
 # ── 첨부 문서 (사용자 업로드) ──────────────────────────────────────────
 
-# 업로드 파일 1건 상한. 수강편람 PDF(수백 페이지)도 통상 이 안에 들어간다.
-MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+# 업로드 파일 1건 크기 상한. 수강편람 PDF(수백 페이지)도 통상 이 안에 들어간다.
+# `upload.read()` 가 파일을 통째로 메모리에 올린 뒤 검사하므로, 이 값이 곧 한 요청이
+# 잡을 수 있는 메모리다(여러 파일이면 그만큼 곱해진다). bge-m3 가 이미 3~4GB 를 물고
+# 있어 무작정 키우면 컨테이너가 죽는다(deployment.md).
+MAX_ATTACHMENT_MB = int(os.getenv("MAX_ATTACHMENT_MB", "100"))
+MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024
+
+# 첨부 한 건이 만들 수 있는 청크 수 상한. 진짜 비용은 파일 크기가 아니라 텍스트 양이다
+# — 청크마다 임베딩 1회(bge-m3, 배치 없음)와 DB 쓰기 1회가 든다. 크기 상한만으로는
+# 텍스트가 빽빽한 파일 하나가 색인을 수십 분 붙잡는 것을 막지 못한다.
+# 기본 2000 청크 ≈ 400만 자 ≈ 1300페이지 안팎으로, 수강편람 한 권은 통째로 들어간다.
+# `MAX_GRAPH_NODES` 처럼 재배포 없이 조정하려고 환경변수로 열어 둔다.
+MAX_ATTACHMENT_CHUNKS = int(os.getenv("MAX_ATTACHMENT_CHUNKS", "2000"))
 
 
 def _attachment_item(attachment: Attachment) -> AttachmentItem:
@@ -778,6 +789,7 @@ def _attachment_item(attachment: Attachment) -> AttachmentItem:
         chunk_count=attachment.chunk_count,
         status=attachment.status,
         error_code=attachment.error_code,
+        truncated=attachment.truncated,
         uploaded_at=attachment.uploaded_at,
     )
 
@@ -791,11 +803,14 @@ def _run_attachment_ingest(attachment: Attachment, data: bytes) -> None:
     try:
         from app.attachment_ingest import AttachmentIngestor
 
-        ingestor = AttachmentIngestor(storage=_get_storage(), embedder=_get_embedder())
+        ingestor = AttachmentIngestor(
+            storage=_get_storage(), embedder=_get_embedder(), max_chunks=MAX_ATTACHMENT_CHUNKS
+        )
         result = ingestor.ingest(attachment, data)
         logger.info(
-            "첨부 색인 완료: school_id=%d, file=%s, units=%d, chunks=%d",
+            "첨부 색인 완료: school_id=%d, file=%s, units=%d, chunks=%d%s",
             attachment.school_id, result.filename, result.unit_count, result.chunk_count,
+            f" (청크 상한 {MAX_ATTACHMENT_CHUNKS} 도달로 중단)" if result.truncated else "",
         )
     except Exception:
         logger.exception(

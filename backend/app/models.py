@@ -62,6 +62,7 @@ class Attachment(BaseModel):
     chunk_count: int = 0
     status: str = "pending"  # pending | indexing | ready | failed
     error_code: str | None = None  # status=failed 일 때만
+    truncated: bool = False  # 청크 상한에 걸려 문서 뒷부분을 색인하지 않았다
     uploaded_at: datetime | None = None
 
     @property

@@ -50,6 +50,8 @@ ASKU 백엔드(FastAPI) + DB(Postgres+pgvector)를 **Railway** 에 서비스 2�
 | `OPENAI_MODEL` | 기본 `gpt-4o-mini` (저비용). 계정에서 쓸 수 있는 모델로 지정 |
 | `LLM_PROVIDER` | `openai`(기본) 또는 `gemini`. gemini 로 되돌릴 때만 지정하고, 그때는 `GEMINI_API_KEY`·`GEMINI_MODEL` 를 대신 넣는다 |
 | `SPEC_AUTOGEN` | 알려진 템플릿과 맞지 않는 학교의 수집 규격을 LLM 으로 생성할지. 기본 꺼짐(`1`·`true`·`yes` 로 켬) |
+| `MAX_ATTACHMENT_MB` | 업로드 첨부 1건의 크기 상한(MB). 기본 `100`. 업로드는 파일을 통째로 메모리에 올린 뒤 검사하므로 이 값이 곧 한 요청이 잡는 메모리다(여러 파일이면 곱해진다). bge-m3 가 이미 3~4GB 를 물고 있어 무작정 올리면 OOM 이다. 올릴 때 프론트 `register.html` 의 `MAX_FILE_MB` 도 같이 올려야 사용자가 미리 걸러진다 |
+| `MAX_ATTACHMENT_CHUNKS` | 첨부 1건이 만들 수 있는 청크 수 상한. 기본 `2000`(≈400만 자, 1300페이지 안팎). 색인 비용은 파일 크기가 아니라 텍스트 양에 붙는다 — 청크마다 임베딩 1회·DB 쓰기 1회다. 상한에 걸리면 실패가 아니라 `truncated: true` 인 `ready` 로 남는다 |
 | `MAX_GRAPH_NODES` | 학교당 그래프 노드(엔티티) 상한. 기본 `1200`. 노드가 늘수록 그래프 조회·검색 메모리가 커져 컨테이너가 죽을 수 있어 둔 안전장치다. 재배포 없이 조정하려고 환경변수로 열어 뒀고, 한 번만 다르게 돌리려면 `POST /recrawl?max_nodes=…` 로 넘긴다 |
 
 `SPEC_AUTOGEN` 을 켜면 새 학교를 등록할 때마다 호출당 약 4만 토큰이 나갈 수 있다. 알려진 게시판 제품은 이 설정과 무관하게 LLM 없이 처리되므로, 먼저 꺼 둔 채로 등록해 보고 템플릿에 걸리지 않는 학교가 나올 때 켜는 편이 안전하다([`03_crawler.md`](../01_SYSTEM/03_crawler.md) §7-2).
