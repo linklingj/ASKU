@@ -22,6 +22,7 @@ from app.schemas import (
     BuildResult,
     ExtractionFailure,
     RagAnswer,
+    RagRetrieval,
     Source,
 )
 
@@ -316,6 +317,63 @@ class TestQuerySchool:
         assert resp.status_code == 400
         body = resp.json()
         assert body["error"]["code"] == "INVALID_REQUEST"
+
+
+# ── POST /schools/{id}/retrieve ────────────────────────────────────────
+
+
+class TestRetrieveSchool:
+    """검색 전용 경로 — 사용자가 자기 모델로 답할 때 쓴다(계획 §1-3)."""
+
+    def test_200_returns_context_instruction_and_sources(self, client, mock_storage):
+        retrieval = RagRetrieval(
+            context="[근거 1] 장학금 안내\n출처: https://example.com/notice\n본문",
+            sources=[Source(title="장학금 안내", url="https://example.com/notice")],
+            entity_ids=["e_123"],
+            source_type="graph",
+        )
+        with patch("app.api._get_rag_engine") as mock_rag:
+            mock_rag.return_value.retrieve.return_value = retrieval
+            resp = client.post("/schools/1/retrieve", json={"question": "장학금 마감일?"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["context"] == retrieval.context
+        assert body["source_type"] == "graph"
+        assert body["entity_ids"] == ["e_123"]
+        assert len(body["sources"]) == 1
+        # 브라우저가 서버와 같은 지시문으로 자기 모델을 부를 수 있어야 한다
+        assert "장학금 마감일?" in body["instruction"]
+        assert body["no_evidence_answer"]
+
+    def test_does_not_generate_an_answer(self, client, mock_storage):
+        """이 경로에서 서버는 답변 생성을 하지 않는다(사용자 키·한도를 쓰는 쪽이 브라우저다)."""
+        with patch("app.api._get_rag_engine") as mock_rag:
+            mock_rag.return_value.retrieve.return_value = RagRetrieval(context="c", source_type="graph")
+            client.post("/schools/1/retrieve", json={"question": "질문"})
+
+        mock_rag.return_value.answer.assert_not_called()
+
+    def test_no_evidence_reports_null_source_type(self, client, mock_storage):
+        with patch("app.api._get_rag_engine") as mock_rag:
+            mock_rag.return_value.retrieve.return_value = RagRetrieval(context="", source_type=None)
+            resp = client.post("/schools/1/retrieve", json={"question": "질문"})
+
+        body = resp.json()
+        assert body["source_type"] is None
+        assert body["context"] == ""
+        assert body["no_evidence_answer"] == "해당 정보를 찾지 못했습니다."
+
+    def test_503_not_ready(self, client, mock_storage):
+        mock_storage.get_school.return_value = _make_school(status="crawling")
+        resp = client.post("/schools/1/retrieve", json={"question": "질문"})
+        assert resp.status_code == 503
+        assert resp.json()["error"]["code"] == "SCHOOL_NOT_READY"
+
+    def test_404_school_not_found(self, client, mock_storage):
+        mock_storage.get_school.return_value = None
+        resp = client.post("/schools/999/retrieve", json={"question": "질문"})
+        assert resp.status_code == 404
 
 
 # ── POST /schools/{id}/recrawl ─────────────────────────────────────────

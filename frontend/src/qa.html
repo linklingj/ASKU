@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="_ds/modernist-c94de0c9-726d-442a-9bb3-d3b24f39b8cb/styles.css">
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="api.js"></script>
+<script src="model.js"></script>
 <style>
   *{box-sizing:border-box;}
   html,body{margin:0;height:100%;}
@@ -28,6 +29,9 @@
   .qa-bar{background:linear-gradient(90deg,#3f9be0 0%,#6d5df0 38%,#a63fd0 66%,#ec3197 100%);}
   .qa-bar.busy{background:linear-gradient(90deg,#ff3b1f 0%,#ec3013 40%,#ff5a3c 70%,#c81f0f 100%);background-size:200% 100%;animation:qa-barflow 1.1s linear infinite;}
   @keyframes qa-barflow{0%{background-position:0% 50%;}100%{background-position:200% 50%;}}
+  .qa-btn:hover{background:var(--color-text,#201e1d)!important;color:var(--color-bg,#f3f2f2)!important;}
+  .qa-field{width:100%;border:2px solid color-mix(in srgb,var(--color-text,#201e1d) 20%,transparent);background:var(--color-surface,#fff);font-size:13px;font-weight:600;padding:9px 11px;color:var(--color-text,#201e1d);}
+  .qa-field:focus{border-color:var(--color-text,#201e1d);}
   .qa-spin{display:block;width:20px;height:20px;border:2.5px solid color-mix(in srgb,var(--color-bg,#f3f2f2) 35%,transparent);border-top-color:var(--color-bg,#f3f2f2);border-radius:50%;animation:qa-spin .7s linear infinite;}
   @keyframes qa-spin{to{transform:rotate(360deg);}}
 </style>
@@ -54,6 +58,8 @@
 
       <div id="qa-answer" style="width:100%;max-width:820px;display:flex;justify-content:center;"></div>
 
+      <div id="qa-model" style="pointer-events:auto;display:flex;align-items:center;gap:8px;"></div>
+
       <div id="qa-chips" style="pointer-events:auto;display:flex;flex-wrap:wrap;justify-content:center;gap:8px;"></div>
 
       <div id="qa-bar" class="qa-bar" style="pointer-events:auto;width:100%;max-width:820px;padding:2.5px;border-radius:44px;box-shadow:0 10px 30px color-mix(in srgb,var(--color-text,#201e1d) 12%,transparent);">
@@ -67,6 +73,8 @@
 
     </div>
   </main>
+
+  <div id="qa-settings"></div>
 
 </div>
 
@@ -122,10 +130,13 @@
   var SCHOOL_ID = new URLSearchParams(location.search).get("school");
 
   var state = {
-    sidebar: true, off: {}, selId: null, q: "", busy: false,
+    sidebar: true, off: {}, selId: null, q: "", busy: false, busyStage: "",
     ans: null, ansSources: [], srcIds: [],
     school: null, statusStage: null, notReadyMsg: "",
-    detail: null, detailLoading: false, graphErr: null
+    detail: null, detailLoading: false, graphErr: null,
+    // 답변 모델 선택(계획 §1). model 은 저장된 설정, draft 는 설정창에서 편집 중인 값.
+    model: ASKU_MODEL.load(), settingsOpen: false, draft: null,
+    ollamaModels: [], setStatus: null
   };
   var nodes = [], rawLinks = [], byId = new Map(), adj = new Map();
   var typeInfo = { color: {}, counts: {}, types: [] };
@@ -275,18 +286,41 @@
       .catch(function (err) { if (state.selId === id) setState({ detail: { _error: err.message }, detailLoading: false }); });
   }
 
-  // ── 질의 → POST /query ────────────────────────────────────────────
+  // ── 질의 ──────────────────────────────────────────────────────────
+  // ASKU 기본: 백엔드 /query 가 검색·생성을 함께 한다(기존 경로).
+  // 내 Gemini·내 PC Ollama: 백엔드 /retrieve 로 근거만 받고 생성은 브라우저가 한다.
   function submit() {
     var q = (state.q || "").trim();
     if (!q || state.busy) return;
-    setState({ busy: true, ans: null, ansSources: [], srcIds: [] }, style);
-    ASKU.post("/schools/" + SCHOOL_ID + "/query", { question: q })
+
+    var cfg = state.model;
+    var check = ASKU_MODEL.validate(cfg);
+    if (!check.ok) { openSettings(check.message); return; }
+
+    var server = cfg.provider === "server";
+    setState({ busy: true, busyStage: server ? "" : "근거를 찾는 중…", ans: null, ansSources: [], srcIds: [] }, style);
+
+    var path = server ? "/query" : "/retrieve";
+    var inBackend = true; // 오류가 백엔드에서 났는지, 사용자 모델에서 났는지 구분
+    ASKU.post("/schools/" + SCHOOL_ID + path, { question: q })
       .then(function (r) {
-        var ids = (r.entity_ids || []).filter(function (id) { return byId.has(id); });
-        setState({ busy: false, ans: r.answer, ansSources: r.sources || [], srcIds: ids }, style);
+        inBackend = false;
+        if (server) return { answer: r.answer, sources: r.sources || [], entity_ids: r.entity_ids || [] };
+        // 근거가 없으면 모델을 부르지 않는다 — 서버 경로의 보류 동작과 같다.
+        if (!r.source_type) return { answer: r.no_evidence_answer, sources: [], entity_ids: [] };
+        setState({ busyStage: ASKU_MODEL.label(cfg) + " 로 답변을 만드는 중…" });
+        return ASKU_MODEL.generate(cfg, r.instruction, r.context).then(function (answer) {
+          return { answer: answer, sources: r.sources || [], entity_ids: r.entity_ids || [] };
+        });
+      })
+      .then(function (out) {
+        var ids = out.entity_ids.filter(function (id) { return byId.has(id); });
+        setState({ busy: false, busyStage: "", ans: out.answer, ansSources: out.sources, srcIds: ids }, style);
       })
       .catch(function (err) {
-        setState({ busy: false, ans: err.message || "답변을 가져오지 못했습니다.", ansSources: [], srcIds: [] }, style);
+        // 백엔드 오류(ASKU.post)와 사용자 모델 오류를 같은 자리에 구분해 보여준다.
+        var msg = inBackend ? (err && err.message) : ASKU_MODEL.classifyError(err, cfg).message;
+        setState({ busy: false, busyStage: "", ans: msg || "답변을 가져오지 못했습니다.", ansSources: [], srcIds: [] }, style);
       });
   }
 
@@ -384,16 +418,149 @@
       + srcRow + '</div>';
   }
 
+  // ── 답변 모델: 표시 버튼과 설정창 ─────────────────────────────────
+  function modelHTML() {
+    var cfg = state.model;
+    var local = cfg.provider !== "server";
+    return '<button data-act="openSettings" class="qa-btn" style="display:inline-flex;align-items:center;gap:8px;border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);color:var(--color-text,#201e1d);font-family:inherit;font-weight:700;font-size:12px;letter-spacing:.02em;padding:7px 12px;cursor:pointer;transition:background .18s ease,color .18s ease;">'
+      + '<span style="width:8px;height:8px;flex:0 0 auto;border-radius:50%;background:' + (local ? "#1f6f8b" : "var(--color-accent,#ec3013)") + ';"></span>'
+      + '<span style="font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;opacity:.6;">답변 모델</span>'
+      + esc(ASKU_MODEL.label(cfg)) + ' ⚙</button>';
+  }
+
+  function fieldHTML(id, label, value, placeholder, type) {
+    return '<label style="display:block;margin-bottom:12px;"><span style="display:block;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);margin-bottom:6px;">' + esc(label) + '</span>'
+      + '<input id="' + id + '" class="qa-field" type="' + (type || "text") + '" value="' + esc(value || "") + '" placeholder="' + esc(placeholder || "") + '" autocomplete="off" spellcheck="false"></label>';
+  }
+
+  function settingsHTML() {
+    var d = state.draft;
+    var tabs = ASKU_MODEL.PROVIDERS.map(function (p) {
+      var on = d.provider === p.id;
+      return '<div data-act="provider" data-key="' + p.id + '" style="cursor:pointer;padding:11px 12px;border:2px solid ' + (on ? "var(--color-text,#201e1d)" : "color-mix(in srgb,var(--color-text,#201e1d) 16%,transparent)") + ';background:' + (on ? "var(--color-text,#201e1d)" : "var(--color-surface,#fff)") + ';color:' + (on ? "var(--color-bg,#f3f2f2)" : "inherit") + ';">'
+        + '<div style="font-size:13px;font-weight:800;letter-spacing:-.01em;">' + esc(p.label) + '</div>'
+        + '<div style="font-size:11px;font-weight:600;line-height:1.4;margin-top:4px;opacity:.62;">' + esc(p.hint) + '</div></div>';
+    }).join("");
+
+    var body = "";
+    if (d.provider === "gemini") {
+      body = fieldHTML("qa-set-key", "Gemini API 키", d.geminiKey, "AIza…", "password")
+        + fieldHTML("qa-set-gmodel", "모델명", d.geminiModel, ASKU_MODEL.DEFAULT_GEMINI_MODEL)
+        + note("키는 이 탭에만(sessionStorage) 저장되고 ASKU 서버로 전송되지 않습니다. 탭을 닫으면 지워집니다.");
+    } else if (d.provider === "ollama") {
+      var opts = state.ollamaModels.length
+        ? '<label style="display:block;margin-bottom:12px;"><span style="display:block;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);margin-bottom:6px;">설치된 모델</span>'
+          + '<select id="qa-set-omodel" class="qa-field">' + state.ollamaModels.map(function (m) {
+            return '<option value="' + esc(m) + '"' + (m === d.ollamaModel ? " selected" : "") + '>' + esc(m) + '</option>';
+          }).join("") + '</select></label>'
+        : fieldHTML("qa-set-omodel", "모델명", d.ollamaModel, "llama3.1");
+      body = fieldHTML("qa-set-host", "Ollama 주소", d.ollamaHost, ASKU_MODEL.DEFAULT_OLLAMA_HOST)
+        + '<button data-act="ollamaCheck" class="qa-btn" style="border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);color:var(--color-text,#201e1d);font-family:inherit;font-weight:700;font-size:12px;padding:8px 12px;cursor:pointer;margin-bottom:12px;transition:background .18s ease,color .18s ease;">연결 확인 · 모델 목록 불러오기</button>'
+        + opts
+        + note("답변은 내 컴퓨터의 Ollama 가 만듭니다(ASKU 서버는 근거만 찾습니다). 설치는 ollama.com, 모델 받기는 <code>ollama pull llama3.1</code>.<br>"
+          + "이 사이트에서 부르려면 <b>이 사이트를 허용한 채로</b> Ollama 를 실행해야 합니다 — 실행 중이면 끄고 아래처럼 다시 켜 주세요."
+          + '<div style="margin-top:7px;padding:8px 10px;background:var(--color-surface,#fff);border:2px solid color-mix(in srgb,var(--color-text,#201e1d) 16%,transparent);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:700;word-break:break-all;">OLLAMA_ORIGINS=' + esc(location.origin) + " ollama serve</div>"
+          + '<div style="margin-top:6px;">Windows PowerShell: <code>$env:OLLAMA_ORIGINS="' + esc(location.origin) + '"; ollama serve</code></div>');
+    } else {
+      body = note("ASKU 서버가 프로젝트 키로 답변합니다. 별도 설정이 필요 없지만, 공용 한도를 함께 씁니다.");
+    }
+
+    var status = state.setStatus
+      ? '<div id="qa-set-status" style="margin-bottom:12px;font-size:12px;font-weight:700;line-height:1.5;color:' + (state.setStatus.ok ? "#1f6f8b" : "var(--color-accent,#ec3013)") + ';">' + esc(state.setStatus.message) + '</div>'
+      : '<div id="qa-set-status"></div>';
+
+    return '<div data-act="closeSettings" style="position:fixed;inset:0;z-index:60;background:color-mix(in srgb,var(--color-text,#201e1d) 38%,transparent);display:flex;align-items:center;justify-content:center;padding:24px;">'
+      + '<div data-stop="1" style="width:100%;max-width:460px;max-height:86vh;overflow:auto;border:2px solid var(--color-text,#201e1d);background:var(--color-bg,#f3f2f2);padding:24px;animation:qa-up .22s cubic-bezier(.2,.7,.2,1) both;">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">'
+      + '<h2 style="margin:0;font-size:20px;font-weight:800;letter-spacing:-.02em;">답변 모델 설정</h2>'
+      + '<span class="qa-x" data-act="closeSettings" style="cursor:pointer;font-size:18px;font-weight:700;line-height:1;">✕</span></div>'
+      + '<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:18px;">' + tabs + '</div>'
+      + body + status
+      + '<div style="display:flex;gap:8px;margin-top:6px;">'
+      + '<button data-act="saveSettings" class="qa-btn" style="flex:1 1 auto;border:2px solid var(--color-text,#201e1d);background:var(--color-text,#201e1d);color:var(--color-bg,#f3f2f2);font-family:inherit;font-weight:800;font-size:13px;padding:11px;cursor:pointer;">저장</button>'
+      + '<button data-act="resetSettings" class="qa-btn" style="border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);color:var(--color-text,#201e1d);font-family:inherit;font-weight:700;font-size:13px;padding:11px 14px;cursor:pointer;transition:background .18s ease,color .18s ease;">초기화</button>'
+      + '</div></div></div>';
+  }
+
+  function note(html) {
+    return '<div style="font-size:11px;font-weight:600;line-height:1.6;color:color-mix(in srgb,var(--color-text,#201e1d) 58%,transparent);margin-bottom:14px;">' + html + '</div>';
+  }
+
+  // 설정창은 입력 중 다시 그리면 포커스·입력값이 날아간다. 열림/닫힘과 명시적
+  // 다시 그리기(제공자 전환·목록 로드) 때만 innerHTML 을 갈아끼운다.
+  var settingsDrawn = false;
+  function renderSettings(force) {
+    var box = document.getElementById("qa-settings");
+    if (!box) return;
+    if (!state.settingsOpen) { if (settingsDrawn) { box.innerHTML = ""; settingsDrawn = false; } return; }
+    if (!settingsDrawn || force) { box.innerHTML = settingsHTML(); settingsDrawn = true; }
+  }
+
+  function readDraft() {
+    var d = {}, cur = state.draft;
+    for (var k in cur) d[k] = cur[k];
+    var val = function (id) { var el = document.getElementById(id); return el ? el.value : null; };
+    var key = val("qa-set-key"); if (key !== null) d.geminiKey = key;
+    var gm = val("qa-set-gmodel"); if (gm !== null) d.geminiModel = gm;
+    var host = val("qa-set-host"); if (host !== null) d.ollamaHost = host;
+    var om = val("qa-set-omodel"); if (om !== null) d.ollamaModel = om;
+    return ASKU_MODEL.normalize(d);
+  }
+
+  function openSettings(message) {
+    state.draft = ASKU_MODEL.normalize(state.model);
+    state.setStatus = message ? { ok: false, message: message } : null;
+    setState({ settingsOpen: true });
+    renderSettings(true);
+  }
+
+  function closeSettings() { setState({ settingsOpen: false, setStatus: null }); }
+
+  function onSettingsAction(act, el) {
+    if (act === "provider") { var d = readDraft(); d.provider = el.getAttribute("data-key"); state.draft = ASKU_MODEL.normalize(d); state.setStatus = null; renderSettings(true); }
+    else if (act === "ollamaCheck") {
+      state.draft = readDraft();
+      state.setStatus = { ok: true, message: "확인 중…" };
+      renderSettings(true);
+      ASKU_MODEL.listOllamaModels(state.draft.ollamaHost)
+        .then(function (models) {
+          state.ollamaModels = models;
+          // 고른 모델이 목록에 없으면(오타·삭제) 첫 모델로 맞춰 드롭다운과 어긋나지 않게 한다.
+          if (models.length && models.indexOf(state.draft.ollamaModel) < 0) state.draft.ollamaModel = models[0];
+          state.setStatus = models.length
+            ? { ok: true, message: "연결됨 · 모델 " + models.length + "개" }
+            : { ok: false, message: "연결은 됐지만 설치된 모델이 없습니다. `ollama pull llama3.1` 로 받아 주세요." };
+          renderSettings(true);
+        })
+        .catch(function (err) {
+          state.ollamaModels = [];
+          state.setStatus = { ok: false, message: ASKU_MODEL.classifyError(err, { provider: "ollama", ollamaModel: state.draft.ollamaModel }).message };
+          renderSettings(true);
+        });
+    }
+    else if (act === "saveSettings") {
+      var draft = readDraft();
+      var check = ASKU_MODEL.validate(draft);
+      if (!check.ok) { state.draft = draft; state.setStatus = { ok: false, message: check.message }; renderSettings(true); return; }
+      setState({ model: ASKU_MODEL.save(draft), settingsOpen: false, setStatus: null });
+    }
+    else if (act === "resetSettings") { state.draft = ASKU_MODEL.clear(); state.ollamaModels = []; state.setStatus = { ok: true, message: "ASKU 기본으로 되돌렸습니다." }; setState({ model: ASKU_MODEL.load() }); renderSettings(true); }
+    else return false;
+    return true;
+  }
+
   var input;
   function render() {
     document.getElementById("qa-sbbody").innerHTML = sidebarHTML();
     document.getElementById("qa-answer").innerHTML = answerHTML();
+    document.getElementById("qa-model").innerHTML = modelHTML();
+    renderSettings();
     var open = state.sidebar;
     document.getElementById("qa-aside").style.width = open ? "320px" : "0px";
     var btn = document.querySelector('[data-act="toggleSb"]');
     btn.style.left = open ? "calc(320px + 20px)" : "20px";
     btn.textContent = open ? "‹" : "›";
-    if (input) input.placeholder = state.busy ? "답변을 생성하는 중…" : "학교에 대해 무엇이든 물어보세요";
+    if (input) input.placeholder = state.busy ? (state.busyStage || "답변을 생성하는 중…") : "학교에 대해 무엇이든 물어보세요";
     var bar = document.getElementById("qa-bar");
     if (bar) bar.classList.toggle("busy", !!state.busy);
     var ask = document.querySelector('[data-act="ask"]');
@@ -410,6 +577,9 @@
   // ── 이벤트 위임 ────────────────────────────────────────────────────
   function onAction(el) {
     var act = el.getAttribute("data-act");
+    if (act === "openSettings") { openSettings(); return; }
+    if (act === "closeSettings") { closeSettings(); return; }
+    if (onSettingsAction(act, el)) return;
     if (act === "toggleSb") { setState({ sidebar: !state.sidebar }); setTimeout(resize, 360); }
     else if (act === "reset") { nodes.forEach(function (n) { n.fx = null; n.fy = null; }); if (sim) sim.alpha(0.9).restart(); setTimeout(function () { fit(500); }, 900); }
     else if (act === "back") { if (window.history.length > 1) window.history.back(); else location.href = "find.html"; }
@@ -461,6 +631,9 @@
       if (chip) { input.value = chip.getAttribute("data-q"); state.q = input.value; submit(); return; }
       var el = e.target.closest("[data-act]");
       if (!el) return; // 근거 문서 링크(qa-src)는 data-act 가 없어 브라우저가 새 탭으로 연다
+      // 설정창 내부(=[data-stop]) 클릭이 배경 오버레이의 닫기로 새지 않게 막는다.
+      var stop = e.target.closest("[data-stop]");
+      if (stop && !stop.contains(el)) return;
       if (el.tagName === "A") e.preventDefault();
       onAction(el);
     });

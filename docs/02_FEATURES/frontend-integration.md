@@ -6,7 +6,7 @@
 ## 실행
 
 ```bash
-# 백엔드 (Postgres·GEMINI_API_KEY·임베더 필요)
+# 백엔드 (Postgres·LLM 키·임베더 필요. 기본 제공자는 OpenAI — 08_llm-provider.md)
 cd backend && uvicorn app.api:app --port 8000
 # 프론트엔드
 cd frontend/src && python3 -m http.server 5500
@@ -23,10 +23,10 @@ cd frontend/src && python3 -m http.server 5500
 | `index.html` | `GET /schools` | "등록된 학교" 섹션을 실제 수·이름으로 채움. 0개거나 백엔드 미연결이면 섹션 숨김 |
 | `find.html` | `GET /schools` | 휠·listbox 를 실제 학교로 구성, 노드 수·상태·갱신일 표시, `school_id` 를 QA로 전달 |
 | `register.html` | `POST /schools` → `POST /schools/{id}/attachments` → `GET /schools/{id}/status` · `GET /schools/{id}/attachments` (폴링) | URL 등록 + 문서 첨부(선택) 후 실제 진행도/단계로 로딩 표시, 완료 시 `qa.html?school={id}` 로 이동 |
-| `qa.html` | `GET /schools/{id}`, `GET /schools/{id}/graph`, `GET /schools/{id}/entities/{eid}`, `POST /schools/{id}/query` | 그래프 렌더, 노드 클릭 시 상세(속성·근거문서·이웃), 질문바 답변+근거링크+`entity_ids` 하이라이트 |
+| `qa.html` | `GET /schools/{id}`, `GET /schools/{id}/graph`, `GET /schools/{id}/entities/{eid}`, `POST /schools/{id}/query` 또는 `POST /schools/{id}/retrieve` | 그래프 렌더, 노드 클릭 시 상세(속성·근거문서·이웃), 질문바 답변+근거링크+`entity_ids` 하이라이트 |
 
 - 공통 fetch 헬퍼: `api.js` (`ASKU.get`/`ASKU.post`/`ASKU.upload`, 공통 에러 `{error:{code,message,details}}` 파싱).
-- 순수 변환 로직은 노드 자가검증으로 커버: `qa.selfcheck.js`(`buildGraph`/`assignTypeColors`/`parseEid`/`sourceChip`), `register.selfcheck.js`(`valid`/`normalizeUrl`/`deriveName`/`stageToPhase`/`fileError`/`attachSummary`).
+- 순수 변환 로직은 노드 자가검증으로 커버: `qa.selfcheck.js`(`buildGraph`/`assignTypeColors`/`parseEid`/`sourceChip`), `register.selfcheck.js`(`valid`/`normalizeUrl`/`deriveName`/`stageToPhase`/`fileError`/`attachSummary`), `model.selfcheck.js`(`normalize`/`validate`/`classifyError`/`geminiText`/`ollamaModelNames`).
 
 ### 학교 등록 시 문서 첨부 ([#41](https://github.com/linklingj/ASKU/issues/41))
 
@@ -52,6 +52,47 @@ cd frontend/src && python3 -m http.server 5500
   이때는 "지식 그래프 생성" 문구·크롤 통계를 감추고 문서로 답할 수 있다는 안내로 바꾼다.
 - QA 화면의 근거 표시: 첨부 근거의 `url` 은 `attachment://{id}` 합성 URI 라 링크로 걸면 열리지
   않는다 → `sourceChip()` 이 웹 출처만 새 탭 링크로 만들고 첨부는 파일명·페이지 칩으로 보여준다.
+## 답변 모델 선택 (`model.js`)
+
+질문 답변을 만드는 모델만 사용자가 고른다. 검색·추출·임베딩은 서버 구현 그대로다.
+
+| 선택 | 질문 시 호출 | 답변을 만드는 곳 |
+|---|---|---|
+| ASKU 기본 | `POST /schools/{id}/query` | ASKU 서버(프로젝트 키) |
+| 내 Gemini | `POST /schools/{id}/retrieve` → `generativelanguage.googleapis.com` | 브라우저(사용자 개인 키) |
+| 내 PC Ollama | `POST /schools/{id}/retrieve` → `{ollamaHost}/api/generate` | 사용자 PC |
+
+- 설정(제공자·API 키·모델명·Ollama 주소)은 **`sessionStorage`에만** 둔다. 백엔드로 보내지
+  않고 `localStorage`에도 쓰지 않는다 — 탭을 닫으면 지워지는 것이 기본값이다.
+- `retrieve` 가 준 `instruction`+`context` 를 그대로 모델에 넘기므로, 어느 모델로 답하든
+  근거와 지시문이 같다. `source_type` 이 `null` 이면 모델을 부르지 않고 보류 문구를 쓴다.
+- Ollama 는 설정창의 "연결 확인"이 `GET {host}/api/tags` 로 설치된 모델 목록을 채운다.
+- Gemini 오류는 키 거부(`GEMINI_AUTH`)·한도(`GEMINI_QUOTA`)·모델명(`GEMINI_MODEL_NOT_FOUND`)·
+  빈 응답(`GEMINI_EMPTY`)으로 구분한다.
+
+### 배포(HTTPS) 화면에서 내 PC Ollama 쓰기
+
+**HTTPS 페이지에서 `http://localhost:11434` 호출은 막지 않는다.** 크롬 계열 브라우저는
+`localhost` 를 신뢰할 수 있는 출처로 보아 허용한다 — 배포 origin(`https://…github.io`)에서
+실제 Ollama(0.32.6, `qwen2.5:1.5b`)의 `/api/tags`(단순 요청)와 `/api/generate`(프리플라이트
+후 POST)가 200 으로 돌고 답변까지 생성되는 것을 확인했다. 사파리처럼 이 조합을 막는
+브라우저가 있으므로, 차단은 사전에 하지 않고 실패했을 때 원인 후보로 안내한다.
+
+사용자가 해야 할 설정은 CORS 허용 하나다. 설정창이 배포 주소를 넣은 명령을 그대로 보여준다.
+
+```bash
+OLLAMA_ORIGINS=https://linklingj.github.io ollama serve
+```
+
+이 설정 없이 배포 origin에서 부르면 `TypeError: Failed to fetch` 로 끝난다(확인함). 즉
+CORS 허용은 선택이 아니라 필수다. Ollama 는 기본 바인딩(`127.0.0.1:11434`)을 유지한다. `OLLAMA_HOST=0.0.0.0` 으로 외부에 열거나
+ngrok 같은 터널을 쓰는 방법은 권하지 않는다 — 개인 PC의 모델 서버가 인터넷에 노출된다.
+
+연결 실패는 브라우저가 원인을 알려주지 않는다(미실행·CORS 거절·브라우저 차단이 모두 같은
+`TypeError`). 그래서 `OLLAMA_UNREACHABLE` 하나로 묶고 확인할 것을 순서대로 나열한다 —
+실행 여부, `OLLAMA_ORIGINS`, 주소, 그리고 https 페이지일 때만 브라우저 차단 가능성.
+나머지는 코드로 갈린다: 모델 없음(`OLLAMA_MODEL_NOT_FOUND`), 목록은 비었지만 연결은 됨,
+설정 미완성(`NO_MODEL`·`NO_HOST`), 응답 오류(`OLLAMA_ERROR`).
 
 ## 디자인 목업 → 백엔드 필드 매핑에서 조정한 것
 

@@ -189,6 +189,20 @@ class RagAnswer(BaseModel):
     source_type: Literal["graph", "document"] | None = None
 
 
+class RagRetrieval(BaseModel):
+    """RAG 검색 단계 출력 — 답변 생성 직전까지의 결과.
+
+    ``RagAnswer`` 와 짝이다. 서버가 답을 만들면 이 ``context`` 로 생성하고, 사용자가
+    자기 모델을 골랐으면 같은 ``context`` 를 브라우저로 내려 거기서 생성한다.
+    근거를 못 찾으면 ``source_type`` 은 ``None`` 이고 ``context`` 는 빈 문자열이다.
+    """
+
+    context: str
+    sources: list[Source] = Field(default_factory=list)
+    entity_ids: list[str] = Field(default_factory=list)
+    source_type: Literal["graph", "document"] | None = None
+
+
 # ── Backend API 요청·응답 스키마 (01_backend-api.md) ─────────────────
 
 
@@ -304,6 +318,23 @@ class QueryResponse(BaseModel):
     sources: list[Source] = Field(default_factory=list)
     entity_ids: list[str] = Field(default_factory=list)
     source_type: Literal["graph", "document"] | None = None
+
+
+class RetrieveResponse(BaseModel):
+    """POST /schools/{id}/retrieve 응답 — 검색만 하고 답변은 만들지 않는다.
+
+    사용자가 자기 Gemini 나 자기 PC Ollama 를 골랐을 때 쓰는 경로다. 브라우저가
+    ``instruction`` 과 ``context`` 로 자기 모델을 부르므로, 서버 답변과 같은 지시문·
+    같은 근거를 쓴다. 근거가 없으면 ``source_type`` 이 ``null`` 이고 프론트는
+    ``no_evidence_answer`` 를 모델 호출 없이 그대로 보여준다.
+    """
+
+    context: str
+    instruction: str
+    sources: list[Source] = Field(default_factory=list)
+    entity_ids: list[str] = Field(default_factory=list)
+    source_type: Literal["graph", "document"] | None = None
+    no_evidence_answer: str
 
 
 class AttachmentItem(BaseModel):
