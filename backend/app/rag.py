@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol
 
@@ -34,6 +35,8 @@ from app.schemas import RagAnswer, RagRetrieval, Source
 if TYPE_CHECKING:  # storage.py 는 pgvector 를 top-level import 하므로 런타임 의존을 피한다
     from app.storage import Neighbor
 
+
+logger = logging.getLogger(__name__)
 
 # 근거 부족 시 생성 대신 반환하는 보류 문구(07 §3). 답변 지시문에도 끼워 넣는다.
 NO_EVIDENCE_ANSWER = "해당 정보를 찾지 못했습니다."
@@ -68,6 +71,25 @@ def _generate_answer(generator: Generator, retrieval: RagRetrieval, question: st
         entity_ids=retrieval.entity_ids,
         source_type=retrieval.source_type,
     )
+
+
+def _filter_by_similarity(
+    hits: Sequence[tuple[Document, float]], min_similarity: float, stage: str
+) -> list[tuple[Document, float]]:
+    """임계 미만 청크를 걸러낸다. 컷 **전** 점수를 로그로 남긴다.
+
+    임계값은 실제 pgvector·bge-m3 분포로만 정할 수 있는데(07 §3), 응답에는 점수가
+    없어서 걸러진 청크를 볼 방법이 없다. 그래서 튜닝 근거를 로그로만 노출한다 —
+    점수는 검색 근접도지 답변 신뢰도가 아니므로 사용자에게는 보여주지 않는다.
+    """
+
+    logger.info(
+        "rag 검색: 단계=%s 임계=%.2f 점수=%s",
+        stage,
+        min_similarity,
+        [round(score, 3) for _doc, score in hits],
+    )
+    return [(doc, score) for doc, score in hits if score >= min_similarity]
 
 
 class RagStorage(Protocol):
@@ -138,13 +160,13 @@ class GraphRAG:
         """
 
         query_vector = self.embedder.embed(question)
-        hits = [
-            (doc, score)
-            for doc, score in self.storage.vector_search(
+        hits = _filter_by_similarity(
+            self.storage.vector_search(
                 school_id, query_vector, self.top_k, source_type=SOURCE_TYPE_WEB
-            )
-            if score >= self.min_similarity
-        ]
+            ),
+            self.min_similarity,
+            "graph",
+        )
         if not hits:
             return RagRetrieval(context="", sources=[], source_type=None)
 
@@ -282,13 +304,13 @@ class DocumentRAG:
         """답변 생성 없이 첨부 문서 근거만 모은다(검색 전용 계약)."""
 
         query_vector = self.embedder.embed(question)
-        hits = [
-            (doc, score)
-            for doc, score in self.storage.vector_search(
+        hits = _filter_by_similarity(
+            self.storage.vector_search(
                 school_id, query_vector, self.top_k, source_type=SOURCE_TYPE_ATTACHMENT
-            )
-            if score >= self.min_similarity
-        ]
+            ),
+            self.min_similarity,
+            "document",
+        )
         if not hits:
             return RagRetrieval(context="", sources=[], source_type=None)
 

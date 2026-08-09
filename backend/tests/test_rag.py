@@ -335,6 +335,31 @@ class HybridRagTests(unittest.TestCase):
         self.assertEqual(result.answer, "생성된 답변")
         self.assertEqual([source.url for source in result.sources], ["attachment://5"])
 
+    def test_mid_band_web_hit_falls_through_when_graph_threshold_is_stricter(self) -> None:
+        """그래프 임계가 문서보다 높아야 주제만 겹치는 공지가 첨부를 가리지 않는다(07 §3).
+
+        API 계층이 주입하는 값(그래프 0.6 / 문서 0.3)이 비대칭이라는 불변식을 잠근다 —
+        두 단계를 같은 값으로 되돌리면 이 테스트가 깨진다.
+        """
+
+        storage = FakeStorage(
+            hits=[(doc(1), 0.5)],  # 임계 0.6 미만 — 주제만 겹치는 공지
+            attachment_hits=[(attachment_doc(5), 0.5)],  # 임계 0.3 이상 — 통과
+        )
+        hybrid = HybridRAG(
+            graph_rag=GraphRAG(
+                storage, FakeEmbedder(), FakeExtractor(), FakeGenerator(), min_similarity=0.6
+            ),
+            document_rag=DocumentRAG(
+                storage, FakeEmbedder(), FakeGenerator(), min_similarity=0.3
+            ),
+        )
+
+        result = hybrid.answer(1, "q")
+
+        self.assertEqual(result.source_type, "document")
+        self.assertEqual([source.url for source in result.sources], ["attachment://5"])
+
     def test_both_stages_without_evidence_report_failure(self) -> None:
         storage = FakeStorage(hits=[], attachment_hits=[])
         generator = FakeGenerator()

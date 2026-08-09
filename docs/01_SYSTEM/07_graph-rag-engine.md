@@ -88,9 +88,24 @@ LLM 호출은 [`08_llm-provider.md`](08_llm-provider.md)를 쓴다.
 
 - 프롬프트에 **"제공된 컨텍스트에만 근거해 답하라"**를 명시(제약은 엔진 책임, 08 §1).
 - 유사도 `min_similarity` 이상인 청크가 하나도 없으면 **LLM 생성 없이** 보류하고
-  `"해당 정보를 찾지 못했습니다"`를 반환한다(임계값은 생성자 인자로 튜닝, 기본 0.3).
+  `"해당 정보를 찾지 못했습니다"`를 반환한다(임계값은 생성자 인자로 튜닝).
   두 단계 모두 같은 규칙을 따르므로, 어느 단계도 임계를 넘기지 못하면 LLM 을 한 번도
   호출하지 않고 실패를 알린다.
+- **임계값은 두 단계가 비대칭이다.** API 계층이 그래프 **0.6** / 문서 **0.3** 으로
+  주입한다(`api.py` `_get_rag_engine`). 클래스 기본값은 둘 다 0.3 이지만, 그 값으로는
+  주제만 겹치는 공지가 그래프 단계를 통과해 단계가 "성공"해 버리고 정답이 든 첨부까지
+  내려가지 않는다. 반대로 문서 단계까지 같이 조이면 fallback 자체가 막히므로 0.3 을
+  유지한다. 절대 임계값은 질문마다 점수 분포가 달라 풀 선택 기준으로는 근사치다 —
+  근본 해법은 §5 의 통합 검색(양쪽 best score 비교)이다.
+- 임계 판정은 `_filter_by_similarity` 한곳에 모여 있고, **컷 전 top-k 점수를
+  `logger.info` 로 남긴다**(`rag 검색: 단계=… 임계=… 점수=[…]`). 응답에는 점수가 없어서
+  걸러진 청크를 볼 방법이 없으니, 임계값 튜닝 근거는 로그로만 확인한다.
+- **점수는 사용자에게 노출하지 않는다.** 코사인 유사도는 질문–청크의 검색 근접도이고
+  답변 정확도가 아니다. 캘리브레이션이 없어 확률로 읽을 수 없고, 질문마다 스케일이
+  달라 답변 간 비교도 성립하지 않는다. 1-hop 이웃 문장은 벡터 검색을 거치지 않아
+  애초에 점수가 없다. 신뢰도 배지는 틀린 답을 검증된 것처럼 보이게 해서 사용자가
+  출처 확인을 그만두게 만든다 — 사용자에게 주는 신뢰 신호는 `sources` 와
+  `source_type` 이다.
 - 답변과 함께 근거 `sources`(제목·URL)를 항상 반환. 보류 시 `sources`는 빈 목록.
 
 ## 4. 공개 인터페이스
@@ -98,6 +113,7 @@ LLM 호출은 [`08_llm-provider.md`](08_llm-provider.md)를 쓴다.
 ```
 GraphRAG(storage, embedder, extractor, generator, *, top_k=5, min_similarity=0.3)
 GraphRAG.answer(school_id, question) -> RagAnswer      # source_type: "graph" | None
+# ↑ API 계층은 min_similarity=0.6 으로 주입한다(§3)
 
 DocumentRAG(storage, embedder, generator, *, top_k=5, min_similarity=0.3)
 DocumentRAG.answer(school_id, question) -> RagAnswer    # source_type: "document" | None
