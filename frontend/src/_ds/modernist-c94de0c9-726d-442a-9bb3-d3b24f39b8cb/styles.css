@@ -72,6 +72,40 @@ h1, h2, h3, h4 { font-family: var(--font-heading); font-weight: var(--font-headi
 
 .grayscale{filter:grayscale(1) contrast(1.08)}
 
+/* ── 버튼 hover 공통 규칙 ────────────────────────────────────────────────
+   .btn-ink    밝은 버튼: 배경이 잉크색으로 차오르고 글씨는 배경색으로 반전
+   .btn-accent 붉은 버튼: 흐르는 그라데이션이 서서히 덮이고 글씨가 굵어짐
+   버튼 대부분이 배경·굵기를 inline style 로 갖고 있어 hover 선언만 !important 로 덮는다. */
+.btn-ink { transition: background .22s ease, color .22s ease, border-color .22s ease; }
+.btn-ink:hover, .btn-ink:focus-visible {
+  background: var(--color-text, #201e1d) !important;
+  color: var(--color-bg, #f3f2f2) !important;
+  border-color: var(--color-text, #201e1d) !important;
+}
+.btn-accent {
+  position: relative; isolation: isolate;
+  transition: transform .22s cubic-bezier(.2,.7,.2,1), letter-spacing .22s ease, box-shadow .22s ease;
+}
+/* z-index:-1 → 버튼 자기 배경 위, 글자 아래에 깔린다(오버레이라 opacity 로 서서히 켤 수 있음).
+   색은 accent 계열(500·accent·600)로만 흘려 hover 전후 색 차이를 거의 없게 둔다. */
+.btn-accent::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; opacity: 0; transition: opacity .32s ease;
+  background: linear-gradient(90deg, #ff563c 0%, #ec3013 32%, #dd2b0f 62%, #ff563c 100%);
+  background-size: 200% 100%; animation: btn-flow 3.2s linear infinite;
+}
+.btn-accent:hover::before, .btn-accent:focus-visible::before { opacity: 1; }
+/* Archivo 는 400·600·800 만 로드해 900 이 안 먹는다 → 자간·부양으로 강조한다. */
+.btn-accent:hover, .btn-accent:focus-visible {
+  letter-spacing: .06em !important; transform: translateY(-2px);
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--color-accent, #ec3013) 34%, transparent);
+}
+@keyframes btn-flow { from { background-position: 0% 50%; } to { background-position: 200% 50%; } }
+@media (prefers-reduced-motion: reduce) {
+  .btn-ink, .btn-accent { transition: none; }
+  .btn-accent::before { animation: none; }
+  .btn-accent:hover, .btn-accent:focus-visible { transform: none; }
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
    Components — built with the tokens above. Plain CSS
    on plain HTML: no JavaScript, no build step. Each class is documented in
