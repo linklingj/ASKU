@@ -53,6 +53,23 @@ ASKU 백엔드(FastAPI) + DB(Postgres+pgvector)를 **Railway** 에 서비스 2�
 | `MAX_ATTACHMENT_MB` | 업로드 첨부 1건의 크기 상한(MB). 기본 `100`. 업로드는 파일을 통째로 메모리에 올린 뒤 검사하므로 이 값이 곧 한 요청이 잡는 메모리다(여러 파일이면 곱해진다). bge-m3 가 이미 3~4GB 를 물고 있어 무작정 올리면 OOM 이다. 올릴 때 프론트 `register.html` 의 `MAX_FILE_MB` 도 같이 올려야 사용자가 미리 걸러진다 |
 | `MAX_ATTACHMENT_CHUNKS` | 첨부 1건이 만들 수 있는 청크 수 상한. 기본 `2000`(≈400만 자, 1300페이지 안팎). 색인 비용은 파일 크기가 아니라 텍스트 양에 붙는다 — 청크마다 임베딩 1회·DB 쓰기 1회다. 상한에 걸리면 실패가 아니라 `truncated: true` 인 `ready` 로 남는다 |
 | `MAX_GRAPH_NODES` | 학교당 그래프 노드(엔티티) 상한. 기본 `1200`. 노드가 늘수록 그래프 조회·검색 메모리가 커져 컨테이너가 죽을 수 있어 둔 안전장치다. 재배포 없이 조정하려고 환경변수로 열어 뒀고, 한 번만 다르게 돌리려면 `POST /recrawl?max_nodes=…` 로 넘긴다 |
+| `ADMIN_PASSWORD` | 관리자 화면(`admin.html`) 로그인 비밀번호. **충분히 긴 무작위 값**으로 두고 프론트엔드 코드에는 절대 넣지 않는다 |
+| `ADMIN_TOKEN_SECRET` | 관리자 토큰 HMAC 서명 키. `ADMIN_PASSWORD` 와 **다른** 무작위 값을 쓴다 |
+
+**관리자 기능 (`ADMIN_PASSWORD` · `ADMIN_TOKEN_SECRET`)**
+
+- 두 값 중 하나라도 비면 로그인이 `503 ADMIN_NOT_CONFIGURED` 로 떨어지고, 학교 수정·삭제·첨부
+  삭제가 전부 막힌다([`01_backend-api.md`](../01_SYSTEM/01_backend-api.md) §2.5-3~6).
+  **관리자 기능을 쓰지 않을 배포라면 일부러 비워 둬도 된다** — 그 경우 파괴적 엔드포인트가
+  닫힌 상태가 된다.
+- 값을 바꾸면 이미 발급된 토큰이 전부 무효가 된다(서명 키가 달라진다). 세션 저장소가 없어
+  그 외의 무효화 수단은 없으므로, 유출이 의심되면 `ADMIN_TOKEN_SECRET` 을 교체한다.
+- 생성 예: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` 를 각각 한 번씩.
+- **`docker-compose.yml` 경로는 이 두 값을 아직 컨테이너로 넘기지 않는다**(`api` 서비스의
+  `environment:` 에 `DATABASE_URL`·`GEMINI_*` 만 있다). compose 로 띄우면 `.env` 에 값을
+  채워도 관리자 로그인이 503 이다 — Railway 배포는 대시보드 Variables 로 넣으므로 영향이 없다.
+  compose 를 쓰려면 `environment:` 에 `ADMIN_PASSWORD`·`ADMIN_TOKEN_SECRET`(및
+  `OPENAI_API_KEY`·`LLM_PROVIDER`) 를 추가해야 한다.
 
 `SPEC_AUTOGEN` 을 켜면 새 학교를 등록할 때마다 호출당 약 4만 토큰이 나갈 수 있다. 알려진 게시판 제품은 이 설정과 무관하게 LLM 없이 처리되므로, 먼저 꺼 둔 채로 등록해 보고 템플릿에 걸리지 않는 학교가 나올 때 켜는 편이 안전하다([`03_crawler.md`](../01_SYSTEM/03_crawler.md) §7-2).
 
