@@ -65,4 +65,23 @@ assert(
   "source titles are escaped"
 );
 
-console.log("OK — buildGraph/assignTypeColors/parseEid/nodeRadius/sourceChip pass; nodes:%d links:%d", g.nodes.length, g.rawLinks.length);
+// parseAnswer(): splits structured tags or falls back safely
+const parsedStructured = QA.parseAnswer("[핵심 답변]\n원격강좌 수강 가능\n\n[상세 답변]\n### 강의목록\n| 과목 | 학점 |\n|---|---|\n| 문학 | 1 |");
+assert.strictEqual(parsedStructured.summary, "원격강좌 수강 가능");
+assert(parsedStructured.detail.includes("### 강의목록"), "detail contains markdown body");
+
+const parsedFallback = QA.parseAnswer("첫째 줄 핵심 요약입니다.\n\n두번째 줄 상세 내용입니다.");
+assert.strictEqual(parsedFallback.summary, "첫째 줄 핵심 요약입니다.");
+assert.strictEqual(parsedFallback.detail, "두번째 줄 상세 내용입니다.");
+
+// simpleMarkdown(): renders headings, bold, italic, and tables
+const rendered = QA.simpleMarkdown("### 개설 강의\n| 과목 | 학점 |\n|---|---|\n| **국어** | *1학점* |");
+assert(rendered.includes("<h4 class=\"md-h3\">개설 강의</h4>"), "h3 heading rendered");
+assert(rendered.includes("<table class=\"md-table\">"), "table rendered");
+assert(rendered.includes("<strong>국어</strong>"), "bold rendered");
+assert(rendered.includes("<em>1학점</em>"), "italic rendered");
+
+console.log(
+  "OK — buildGraph/assignTypeColors/parseEid/nodeRadius/sourceChip/parseAnswer/simpleMarkdown pass; nodes:%d links:%d",
+  g.nodes.length, g.rawLinks.length
+);

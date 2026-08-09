@@ -7,6 +7,7 @@
 <!-- SchoolQA.dc.html 을 DC(React) 런타임 없이 이식. 디자인 시스템 토큰(styles.css)·Archivo 계승, 그래프는 d3 로만 구동. -->
 <link rel="stylesheet" href="_ds/modernist-c94de0c9-726d-442a-9bb3-d3b24f39b8cb/styles.css">
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="api.js"></script>
 <script src="model.js"></script>
 <style>
@@ -34,6 +35,27 @@
   .qa-field:focus{border-color:var(--color-text,#201e1d);}
   .qa-spin{display:block;width:20px;height:20px;border:2.5px solid color-mix(in srgb,var(--color-bg,#f3f2f2) 35%,transparent);border-top-color:var(--color-bg,#f3f2f2);border-radius:50%;animation:qa-spin .7s linear infinite;}
   @keyframes qa-spin{to{transform:rotate(360deg);}}
+
+  /* 마크다운 렌더링 스타일 */
+  .md-content{font-size:14px;line-height:1.65;color:var(--color-text,#201e1d);word-break:break-word;}
+  .md-content h1,.md-content h2,.md-content h3,.md-content h4,.md-content .md-h1,.md-content .md-h2,.md-content .md-h3,.md-content .md-h4{margin:12px 0 6px;font-weight:800;line-height:1.3;letter-spacing:-.01em;}
+  .md-content h1,.md-content .md-h1{font-size:1.35em;border-bottom:2px solid var(--color-divider,#d8d5d4);padding-bottom:4px;}
+  .md-content h2,.md-content .md-h2{font-size:1.2em;}
+  .md-content h3,.md-content .md-h3{font-size:1.1em;}
+  .md-content h4,.md-content .md-h4{font-size:1em;}
+  .md-content p,.md-content .md-p{margin:6px 0;}
+  .md-content strong{font-weight:800;color:var(--color-text,#201e1d);}
+  .md-content em{font-style:italic;}
+  .md-content ul,.md-content ol,.md-content .md-ul,.md-content .md-ol{margin:6px 0;padding-left:22px;}
+  .md-content li{margin:3px 0;}
+  .md-content table,.md-content .md-table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px;background:var(--color-bg,#f3f2f2);}
+  .md-content th,.md-content td{border:1.5px solid color-mix(in srgb,var(--color-text,#201e1d) 20%,transparent);padding:7px 10px;text-align:left;}
+  .md-content th{background:color-mix(in srgb,var(--color-text,#201e1d) 8%,transparent);font-weight:800;}
+  .md-content blockquote,.md-content .md-bq{border-left:3px solid var(--color-accent,#ec3013);margin:8px 0;padding:4px 0 4px 12px;color:color-mix(in srgb,var(--color-text,#201e1d) 70%,transparent);font-weight:600;}
+  .md-content code{font-family:monospace;background:color-mix(in srgb,var(--color-text,#201e1d) 8%,transparent);padding:2px 5px;border-radius:3px;font-size:.9em;}
+  .md-content pre,.md-content .md-codeblock{background:var(--color-text,#201e1d);color:var(--color-bg,#f3f2f2);padding:12px;border-radius:4px;overflow-x:auto;margin:10px 0;}
+  .md-content pre code{background:transparent;padding:0;color:inherit;}
+  .md-gap{height:8px;}
 </style>
 </head>
 <body>
@@ -118,11 +140,175 @@
     return '<span class="qa-src" style="' + style + 'cursor:default;">' + text + '</span>';
   }
 
+  // ── 마크다운 렌더러 & 답변 파서 ──────────────────────────────────
+  function simpleInlineMarkdown(txt) {
+    var s = esc(txt);
+    s = s.replace(/(\*\*|__)(.*?)\1/g, '<strong>$2</strong>');
+    s = s.replace(/(\*|_)(.*?)\1/g, '<em>$2</em>');
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    return s;
+  }
+
+  function simpleMarkdown(src) {
+    if (!src) return "";
+    var s = String(src).replace(/\r\n/g, "\n") + "\n";
+
+    s = s.replace(/```([\s\S]*?)```/g, function (_, code) {
+      return '<pre class="md-codeblock"><code>' + esc(code.trim()) + '</code></pre>\n';
+    });
+
+    s = s.replace(/(?:(?:\|[^\n]+\|\s*\n)+)/g, function (tableBlock) {
+      var lines = tableBlock.trim().split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+      if (lines.length < 2) return tableBlock;
+
+      var html = '<table class="md-table"><thead>';
+      var headerRow = lines[0].replace(/^\||\|$/g, '').split('|');
+      html += '<tr>' + headerRow.map(function (c) { return '<th>' + simpleInlineMarkdown(c.trim()) + '</th>'; }).join('') + '</tr></thead><tbody>';
+
+      var startIdx = 1;
+      if (lines[1] && /^\|?\s*:?-+:?\s*(\||\s*:?-+:?\s*)+$/.test(lines[1])) {
+        startIdx = 2;
+      }
+
+      for (var i = startIdx; i < lines.length; i++) {
+        var row = lines[i].replace(/^\||\|$/g, '').split('|');
+        html += '<tr>' + row.map(function (c) { return '<td>' + simpleInlineMarkdown(c.trim()) + '</td>'; }).join('') + '</tr>';
+      }
+      html += '</tbody></table>\n';
+      return html;
+    });
+
+    var lines = s.split("\n");
+    var out = [];
+    var inList = false;
+    var listType = 'ul';
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var trimmed = line.trim();
+
+      if (/^<(table|pre)/.test(trimmed)) {
+        if (inList) { out.push('</' + listType + '>'); inList = false; }
+        out.push(trimmed);
+        continue;
+      }
+
+      var headMatch = trimmed.match(/^(#{1,4})\s+(.*)$/);
+      if (headMatch) {
+        if (inList) { out.push('</' + listType + '>'); inList = false; }
+        var level = headMatch[1].length;
+        out.push('<h' + (level + 1) + ' class="md-h' + level + '">' + simpleInlineMarkdown(headMatch[2]) + '</h' + (level + 1) + '>');
+        continue;
+      }
+
+      var ulMatch = trimmed.match(/^[-*+]\s+(.*)$/);
+      if (ulMatch) {
+        if (!inList || listType !== 'ul') {
+          if (inList) out.push('</' + listType + '>');
+          out.push('<ul class="md-ul">');
+          inList = true;
+          listType = 'ul';
+        }
+        out.push('<li>' + simpleInlineMarkdown(ulMatch[1]) + '</li>');
+        continue;
+      }
+
+      var olMatch = trimmed.match(/^\d+\.\s+(.*)$/);
+      if (olMatch) {
+        if (!inList || listType !== 'ol') {
+          if (inList) out.push('</' + listType + '>');
+          out.push('<ol class="md-ol">');
+          inList = true;
+          listType = 'ol';
+        }
+        out.push('<li>' + simpleInlineMarkdown(olMatch[1]) + '</li>');
+        continue;
+      }
+
+      var bqMatch = trimmed.match(/^>\s+(.*)$/);
+      if (bqMatch) {
+        if (inList) { out.push('</' + listType + '>'); inList = false; }
+        out.push('<blockquote class="md-bq">' + simpleInlineMarkdown(bqMatch[1]) + '</blockquote>');
+        continue;
+      }
+
+      if (inList && trimmed === '') {
+        out.push('</' + listType + '>');
+        inList = false;
+        continue;
+      }
+
+      if (trimmed === '') {
+        out.push('<div class="md-gap"></div>');
+      } else {
+        if (inList) { out.push('</' + listType + '>'); inList = false; }
+        out.push('<p class="md-p">' + simpleInlineMarkdown(line) + '</p>');
+      }
+    }
+    if (inList) out.push('</' + listType + '>');
+
+    return out.join("");
+  }
+
+  function renderMarkdown(text) {
+    if (!text) return "";
+    if (typeof window !== "undefined" && window.marked && typeof window.marked.parse === "function") {
+      try {
+        return window.marked.parse(text);
+      } catch (e) {
+        return simpleMarkdown(text);
+      }
+    }
+    return simpleMarkdown(text);
+  }
+
+  function parseAnswer(ans) {
+    if (!ans) return { summary: "", detail: "" };
+    var notFound = /정보를 찾지 못했|찾을 수 없|정보가 없/.test(ans);
+    if (notFound) {
+      return { summary: ans.trim(), detail: "" };
+    }
+
+    var coreMatch = ans.match(/\[핵심\s*답변\]([\s\S]*?)(?=\[상세\s*답변\]|$)/i);
+    var detailMatch = ans.match(/\[상세\s*답변\]([\s\S]*)/i);
+
+    if (coreMatch && detailMatch) {
+      return {
+        summary: coreMatch[1].trim(),
+        detail: detailMatch[1].trim()
+      };
+    } else if (coreMatch) {
+      return {
+        summary: coreMatch[1].trim(),
+        detail: ""
+      };
+    } else if (detailMatch) {
+      return {
+        summary: "",
+        detail: detailMatch[1].trim()
+      };
+    }
+
+    var trimmed = ans.trim();
+    var parts = trimmed.split(/\n\n+/);
+    if (parts.length > 1) {
+      return {
+        summary: parts[0].trim(),
+        detail: parts.slice(1).join("\n\n").trim()
+      };
+    }
+    return {
+      summary: trimmed,
+      detail: ""
+    };
+  }
+
   // 테스트 훅: 브라우저 없이 순수 변환을 검증 (qa.selfcheck.js). DOM/d3 배선은 건너뛴다.
   if (typeof globalThis !== "undefined" && globalThis.__QA_TEST__) {
     globalThis.__QA__ = {
       parseEid: parseEid, nodeRadius: nodeRadius, assignTypeColors: assignTypeColors, buildGraph: buildGraph,
       isLinkable: isLinkable, sourceChip: sourceChip,
+      parseAnswer: parseAnswer, renderMarkdown: renderMarkdown, simpleMarkdown: simpleMarkdown,
     };
     return;
   }
@@ -402,20 +588,38 @@
       return '<div style="pointer-events:auto;width:100%;border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);padding:16px 20px;font-size:13px;font-weight:600;line-height:1.6;">' + esc(state.notReadyMsg) + '</div>';
     }
     if (!state.ans) return "";
-    // 근거 없이 보류한 답변("해당 정보를 찾지 못했습니다.")에는 근거 문서를 붙이지 않는다.
+
+    var parsed = parseAnswer(state.ans);
     var notFound = /정보를 찾지 못했|찾을 수 없|정보가 없/.test(state.ans);
     var srcHTML = notFound ? "" : (state.ansSources || []).map(function (s) {
       return sourceChip(s, "display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;padding:6px 10px;border:2px solid color-mix(in srgb,var(--color-text,#201e1d) 18%,transparent);text-wrap:pretty;");
     }).join("");
+
     var srcRow = srcHTML
-      ? '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:16px;padding-top:14px;border-top:2px solid var(--color-divider,#d8d5d4);">'
+      ? '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px;padding-top:14px;border-top:2px solid var(--color-divider,#d8d5d4);">'
         + '<span style="font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 50%,transparent);margin-right:4px;">근거 문서</span>' + srcHTML + '</div>'
       : "";
-    return '<div style="pointer-events:auto;width:100%;border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);padding:20px 22px;animation:qa-up .3s cubic-bezier(.2,.7,.2,1) both;">'
-      + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">'
+
+    var summarySection = parsed.summary
+      ? '<div class="qa-ans-card qa-ans-summary" style="padding:14px 16px;background:color-mix(in srgb,var(--color-accent,#ec3013) 6%,transparent);border-left:4px solid var(--color-accent,#ec3013);margin-bottom:12px;border-radius:2px;">'
+        + '<div style="font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--color-accent,#ec3013);margin-bottom:6px;">핵심 답변</div>'
+        + '<div class="md-content" style="font-size:15px;font-weight:700;line-height:1.6;letter-spacing:-.01em;">' + renderMarkdown(parsed.summary) + '</div>'
+        + '</div>'
+      : "";
+
+    var detailSection = parsed.detail
+      ? '<div class="qa-ans-card qa-ans-detail" style="margin-bottom:12px;padding:12px 14px;border:1.5px solid color-mix(in srgb,var(--color-text,#201e1d) 15%,transparent);background:color-mix(in srgb,var(--color-bg,#f3f2f2) 40%,transparent);border-radius:4px;">'
+        + '<div style="font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 60%,transparent);margin-bottom:8px;">상세 답변</div>'
+        + '<div class="md-content">' + renderMarkdown(parsed.detail) + '</div>'
+        + '</div>'
+      : "";
+
+    return '<div style="pointer-events:auto;width:100%;max-height:75vh;overflow-y:auto;border:2px solid var(--color-text,#201e1d);background:var(--color-surface,#fff);padding:20px 22px;animation:qa-up .3s cubic-bezier(.2,.7,.2,1) both;">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">'
       + '<div style="display:flex;align-items:center;gap:9px;"><span style="width:8px;height:8px;background:var(--color-accent,#ec3013);display:block;"></span><span style="font-size:10px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text,#201e1d) 58%,transparent);">ASKU 답변</span></div>'
       + '<span class="qa-x" data-act="clearAns" style="cursor:pointer;font-size:16px;font-weight:700;line-height:1;color:color-mix(in srgb,var(--color-text,#201e1d) 45%,transparent);">✕</span></div>'
-      + '<div style="font-size:15px;font-weight:600;line-height:1.65;letter-spacing:-.01em;text-wrap:pretty;">' + esc(state.ans) + '</div>'
+      + summarySection
+      + detailSection
       + srcRow + '</div>';
   }
 
