@@ -20,8 +20,49 @@ button,input{font:inherit} button{cursor:pointer}.wrap{width:min(900px,calc(100%
 <script>
 (function(){'use strict';var $=function(id){return document.getElementById(id)}, login=$('login'),manage=$('manage'), list=$('schools');
 function msg(el,text,bad){el.textContent=text;el.className='msg'+(bad?' bad':'')}
+// 이미 등록된 학교에 문서만 추가/삭제. 백엔드는 등록 직후와 같은 경로를 쓴다(01_backend-api.md §2.4).
+var ATT={pending:'대기중',indexing:'색인중',ready:'완료',failed:'실패'};
+function attachSection(s){
+  var wrap=document.createElement('div');wrap.style.marginTop='14px';
+  var head=document.createElement('div');head.className='k';head.textContent='문서';wrap.appendChild(head);
+  var listEl=document.createElement('div');wrap.appendChild(listEl);
+  var pick=document.createElement('input');pick.type='file';pick.multiple=true;pick.accept='.pdf,.hwp,.hwpx,.txt,.md';pick.setAttribute('aria-label',s.name+' 문서 추가');pick.style.marginTop='10px';wrap.appendChild(pick);
+  var up=document.createElement('button');up.className='button btn-ink';up.textContent='문서 추가';up.style.marginTop='10px';wrap.appendChild(up);
+  function rejectText(items){return items.map(function(x){return x.filename+': '+x.message}).join('\n')}
+  up.onclick=function(){
+    if(!pick.files.length){alert('추가할 파일을 고르세요.');return}
+    up.disabled=true;
+    ASKU.upload('/schools/'+s.school_id+'/attachments','files',pick.files).then(function(res){
+      var rej=(res&&res.rejected)||[];if(rej.length)alert('일부 파일이 제외되었습니다:\n'+rejectText(rej));
+      pick.value='';refresh();
+    }).catch(function(e){
+      var rej=e.details&&e.details.rejected;alert(rej&&rej.length?rejectText(rej):e.message);
+    }).finally(function(){up.disabled=false});
+  };
+  function refresh(){
+    ASKU.get('/schools/'+s.school_id+'/attachments').then(function(res){
+      var items=(res&&res.attachments)||[];listEl.replaceChildren();
+      if(!items.length){listEl.textContent='추가된 문서가 없습니다.';return}
+      items.forEach(function(a){
+        var row=document.createElement('div');row.className='row';row.style.justifyContent='space-between';row.style.padding='6px 0';
+        var name=document.createElement('span');
+        name.textContent=a.filename+' · '+(ATT[a.status]||a.status)
+          +(a.status==='ready'?' · '+(a.chunk_count||0)+' 청크'+(a.truncated?' · 앞부분만 색인':''):'')
+          +(a.status==='failed'&&a.error_code?' · '+a.error_code:'');
+        var del=document.createElement('button');del.className='button btn-ink';del.textContent='✕';del.setAttribute('aria-label',a.filename+' 삭제');
+        del.onclick=function(){if(!confirm('“'+a.filename+'” 문서와 그 색인을 삭제합니다. 계속할까요?'))return;
+          ASKU.deleteAdmin('/schools/'+s.school_id+'/attachments/'+a.attachment_id).then(refresh).catch(function(e){alert(e.message)})};
+        row.append(name,del);listEl.appendChild(row);
+      });
+      // 색인 중인 문서가 있으면 상태만 다시 확인한다. 카드가 갈아끼워지면(목록 재로드) 폴링도 멈춘다.
+      if(items.some(function(a){return a.status==='pending'||a.status==='indexing'}))setTimeout(function(){if(wrap.isConnected)refresh()},2000);
+    }).catch(function(e){listEl.textContent='문서 목록을 불러오지 못했습니다: '+e.message});
+  }
+  refresh();
+  return wrap;
+}
 function authenticated(){try{return !!sessionStorage.getItem('asku_admin_token')}catch(_){return false}}
-function load(){ASKU.get('/schools').then(function(res){list.replaceChildren();var schools=res.schools||[];if(!schools.length){list.textContent='등록된 학교가 없습니다.';return}schools.forEach(function(s){var card=document.createElement('article');card.className='school';var head=document.createElement('div');head.className='schoolhead';var title=document.createElement('strong');title.textContent=s.name;head.appendChild(title);if(s.image_url){var image=document.createElement('img');image.src=s.image_url;image.alt='';image.onerror=function(){this.remove()};head.appendChild(image)}card.appendChild(head);var url=document.createElement('input');url.type='url';url.value=s.image_url||'';url.placeholder='대표 이미지 URL (https://...)';url.setAttribute('aria-label',s.name+' 대표 이미지 URL');card.appendChild(url);var actions=document.createElement('div');actions.className='row';actions.style.marginTop='10px';var save=document.createElement('button');save.className='button primary btn-accent';save.textContent='이미지 저장';save.onclick=function(){save.disabled=true;ASKU.patchAdmin('/schools/'+s.school_id,{image_url:url.value.trim()||null}).then(load).catch(function(e){alert(e.message)}).finally(function(){save.disabled=false})};var remove=document.createElement('button');remove.className='button btn-ink';remove.textContent='학교 삭제';remove.onclick=function(){if(!confirm('“'+s.name+'” 및 관련 문서·첨부·그래프·수집 이력을 삭제합니다. 수집 규격은 유지됩니다. 계속할까요?'))return;ASKU.deleteAdmin('/schools/'+s.school_id).then(load).catch(function(e){alert(e.message)})};actions.append(save,remove);card.appendChild(actions);list.appendChild(card)})}).catch(function(e){list.textContent='목록을 불러오지 못했습니다: '+e.message})}
+function load(){ASKU.get('/schools').then(function(res){list.replaceChildren();var schools=res.schools||[];if(!schools.length){list.textContent='등록된 학교가 없습니다.';return}schools.forEach(function(s){var card=document.createElement('article');card.className='school';var head=document.createElement('div');head.className='schoolhead';var title=document.createElement('strong');title.textContent=s.name;head.appendChild(title);if(s.image_url){var image=document.createElement('img');image.src=s.image_url;image.alt='';image.onerror=function(){this.remove()};head.appendChild(image)}card.appendChild(head);var url=document.createElement('input');url.type='url';url.value=s.image_url||'';url.placeholder='대표 이미지 URL (https://...)';url.setAttribute('aria-label',s.name+' 대표 이미지 URL');card.appendChild(url);var actions=document.createElement('div');actions.className='row';actions.style.marginTop='10px';var save=document.createElement('button');save.className='button primary btn-accent';save.textContent='이미지 저장';save.onclick=function(){save.disabled=true;ASKU.patchAdmin('/schools/'+s.school_id,{image_url:url.value.trim()||null}).then(load).catch(function(e){alert(e.message)}).finally(function(){save.disabled=false})};var remove=document.createElement('button');remove.className='button btn-ink';remove.textContent='학교 삭제';remove.onclick=function(){if(!confirm('“'+s.name+'” 및 관련 문서·첨부·그래프·수집 이력을 삭제합니다. 수집 규격은 유지됩니다. 계속할까요?'))return;ASKU.deleteAdmin('/schools/'+s.school_id).then(load).catch(function(e){alert(e.message)})};actions.append(save,remove);card.appendChild(actions);card.appendChild(attachSection(s));list.appendChild(card)})}).catch(function(e){list.textContent='목록을 불러오지 못했습니다: '+e.message})}
 function showManage(){login.classList.add('hidden');manage.classList.remove('hidden');load()}
 $('loginBtn').onclick=function(){var b=$('loginBtn');b.disabled=true;ASKU.adminLogin($('password').value).then(showManage).catch(function(e){msg($('loginMsg'),e.message,true)}).finally(function(){b.disabled=false})};$('password').addEventListener('keydown',function(e){if(e.key==='Enter')$('loginBtn').click()});$('logoutBtn').onclick=function(){ASKU.adminLogout();manage.classList.add('hidden');login.classList.remove('hidden');$('password').value=''};if(authenticated())showManage();
 })();
