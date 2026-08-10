@@ -43,6 +43,8 @@
   </a>
 
   <div class="ss-fi" style="position:absolute;left:clamp(22px,3.6vw,52px);top:50%;transform:translateY(-50%);z-index:15;max-width:min(46vw,560px);animation-delay:.15s;">
+    <!-- 배경 워터마크: 로고가 있으면 반투명 흑백 로고, 없으면 학교 이름 첫 글자 -->
+    <img id="ss-bg" alt="" aria-hidden="true" style="display:none;position:absolute;left:-6px;top:50%;transform:translateY(-50%);width:clamp(200px,30vw,420px);height:clamp(200px,30vw,420px);object-fit:contain;filter:grayscale(1);opacity:.1;z-index:-1;user-select:none;pointer-events:none;" onerror="this.style.display='none';document.getElementById('ss-initial').style.display='block'">
     <span id="ss-initial" aria-hidden="true" style="position:absolute;left:-6px;top:50%;transform:translateY(-58%);font-weight:900;font-size:clamp(200px,30vw,420px);line-height:.8;letter-spacing:-.05em;color:color-mix(in srgb,var(--color-text,#201e1d) 6%,transparent);z-index:-1;user-select:none;pointer-events:none;"></span>
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px;">
       <img id="ss-image" alt="" style="display:none;width:54px;height:54px;object-fit:cover;border-radius:50%;border:2px solid var(--color-text,#201e1d);" onerror="this.style.display='none'">
@@ -105,9 +107,12 @@
     var s = DATA[a];
     $('ss-initial').textContent = (s.name || "?").charAt(0);
     $('ss-name').textContent = s.name;
-    var image = $('ss-image');
+    var image = $('ss-image'), bg = $('ss-bg');
     if (s.image_url) { image.src = s.image_url; image.style.display = "block"; }
     else { image.removeAttribute("src"); image.style.display = "none"; }
+    // 로고가 있으면 배경은 로고, 없으면 첫 글자로 되돌린다
+    if (s.image_url) { bg.src = s.image_url; bg.style.display = "block"; $('ss-initial').style.display = "none"; }
+    else { bg.removeAttribute("src"); bg.style.display = "none"; $('ss-initial').style.display = "block"; }
     $('ss-en').textContent = (s.status || "").toUpperCase();
     $('ss-nodes').textContent = (s.entity_count || 0).toLocaleString("en-US");
     $('ss-status').textContent = STATUS_KR[s.status] || s.status || "—";
@@ -180,6 +185,7 @@
     cont.firstChild.textContent = "학교 등록하러 가기 ";
     cont.onclick = function () { location.href = 'register.html'; };
     var initial = $('ss-initial'); if (initial) initial.textContent = "";
+    var bg = $('ss-bg'); if (bg) { bg.removeAttribute("src"); bg.style.display = "none"; }
     if (sub) { var num = $('ss-num'); if (num) num.parentElement.innerHTML = '<span style="font-size:13px;font-weight:600;color:color-mix(in srgb,var(--color-text,#201e1d) 55%,transparent);">' + sub + '</span>'; }
   }
 

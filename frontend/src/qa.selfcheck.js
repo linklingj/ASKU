@@ -51,6 +51,15 @@ assert.notStrictEqual(ti.color["장학금"], ti.color["부서"], "distinct types
 assert(QA.nodeRadius({ degree: 0 }) >= 6 && QA.nodeRadius({ degree: 100 }) <= 18, "radius clamped");
 assert(QA.nodeRadius({ degree: 5 }) > QA.nodeRadius({ degree: 0 }), "radius grows with degree");
 
+// hubMin()/hubLabeled(): 상시 라벨 기준 — 확대할수록 널널, 축소할수록 빡빡, 긴 이름은 제외
+assert(QA.hubMin(0.4) > QA.hubMin(1) && QA.hubMin(1) > QA.hubMin(3), "축소할수록 기준 차수가 올라간다");
+const shortHub = { name: "국가장학금", degree: 4 };
+assert(QA.hubLabeled(shortHub, 1), "기본 배율에서 degree 4 허브는 라벨 표시");
+assert(!QA.hubLabeled(shortHub, 0.4), "많이 축소하면 같은 허브도 라벨 숨김");
+assert(QA.hubLabeled({ name: "잎", degree: 1 }, 3), "많이 확대하면 말단 노드까지 라벨 표시");
+assert(!QA.hubLabeled({ name: "가".repeat(21), degree: 50 }, 3), "20자 초과 이름은 허브여도 상시 라벨 제외");
+assert(QA.hubLabeled({ name: "가".repeat(20), degree: 4 }, 1), "20자까지는 허용");
+
 // isLinkable()/sourceChip(): 웹 근거만 링크, 첨부 근거(attachment://{id})는 죽은 링크가 되지 않게 칩으로
 assert(QA.isLinkable("https://sejong.ac.kr/notice/1"), "web source is a link");
 assert(!QA.isLinkable("attachment://7"), "attachment URI is not a link");
