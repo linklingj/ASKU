@@ -80,11 +80,25 @@ ASKU는 **학교마다 만들던 대학 챗봇을, URL 한 줄로 자동 생성�
 
 ASKU는 공지를 문단 뭉치가 아니라 **엔티티와 관계의 그래프**로 저장한다.
 
-```
-[성적우수장학금] ──담당──► [학생지원팀] ──연락처──► [02-XXX-XXXX]
-        ▲                        ▲
-        │안내                    │주관
-   [공지 #1024]              [공지 #0871]
+```mermaid
+flowchart LR
+    Q["질문<br/>성적우수장학금 담당 부서 전화번호"]
+
+    subgraph V["① 벡터 top-k — 일반 RAG는 여기까지"]
+        N1["성적우수장학금"]
+    end
+
+    subgraph H["② 1-hop 이웃 확장 — 여기서 답이 완성된다"]
+        N2["학생지원팀"]
+        N3["02-XXX-XXXX"]
+    end
+
+    Q -->|엔티티 추출·매칭| N1
+    N1 -->|담당| N2
+    N2 -->|연락처| N3
+
+    D1["공지 1024번<br/>2026 교내 장학금 안내"] -. 근거 .-> N1
+    D2["공지 0871번<br/>학생지원팀 업무 안내"] -. 근거 .-> N2
 ```
 
 질문에서 `성적우수장학금`을 뽑아 그래프의 해당 노드를 찾고, **1-hop 이웃**을 따라가면 `학생지원팀 → 전화번호`가 컨텍스트에 자동으로 딸려 온다. 두 문서를 이어붙이는 일을 검색이 대신 해 준다.
@@ -109,7 +123,6 @@ Microsoft GraphRAG가 제안하는 **커뮤니티 탐지·요약(Global search)�
 
 그래서 **`벡터 top-k + 1-hop 확장` 하이브리드 단일 전략**으로 확정했다. 관계형 질문의 대부분은 1-hop으로 커버되고, 색인 비용은 일반 RAG 수준으로 유지된다. 길고 구조가 옅은 문서(수강편람 등)는 엔티티로 쪼개는 대신 **원문 청크를 그대로 인용하는 문서 RAG**로 따로 처리한다.
 
-> 설계 판단의 전문: [`docs/01_SYSTEM/07_graph-rag-engine.md`](docs/01_SYSTEM/07_graph-rag-engine.md)
 
 ---
 
@@ -190,42 +203,51 @@ HMAC 서명 토큰 기반 인증으로 학교 정보 수정·삭제, 첨부 삭�
 
 ## 아키텍처
 
-```text
-[사용자]
-   │
-   ▼
-[프론트엔드]  ── GitHub Pages · 정적 HTML/CSS/JS (빌드 없음)
-   │            랜딩 / 학교 찾기 / 학교 등록 / QA / 관리자
-   │  REST
-   ▼
-[백엔드 API]  ── FastAPI · uvicorn 1워커 (Railway)
-   │
-   ├──► [크롤러]          ── 게시판 자동 발견, 규격 6단계 폴백,
-   │        │                robots.txt·Crawl-delay 준수, 해시로 변경 감지
-   │        ▼
-   │    [추출기]          ── 청킹 + LLM 엔티티·관계 추출 (JSON 강제)
-   │        │
-   │        ▼
-   │    [그래프 빌더]     ── 노드·엣지 생성, norm_key 병합, 임베딩
-   │        │
-   │        ▼
-   │    [저장소] ◄──────────────────────────┐
-   │      Postgres 16 + pgvector            │
-   │      원문 · 벡터 · 노드 · 엣지 단일 DB    │
-   │                                        │
-   ├──► [Graph RAG 엔진] ────────────────────┤
-   │        ① 벡터 top-k 검색 (source_type='web')
-   │        ② 질문 엔티티 1-hop 이웃 확장
-   │        ③ 컨텍스트 조립 → 답변 + 원문 인용
-   │        └ 근거 없음 → [문서 RAG] 업로드 PDF·HWP 벡터 검색
-   │                        └ 그래도 없음 → "찾지 못했습니다"
-   │        │
-   │        ▼
-   │    [LLM 추상화 레이어]
-   │      생성·추출: OpenAI(기본) / Gemini / Ollama(로컬)
-   │      임베딩   : bge-m3 (로컬, API 비용 0)
-   │
-   └──► [스케줄러]        ── 주기적 재크롤링, 증분 갱신, 만료 처리
+```mermaid
+flowchart TD
+    U(["사용자"])
+    FE["프론트엔드 · GitHub Pages<br/>정적 HTML/CSS/JS — 빌드 없음<br/>랜딩 · 찾기 · 등록 · QA · 관리자"]
+    API["백엔드 API · FastAPI<br/>uvicorn 1워커 — Railway"]
+
+    U --> FE
+    FE -->|REST| API
+
+    subgraph INGEST["수집 파이프라인"]
+        direction TB
+        CR["크롤러<br/>게시판 자동 발견 · 규격 6단계 폴백<br/>robots.txt·Crawl-delay 준수 · 해시로 변경 감지"]
+        EX["추출기<br/>청킹 + LLM 엔티티·관계 추출"]
+        GB["그래프 빌더<br/>노드·엣지 생성 · norm_key 병합 · 임베딩"]
+        CR --> EX --> GB
+    end
+
+    subgraph RAGE["Graph RAG 엔진"]
+        direction TB
+        R1["① 벡터 top-k 검색"]
+        R2["② 질문 엔티티 1-hop 이웃 확장"]
+        R3["③ 컨텍스트 조립 → 답변 + 원문 인용"]
+        R4["문서 RAG fallback<br/>업로드 PDF·HWP 벡터 검색"]
+        R5["답변 보류 — 찾지 못했습니다"]
+        R1 --> R2 --> R3
+        R3 -. 근거 없음 .-> R4
+        R4 -. 근거 없음 .-> R5
+    end
+
+    SC["스케줄러<br/>주기적 재크롤링 · 증분 갱신 · 만료 처리"]
+    DB[("저장소 · Postgres 16 + pgvector<br/>원문 · 벡터 · 노드 · 엣지 — 단일 DB")]
+    LLM["LLM 추상화 레이어<br/>생성·추출 OpenAI 기본 / Gemini / Ollama<br/>임베딩 bge-m3 로컬 — API 비용 0"]
+
+    API --> CR
+    API --> R1
+    API --> SC
+    SC -. 주기 트리거 .-> CR
+
+    GB --> DB
+    DB --> R1
+    DB --> R4
+
+    EX --> LLM
+    GB --> LLM
+    R3 --> LLM
 ```
 
 <!-- 이미지 자리: 아키텍처 다이어그램 이미지 (위 코드블록을 대체할 도식) -->
