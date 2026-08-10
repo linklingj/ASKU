@@ -257,10 +257,24 @@
     return out.join("");
   }
 
+  // 답변에는 "10:00~12:00", "3/1 ~ 3/5" 처럼 물결이 흔한데 GFM 은 이걸 취소선(<del>)으로 먹는다.
+  // 취소선을 쓸 일이 없으므로 del 토큰을 원래 물결 그대로 되돌린다(안쪽 서식은 유지).
+  function renderDelAsTilde(token) {
+    var mark = token.raw.slice(0, 2) === "~~" ? "~~" : "~";
+    return mark + this.parser.parseInline(token.tokens) + mark;
+  }
+
+  var markedReady = false;
   function renderMarkdown(text) {
     if (!text) return "";
     if (typeof window !== "undefined" && window.marked && typeof window.marked.parse === "function") {
       try {
+        if (!markedReady) {
+          if (typeof window.marked.use === "function") {
+            window.marked.use({ renderer: { del: renderDelAsTilde } });
+          }
+          markedReady = true;
+        }
         return window.marked.parse(text);
       } catch (e) {
         return simpleMarkdown(text);
@@ -316,6 +330,7 @@
       parseEid: parseEid, nodeRadius: nodeRadius, assignTypeColors: assignTypeColors, buildGraph: buildGraph,
       isLinkable: isLinkable, sourceChip: sourceChip,
       parseAnswer: parseAnswer, renderMarkdown: renderMarkdown, simpleMarkdown: simpleMarkdown,
+      renderDelAsTilde: renderDelAsTilde,
     };
     return;
   }
