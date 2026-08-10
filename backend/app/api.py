@@ -777,6 +777,7 @@ def list_schools(query: str | None = Query(default=None, description="학교명 
         SchoolListItem(
             school_id=s.school_id,
             name=s.name,
+            base_url=s.base_url,
             image_url=s.image_url,
             status=s.status,
             entity_count=count,
