@@ -394,7 +394,7 @@ a:hover { color:var(--asku-accent,#ec3013); }
       count.textContent = schools.length + '개';
       slotCount(count, schools.length);
       // 대표 이미지(image_url)가 있으면 로고로, 없거나 못 불러오면 학교명으로 돌아간다
-      // (admin.html 의 "대표 이미지 URL을 비우면 기본 표시로 돌아갑니다"와 같은 규칙).
+      // (관리자 화면에서 대표 이미지를 비울 수 있게 해 둔 것과 같은 규칙).
       var pill = function (s) {
         var a = document.createElement('a');
         a.href = 'find.html';

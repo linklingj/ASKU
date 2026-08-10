@@ -92,12 +92,19 @@ GET /schools?query={검색어}
     {
       "school_id": 1,
       "name": "연세대학교",
+      "base_url": "https://www.yonsei.ac.kr/sc/254/subview.do",
+      "image_url": "https://www.yonsei.ac.kr/…/emblem.png",
       "status": "ready",
+      "entity_count": 812,
       "updated_at": "2026-07-24T12:30:00Z"
     }
   ]
 }
 ```
+
+`base_url` 은 관리자 화면이 공지 URL 을 **현재 값과 비교해** 바뀐 것만 `PATCH` 하기 위해 필요하다
+(§2.5-4). 목록에 없으면 학교마다 상세를 한 번씩 더 불러야 한다. 값 자체는 `GET /schools/{id}` 로
+이미 공개돼 있고 대학 공개 게시판 주소다.
 
 ---
 
