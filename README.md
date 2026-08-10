@@ -3,30 +3,17 @@
 <!-- 이미지 자리: frontend/src/assets/logo_full.svg 또는 별도 배너 이미지 -->
 <img src="frontend/src/assets/logo_full.svg" alt="ASKU" height="72">
 
-# ASKU — 대학 웹사이트 자동 QA 시스템
+# 대학 웹사이트 자동 QA 시스템
 
 **공지 URL 하나만 주면, 그 학교 전용 질의응답 시스템이 자동으로 만들어진다.**
 
-[**🌐 서비스 바로가기**](https://linklingj.github.io/ASKU/) · [기획 문서](docs/00_BASICS/PLAN.md) · [시스템 설계](docs/01_SYSTEM) · [배포 가이드](docs/02_FEATURES/deployment.md)
+[**🌐 서비스 바로가기**](https://linklingj.github.io/ASKU/) 
+[기획 문서](docs/00_BASICS/PLAN.md) · [시스템 설계](docs/01_SYSTEM) · [배포 가이드](docs/02_FEATURES/deployment.md)
 
 <br>
 
-![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL%20+%20pgvector-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
-![OpenAI](https://img.shields.io/badge/OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white)
-![Gemini](https://img.shields.io/badge/Gemini-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white)
-![Ollama](https://img.shields.io/badge/Ollama-000000?style=for-the-badge&logo=ollama&logoColor=white)
-![HuggingFace](https://img.shields.io/badge/bge--m3-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black)
-![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=for-the-badge&logo=html5&logoColor=white)
-![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)
-![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
-![Railway](https://img.shields.io/badge/Railway-0B0D0E?style=for-the-badge&logo=railway&logoColor=white)
-![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-222222?style=for-the-badge&logo=githubpages&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL%20+%20pgvector-4169E1?style=for-the-badge&logo=postgresql&logoColor=white) ![Ollama](https://img.shields.io/badge/Ollama-000000?style=for-the-badge&logo=ollama&logoColor=white) ![HuggingFace](https://img.shields.io/badge/bge--m3-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black) ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black) ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white) ![Railway](https://img.shields.io/badge/Railway-0B0D0E?style=for-the-badge&logo=railway&logoColor=white) ![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-222222?style=for-the-badge&logo=githubpages&logoColor=white)
 
-<br>
-
-`11개 대학 수집 검증 완료` · `목록·제목·날짜 정확도 100%` · `테스트 323개` · `근거 없으면 답변 보류`
 
 </div>
 
@@ -34,11 +21,11 @@
 
 ## 목차
 
-- [한 줄 요약](#한-줄-요약)
+- [요약](#요약)
 - [왜 만들었나](#왜-만들었나)
+- [왜 Graph RAG인가](#왜-graph-rag인가)
 - [주요 기능](#주요-기능)
 - [화면](#화면)
-- [성과](#성과)
 - [아키텍처](#아키텍처)
 - [실행 방법](#실행-방법)
 - [프로젝트 구조](#프로젝트-구조)
@@ -48,15 +35,24 @@
 
 ---
 
-## 한 줄 요약
+## 요약
 
 **대학 공지 게시판 URL 하나를 입력하면, 크롤링 → 엔티티·관계 추출 → 지식그래프 구축까지 자동으로 끝나고, 학생은 자연어로 물어 원문 링크가 붙은 답을 받는다.**
+
+ASKU는 **학교마다 만들던 대학 챗봇을, URL 한 줄로 자동 생성되는 파이프라인으로 바꾼 시스템**이다.
+
+- **입력** — 학교명 + 공지 게시판 URL. (선택) 수강편람 PDF·학칙 HWP 같은 문서 첨부.
+- **자동 처리** — 하위 게시판 자동 발견 → 게시판 규격 자동 결정(6단계 폴백) → robots.txt를 지키며 목록·상세 수집 → 청킹 → LLM으로 `장학금`·`부서`·`담당자`·`마감일` 엔티티와 관계 추출 → 로컬 bge-m3 임베딩 → **지식그래프 + 벡터 인덱스** 적재.
+- **질의** — 자연어 질문 → 벡터 top-k 검색 + 질문 엔티티의 1-hop 이웃 확장 → 답변 생성 → **근거가 된 공지 원문 링크를 함께 반환.** 근거가 없으면 지어내지 않고 보류한다.
+- **유지** — 스케줄러가 주기적으로 재크롤링하고, 해시 비교로 **바뀐 문서만** 갱신한다. 사라진 공지는 만료 처리.
+
+현재 **11개 대학**이 수집 검증을 통과했고, 그중 3곳은 **코드를 한 줄도 추가하지 않고** 붙었다.
 
 ---
 
 ## 왜 만들었나
 
-> "장학금 신청 마감이 언제였지?" — 이 한 줄을 확인하려고 학교 홈페이지에서 게시판 5개를 뒤진다.
+> "관심과목 담기 마감이 언제였지?" — 이 한 줄을 확인하려고 학교 홈페이지에서 게시판 5개를 뒤진다.
 
 대학 정보는 **없어서** 못 찾는 게 아니라 **흩어져 있어서** 못 찾는다. 공지사항·학사공지·장학공지·국제처가 각각 다른 게시판에 있고, 검색 기능은 제목 일치만 걸리며, 진짜 필요한 정보는 첨부된 PDF 안에 있다.
 
@@ -74,17 +70,59 @@
 
 ---
 
+## 왜 Graph RAG인가?
+
+일반 벡터 RAG는 **질문과 비슷한 문단을 찾아오는** 방식이다. 대학 공지에서는 이게 자주 무너진다.
+
+> **"성적우수장학금 담당 부서 전화번호 알려줘"**
+
+이 질문의 답은 **한 문서 안에 없다.** 장학금 정보는 「2026 교내 장학금 안내」에 있고, 담당 부서 연락처는 「학생지원팀 업무 안내」에 있다. 벡터 검색은 "성적우수장학금"과 비슷한 문단만 가져오므로 **전화번호는 컨텍스트에 아예 들어오지 못하고**, LLM은 없는 번호를 지어내거나 모른다고 답한다.
+
+ASKU는 공지를 문단 뭉치가 아니라 **엔티티와 관계의 그래프**로 저장한다.
+
+```
+[성적우수장학금] ──담당──► [학생지원팀] ──연락처──► [02-XXX-XXXX]
+        ▲                        ▲
+        │안내                    │주관
+   [공지 #1024]              [공지 #0871]
+```
+
+질문에서 `성적우수장학금`을 뽑아 그래프의 해당 노드를 찾고, **1-hop 이웃**을 따라가면 `학생지원팀 → 전화번호`가 컨텍스트에 자동으로 딸려 온다. 두 문서를 이어붙이는 일을 검색이 대신 해 준다.
+
+### 일반 RAG 대비 장점
+
+| | 일반 벡터 RAG | **ASKU의 Graph RAG** |
+|---|---|---|
+| **관계형 질문** | 답이 여러 문서에 흩어지면 실패 | 엔티티 1-hop 확장으로 **문서를 가로질러 연결** |
+| **검색 단위** | 문단 청크 (문맥이 잘림) | 청크 **+** 엔티티·관계 (`장학금 —담당→ 부서`) |
+| **동의어·표기 흔들림** | "학생지원팀"·"학생지원처"를 다른 것으로 취급 | `norm_key` 정규화로 **같은 엔티티로 병합** |
+| **근거 추적** | 청크 단위까지만 | 모든 노드·엣지에 `source_doc_ids` → **관계 하나까지 원문 추적** |
+| **환각** | 근거가 부족해도 그럴듯하게 생성 | 임계값 미달이면 **보류**, 두 단계 모두 실패 시 "찾지 못했습니다" |
+| **정보 갱신** | 문서 통째로 재색인 | 노드·엣지 단위 **증분 갱신**, 사라진 공지는 만료 |
+| **탐색 UX** | 검색창뿐 | 학교 지식그래프를 **눈으로 훑어보며** 질문 |
+
+### 다만, 과하게 쓰지 않았다
+
+Microsoft GraphRAG가 제안하는 **커뮤니티 탐지·요약(Global search)과 Local/Global 라우팅은 일부러 넣지 않았다.**
+
+대학 공지는 대부분 **원자적**이다 — 공지 1건이 곧 정보 1건이라, 문서 전체를 요약해야 답할 수 있는 "이 학교 장학 정책의 전반적 경향은?" 같은 질문의 비중이 낮다. 반면 커뮤니티 요약은 색인 때마다 LLM 호출이 수백 배로 늘고 운영 복잡도가 크게 오른다.
+
+그래서 **`벡터 top-k + 1-hop 확장` 하이브리드 단일 전략**으로 확정했다. 관계형 질문의 대부분은 1-hop으로 커버되고, 색인 비용은 일반 RAG 수준으로 유지된다. 길고 구조가 옅은 문서(수강편람 등)는 엔티티로 쪼개는 대신 **원문 청크를 그대로 인용하는 문서 RAG**로 따로 처리한다.
+
+> 설계 판단의 전문: [`docs/01_SYSTEM/07_graph-rag-engine.md`](docs/01_SYSTEM/07_graph-rag-engine.md)
+
+---
+
 ## 주요 기능
 
 ### 🎓 URL 하나로 끝나는 학교 등록
 
 학교명과 공지 URL만 넣으면 **크롤링 → 정보 추출 → 임베딩 → 지식그래프 구축**이 자동으로 돈다. 게시판 구조는 `전용 어댑터 → 저장된 규격 → 학교별 규격 → 알려진 템플릿 → LLM 자동 생성 → 공용 파서` 순서로 스스로 결정한다.
 
-> 실제로 아주대·이화여대·건국대는 **코드를 한 줄도 추가하지 않고** 템플릿 매칭만으로 붙었다.
 
 ### 🕸️ 지식그래프 기반 Graph RAG
 
-공지에서 `장학금`·`부서`·`담당자`·`마감일` 같은 엔티티와 그 관계를 뽑아 그래프로 쌓는다. 질문이 들어오면 **벡터 top-k 검색 + 질문 엔티티의 1-hop 이웃 확장**을 결합해 컨텍스트를 만든다. 단순 벡터 RAG가 놓치는 *"이 장학금 담당 부서 연락처"* 같은 관계형 질문에 강하다.
+공지에서 `장학금`·`부서`·`담당자`·`마감일` 같은 엔티티와 그 관계를 뽑아 그래프로 쌓는다. 질문이 들어오면 **벡터 top-k 검색 + 질문 엔티티의 1-hop 이웃 확장**을 결합해 컨텍스트를 만들어, 답이 여러 문서에 흩어져 있어도 이어붙인다. QA 화면에서는 이 그래프를 직접 탐색할 수도 있다. → [왜 Graph RAG인가](#왜-graph-rag인가)
 
 ### 🔗 근거 없으면 답하지 않는다
 
@@ -99,7 +137,6 @@
                 └─ 근거 없음 ──► "찾지 못했습니다"
 ```
 
-수강편람 PDF, 학칙 HWP처럼 로그인이 필요하거나 robots.txt에 막힌 문서는 사용자가 직접 올리면 색인된다. **크롤러 범위를 넓히지 않고도 문서 QA가 성립한다.**
 
 ### 🔄 주기적 자동 갱신
 
@@ -151,66 +188,47 @@ HMAC 서명 토큰 기반 인증으로 학교 정보 수정·삭제, 첨부 삭�
 
 ---
 
-## 성과
-
-<div align="center">
-
-| 지표 | 값 |
-|:---|:---|
-| **수집 검증 완료 학교** | **11개 대학** (연세·세종·홍익·성균관·아주·이화·건국·서울·국민·고려·경희) |
-| **목록·제목·날짜 추출 정확도** | **100%** (`scripts/check_schools.py` 실측) |
-| **코드 추가 없이 붙은 학교** | **3개** — 템플릿 매칭만으로 지원 (아주·이화·건국) |
-| **자동화 테스트** | **323개** (pytest, 16개 모듈) |
-| **백엔드 코드** | 약 7,300줄 / 19개 모듈 |
-| **설계 문서** | 21편 (`docs/` — 시스템 10 · 기능 8 · 기반 3) |
-
-</div>
-
-**정량 지표만큼 중요한 설계 성과**
-
-- **인프라를 하나로 줄였다** — 그래프·벡터·원문을 Postgres + pgvector **단일 DB**로 통합. Neo4j·Qdrant 없이 서비스 2개(api + db)로 전체 시스템이 돈다.
-- **일반 결함으로 되돌려 고쳤다** — 학교 하나가 깨질 때마다 그 학교용 코드를 짜는 대신, `detail_link_pattern` 같은 **규격 필드**를 늘려 다음 학교는 설정 한 장으로 붙게 만들었다.
-- **문서와 코드를 같이 움직였다** — 공개 인터페이스가 바뀌면 같은 커밋에서 문서도 갱신하는 규칙을 지켰다.
-
----
-
 ## 아키텍처
 
-```
-                          ┌─────────────────────────────┐
-   사용자 ───────────────► │  프론트엔드 (GitHub Pages)   │
-                          │  랜딩 · 찾기 · 등록 · QA     │
-                          └──────────────┬──────────────┘
-                                         │ REST
-                          ┌──────────────▼──────────────┐
-                          │   백엔드 API (FastAPI)       │
-                          └──────────────┬──────────────┘
-             ┌───────────────────────────┼───────────────────────────┐
-             │                           │                           │
-    ┌────────▼────────┐        ┌─────────▼─────────┐       ┌─────────▼────────┐
-    │   수집 파이프라인 │        │  Graph RAG 엔진    │       │    스케줄러       │
-    │                 │        │                   │       │  주기적 재크롤링   │
-    │  크롤러          │        │  ① 벡터 top-k     │       │  증분 갱신·만료   │
-    │   robots.txt 준수│        │  ② 엔티티 1-hop   │       └──────────────────┘
-    │   규격 자동 결정  │        │  ③ 컨텍스트 조립  │
-    │      ↓          │        │  ④ 답변 + 인용    │
-    │  추출기 (LLM)    │        │       ↓           │
-    │   엔티티·관계     │        │  근거 없으면      │
-    │      ↓          │        │  문서 RAG fallback│
-    │  그래프 빌더      │        └─────────┬─────────┘
-    │   노드·엣지·임베딩│                  │
-    └────────┬────────┘                  │
-             │                           │
-             └───────────┬───────────────┘
-                         │
-          ┌──────────────▼──────────────┐     ┌────────────────────────┐
-          │  저장소: Postgres + pgvector │     │  LLM 추상화 레이어       │
-          │  원문 · 벡터 · 노드 · 엣지    │     │  OpenAI/Gemini/Ollama  │
-          │  ─ 단일 DB로 통합 ─          │     │  임베딩: 로컬 bge-m3    │
-          └─────────────────────────────┘     └────────────────────────┘
+```text
+[사용자]
+   │
+   ▼
+[프론트엔드]  ── GitHub Pages · 정적 HTML/CSS/JS (빌드 없음)
+   │            랜딩 / 학교 찾기 / 학교 등록 / QA / 관리자
+   │  REST
+   ▼
+[백엔드 API]  ── FastAPI · uvicorn 1워커 (Railway)
+   │
+   ├──► [크롤러]          ── 게시판 자동 발견, 규격 6단계 폴백,
+   │        │                robots.txt·Crawl-delay 준수, 해시로 변경 감지
+   │        ▼
+   │    [추출기]          ── 청킹 + LLM 엔티티·관계 추출 (JSON 강제)
+   │        │
+   │        ▼
+   │    [그래프 빌더]     ── 노드·엣지 생성, norm_key 병합, 임베딩
+   │        │
+   │        ▼
+   │    [저장소] ◄──────────────────────────┐
+   │      Postgres 16 + pgvector            │
+   │      원문 · 벡터 · 노드 · 엣지 단일 DB    │
+   │                                        │
+   ├──► [Graph RAG 엔진] ────────────────────┤
+   │        ① 벡터 top-k 검색 (source_type='web')
+   │        ② 질문 엔티티 1-hop 이웃 확장
+   │        ③ 컨텍스트 조립 → 답변 + 원문 인용
+   │        └ 근거 없음 → [문서 RAG] 업로드 PDF·HWP 벡터 검색
+   │                        └ 그래도 없음 → "찾지 못했습니다"
+   │        │
+   │        ▼
+   │    [LLM 추상화 레이어]
+   │      생성·추출: OpenAI(기본) / Gemini / Ollama(로컬)
+   │      임베딩   : bge-m3 (로컬, API 비용 0)
+   │
+   └──► [스케줄러]        ── 주기적 재크롤링, 증분 갱신, 만료 처리
 ```
 
-<!-- 이미지 자리: 아키텍처 다이어그램 이미지 (위 ASCII를 대체할 도식) -->
+<!-- 이미지 자리: 아키텍처 다이어그램 이미지 (위 코드블록을 대체할 도식) -->
 
 ### 데이터 흐름
 
@@ -279,15 +297,15 @@ PYTHONPATH=backend python3 -m pytest backend/tests -q     # 323개
 |---|---|---|
 | `DATABASE_URL` | — | `postgresql+psycopg://…` 접두어 필수 |
 | `LLM_PROVIDER` | `openai` | `openai` · `gemini` |
-| `OPENAI_API_KEY` / `OPENAI_MODEL` | — / `gpt-4o-mini` | 추출·답변 생성 |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | — / `gpt-5.6-luna` | 추출·답변 생성 |
 | `SPEC_AUTOGEN` | 꺼짐 | 미지원 게시판 규격을 LLM으로 생성 (호출당 ~4만 토큰) |
 | `MAX_GRAPH_NODES` | `1200` | 학교당 엔티티 상한 (메모리 안전장치) |
 | `MAX_ATTACHMENT_MB` | `100` | 업로드 첨부 1건 크기 상한 |
-| `ADMIN_PASSWORD` / `ADMIN_TOKEN_SECRET` | — | 관리자 기능. 비우면 파괴적 엔드포인트가 닫힌다 |
+| `ADMIN_PASSWORD` / `ADMIN_TOKEN_SECRET` | — | 관리자 기능. 비우면 관리자 엔드포인트가 닫힌다 |
 
 전체 목록과 운영 주의사항: [`docs/02_FEATURES/deployment.md`](docs/02_FEATURES/deployment.md)
 
-> ⚠️ 첫 질의는 느리다 — bge-m3(~2.3GB)를 그때 로드한다. 시연 전 한 번 질의해 워밍업해 둘 것.
+> ⚠️ 첫 질의는 느리다 — bge-m3(~2.3GB)를 그때 로드한다.
 
 ---
 
@@ -357,32 +375,9 @@ ASKU/
 
 </details>
 
-<details>
-<summary><b>2. HTTP 200을 주는 죽은 게시판</b></summary>
-
-<br>
-
-**문제**: 건국대 공지 게시판이 폐지됐는데 404가 아니라 **200 + "사용중지된 싱글 모듈입니다" 알림 페이지**를 돌려줬다. 크롤러는 네트워크 오류 없이 목록 0행을 읽고 실패했고, 재시도로는 절대 복구되지 않았다.
-
-**해결**: 게시판 번호(`artclList.do`)가 아니라 **메뉴 번호(`subview.do`)** 로 등록하도록 바꿨다. 좌측 메뉴가 살아 있어야 `find_boards`가 형제 게시판을 찾는다.
-
-**결과**: 26행 → **88행**, 하위 게시판 4개 자동 발견.
-
-</details>
 
 <details>
-<summary><b>3. robots.txt를 "제대로" 지키기</b></summary>
-
-<br>
-
-**문제**: 파이썬 표준 `robotparser`는 와일드카드(`*`)와 Allow 최장 일치 규칙을 처리하지 못해, 허용된 경로를 막거나 금지된 경로를 통과시킨다.
-
-**해결**: `protego`로 교체하고, `Crawl-delay`를 실제 요청 간격에 반영했다. 첨부 다운로드에도 동일한 robots.txt·허용 호스트 검사를 적용했다.
-
-</details>
-
-<details>
-<summary><b>4. HTML 정제가 본문을 지워버리는 문제</b></summary>
+<summary><b>2. HTML 정제가 본문을 지워버리는 문제</b></summary>
 
 <br>
 
@@ -393,7 +388,7 @@ ASKU/
 </details>
 
 <details>
-<summary><b>5. 환각을 구조로 막기</b></summary>
+<summary><b>3. 환각 막기</b></summary>
 
 <br>
 
@@ -407,7 +402,7 @@ ASKU/
 </details>
 
 <details>
-<summary><b>6. 메모리 4GB 안에서 돌리기</b></summary>
+<summary><b>4. 메모리 4GB 안에서 돌리기</b></summary>
 
 <br>
 
@@ -421,7 +416,7 @@ ASKU/
 
 ## 문서
 
-코드보다 문서가 먼저다. 코드를 짜기 전에 해당 문서를 읽고, 인터페이스가 바뀌면 같은 커밋에서 문서도 갱신한다.
+코드를 짜기 전에 해당 문서를 읽고, 인터페이스가 바뀌면 같은 커밋에서 문서도 갱신하는 것을 원칙으로 했다.
 
 | 문서 | 내용 |
 |---|---|
@@ -443,9 +438,9 @@ ASKU/
 
 | 이름 | 역할 | GitHub |
 |:---:|:---|:---:|
-| **최재현** | 프론트엔드 · 관리자 기능 · 배포 · 설계 문서 | [@linklingj](https://github.com/linklingj) |
-| **김시훈** | 크롤러 수집 규격 · 학교 확장 · LLM 제공자 | [@ksihun](https://github.com/ksihun) |
-| **김건민** | 문서 RAG · 첨부 인제스트 · robots.txt 준수 · QA 답변 렌더링 | [@3lynk](https://github.com/3lynk) |
+| **최재현** | 그래프 RAG · 프론트엔드 · 배포 | [@linklingj](https://github.com/linklingj) |
+| **권시헌** | 크롤러 수집 규격 · 학교 지원 · LLM 제공자 | [@ksihun](https://github.com/ksihun) |
+| **김건민** | 문서 RAG · 백엔드 API QA · 답변 렌더링 | [@3lynk](https://github.com/3lynk) |
 
 </div>
 
@@ -459,7 +454,7 @@ ASKU/
 
 <div align="center">
 
-**ASKU** · 2026 학술제 출품작
+**ASKU** · 2026 콘텐츠 소프트웨어학과 학술제 출품작
 
 [🌐 서비스](https://linklingj.github.io/ASKU/) · [📖 기획 문서](docs/00_BASICS/PLAN.md) · [🐙 GitHub](https://github.com/linklingj/ASKU)
 
