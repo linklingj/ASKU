@@ -81,7 +81,14 @@ assert(rendered.includes("<table class=\"md-table\">"), "table rendered");
 assert(rendered.includes("<strong>국어</strong>"), "bold rendered");
 assert(rendered.includes("<em>1학점</em>"), "italic rendered");
 
+// renderDelAsTilde(): GFM 이 취소선으로 먹는 물결을 원래 물결로 되돌린다 ("10:00~12:00" 깨짐 방지)
+const fakeParser = { parser: { parseInline: (toks) => toks.join("") } };
+assert.strictEqual(QA.renderDelAsTilde.call(fakeParser, { raw: "~12:00 및 14:00~", tokens: ["12:00 및 14:00"] }), "~12:00 및 14:00~");
+assert.strictEqual(QA.renderDelAsTilde.call(fakeParser, { raw: "~~취소~~", tokens: ["취소"] }), "~~취소~~");
+// simpleMarkdown 폴백 경로도 물결을 그대로 둔다
+assert(QA.simpleMarkdown("접수 3/1~3/5, 상담 10:00~12:00").includes("3/1~3/5, 상담 10:00~12:00"), "fallback keeps tildes");
+
 console.log(
-  "OK — buildGraph/assignTypeColors/parseEid/nodeRadius/sourceChip/parseAnswer/simpleMarkdown pass; nodes:%d links:%d",
+  "OK — buildGraph/assignTypeColors/parseEid/nodeRadius/sourceChip/parseAnswer/simpleMarkdown/renderDelAsTilde pass; nodes:%d links:%d",
   g.nodes.length, g.rawLinks.length
 );
