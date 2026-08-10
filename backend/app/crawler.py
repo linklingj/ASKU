@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup
 from protego import Protego
 
 from app.adapter_spec import AdapterSpec
+from app.rendering import Renderer
 from app.schemas import Attachment, CrawledPage, CrawlFailure, CrawlRequest
 
 
@@ -311,6 +312,12 @@ class SpecNoticeAdapter(CommonNoticeAdapter):
         )
         self.spec = spec
 
+    @property
+    def render_mode(self) -> str:
+        """이 학교를 브라우저로 그려야 하는지. 전용 어댑터에는 없는 속성이다."""
+
+        return self.spec.render
+
     def parse_listing(self, html: str, page_url: str) -> Iterable[ListingItem]:
         listing = self.spec.listing
         soup = BeautifulSoup(html, "html.parser")
@@ -556,6 +563,7 @@ class Crawler:
         sleeper: Callable[[float], None] = sleep,
         robots_allowed: RobotsAllowed | None = None,
         clock: Callable[[], float] = monotonic,
+        renderer: "Renderer | None" = None,
     ) -> None:
         self.hash_exists = hash_exists
         self.url_exists = url_exists
@@ -569,6 +577,9 @@ class Crawler:
         self.sleeper = sleeper
         self.clock = clock
         self.robots_allowed = robots_allowed or self._robots_allowed
+        # 브라우저 수집기. 규격이 요구하는 학교에만 쓰이므로, 정적 학교만 도는
+        # 서버는 끝까지 None 으로 둬도 된다.
+        self.renderer = renderer
         self._policy_by_origin: dict[str, RobotsPolicy] = {}
 
     @classmethod
@@ -648,7 +659,12 @@ class Crawler:
         if not self.robots_allowed(listing_url):
             self._policy_failure(request, listing_url, run)
             return
-        listing_html = self._fetch(request, listing_url, run, budget=budget)
+        # 브라우저는 규격이 필요하다고 적은 학교에만 쓴다. 중앙대처럼 목록만
+        # 그려지는 경우가 흔해, 상세까지 그리는 `always` 와 나눠 둔다.
+        render_mode = getattr(adapter, "render_mode", "off")
+        listing_html = self._fetch(
+            request, listing_url, run, budget=budget, rendered=render_mode in ("listing", "always")
+        )
         if listing_html is None:
             if budget.exhausted:
                 self._budget_failure(request, listing_url, run, budget)
@@ -675,7 +691,10 @@ class Crawler:
                 continue
             # 일부 학교는 목록에서 상세 공지로 이동한 요청만 허용한다.
             # 브라우저 클릭과 동일하게 현재 목록 URL을 Referer로 전달한다.
-            html = self._fetch(request, canonical_url, run, referer=listing_url, budget=budget)
+            html = self._fetch(
+                request, canonical_url, run, referer=listing_url, budget=budget,
+                rendered=render_mode == "always",
+            )
             if html is None:
                 if budget.exhausted:
                     self._budget_failure(request, canonical_url, run, budget)
@@ -733,7 +752,10 @@ class Crawler:
         *,
         referer: str | None = None,
         budget: _CrawlBudget | None = None,
+        rendered: bool = False,
     ) -> str | None:
+        if rendered:
+            return self._fetch_rendered(request, url, run, referer=referer, budget=budget)
         for attempt in range(self.settings.max_retries + 1):
             # 재시도도 서버에 대한 요청이므로 시도마다 예산을 쓴다.
             if budget is not None and not budget.charge():
@@ -767,6 +789,50 @@ class Crawler:
                 return None
             self.sleeper(self.settings.backoff_seconds * (2**attempt))
         return None
+
+    def _fetch_rendered(
+        self,
+        request: CrawlRequest,
+        url: str,
+        run: CrawlRun,
+        *,
+        referer: str | None = None,
+        budget: _CrawlBudget | None = None,
+    ) -> str | None:
+        """브라우저로 그린 HTML 을 가져온다.
+
+        robots·예산·요청 간격은 정적 요청과 똑같이 적용한다. 브라우저를 쓴다고
+        남의 서버를 더 빨리 두드려도 되는 것은 아니다.
+
+        재시도는 하지 않는다. 렌더링 실패는 대개 시간 초과이고, 같은 페이지를
+        다시 그리면 그만큼 더 기다리게 된다. 실패는 조용히 0건으로 넘기지 않고
+        기록해 수집 품질 지표에 남긴다.
+        """
+
+        if self.renderer is None:
+            run.failures.append(self._fetch_failure(request, url, "RENDERER_UNAVAILABLE", retryable=False))
+            return None
+        if budget is not None and not budget.charge():
+            return None
+
+        html = self.renderer.render(url, referer=referer)
+        self.sleeper(self._crawl_delay(url))
+        if html is None:
+            run.failures.append(self._fetch_failure(request, url, "RENDER_FAILED", retryable=True))
+        return html
+
+    def _fetch_failure(
+        self, request: CrawlRequest, url: str, error_code: str, *, retryable: bool
+    ) -> CrawlFailure:
+        return CrawlFailure(
+            crawl_id=request.crawl_id,
+            school_id=request.school_id,
+            source_url=url,
+            stage="fetch",
+            error_code=error_code,
+            retryable=retryable,
+            occurred_at=datetime.now(timezone.utc),
+        )
 
     def _robots_allowed(self, url: str) -> bool:
         """robots.txt 판정. 정책을 확인할 수 없으면 수집하지 않는다(보수적 기본값).

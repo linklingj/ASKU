@@ -1,5 +1,7 @@
 pydantic>=2
 requests>=2.31
+# 목록을 자바스크립트로 그리는 학교(중앙대) 전용. 규격이 요구할 때만 브라우저를 띄운다.
+playwright>=1.44
 beautifulsoup4>=4.12
 protego>=0.3          # robots.txt 파서: 표준 robotparser 는 와일드카드·Allow 최장 일치를 못 다룬다
 SQLAlchemy>=2.0

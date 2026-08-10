@@ -29,6 +29,7 @@ from uuid import uuid4
 
 from app.crawler import Crawler, CrawlRun, DEFAULT_BOARD_LABEL, adapter_for, boards_for
 from app.extractor import DocumentExtractor, content_parser_for
+from app.rendering import PlaywrightRenderer
 from app.schemas import CrawlRequest, CrawlScope
 from app.settings import load_env
 from app.spec_templates import host_spec
@@ -60,7 +61,10 @@ def run_school(name: str, url: str, args: argparse.Namespace) -> None:
     # 학교별 규격은 저장소에 있다. 없으면 전용 클래스나 공용 파서로 떨어진다 —
     # 여기서는 템플릿 대조·LLM 생성을 하지 않는다. 그쪽은 check_schools.py 가 본다.
     spec = host_spec(host)
-    crawler = Crawler(hash_exists=lambda *_: False)
+    # 목록을 자바스크립트로 그리는 학교(중앙대)는 브라우저가 있어야 한다.
+    # 넘기지 않으면 목록 0행으로 조용히 끝난다.
+    renderer = PlaywrightRenderer() if spec is not None and spec.render != "off" else None
+    crawler = Crawler(hash_exists=lambda *_: False, renderer=renderer)
     request = CrawlRequest(
         crawl_id=uuid4(), school_id=0, base_url=url, mode="initial",
         scope=CrawlScope(allowed_hosts=[host], max_items=args.limit),
@@ -77,6 +81,8 @@ def run_school(name: str, url: str, args: argparse.Namespace) -> None:
     boards = boards_for(url, spec)
     run = crawler.crawl_boards(request, boards, adapter)
     pages = crawler.pages_for_extractor(run)
+    if renderer is not None:
+        renderer.close()
 
     print(f"[{name}] {url}")
     print(f"  규격 {'학교별' if spec else '없음'} · 어댑터 {type(adapter).__name__} · 게시판 {len(boards)}개")

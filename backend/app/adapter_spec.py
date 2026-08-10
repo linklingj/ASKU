@@ -136,6 +136,16 @@ class AdapterSpec(BaseModel):
     boards: list[BoardSpec] = Field(default_factory=list)
     listing: ListingSpec
     detail: DetailSpec = Field(default_factory=DetailSpec)
+    # 브라우저로 그려야 목록이 나타나는 학교를 위한 표시.
+    #
+    # 중앙대는 정적 HTML 에 공지 링크가 0건이고 스크립트를 실행해야 15건이
+    # 나타난다. 선택자 문제가 아니라 데이터가 아직 없는 문제라, 어떤 선택자로도
+    # 읽을 수 없다.
+    #
+    # 브라우저는 느리고 메모리를 많이 써서 기본값은 끈다. 중앙대처럼 목록만
+    # 그려지고 상세는 정적인 경우가 흔해 `listing` 을 따로 둔다 — 공지 300건이면
+    # 브라우저 호출이 300번에서 몇 번으로 줄어든다.
+    render: Literal["off", "listing", "always"] = "off"
     # 규격 출처. 자동 생성한 규격과 사람이 쓴 규격을 구분해 추적한다.
     source: Literal["human", "generated"] = "human"
     version: int = 1

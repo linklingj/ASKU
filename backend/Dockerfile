@@ -15,6 +15,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# 목록을 자바스크립트로 그리는 학교(중앙대) 전용 브라우저. 이미지가 수백 MB
+# 커지므로 Chromium 하나만, 필요한 OS 라이브러리와 함께 받는다.
+# 이 학교를 수집하지 않는 배포라면 이 두 줄을 지워도 나머지는 그대로 동작한다.
+RUN playwright install --with-deps chromium
+
 COPY app ./app
 
 EXPOSE 8000

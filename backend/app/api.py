@@ -466,8 +466,9 @@ def _run_crawl_inner(school_id: int, base_url: str, mode: str, max_nodes: int = 
         "message": "공지 페이지 수집 중...",
     }
     try:
-        from app.crawler import Crawler, adapter_for, boards_for
+        from app.crawler import USER_AGENT, Crawler, adapter_for, boards_for
         from app.extractor import DocumentExtractor
+        from app.rendering import PlaywrightRenderer
         from app.graph_builder import GraphBuilder
         from app.schemas import ExtractionFailure
 
@@ -481,7 +482,11 @@ def _run_crawl_inner(school_id: int, base_url: str, mode: str, max_nodes: int = 
             # 공지(예: 홍익대 목록에 섞인 대학원 공지)를 놓치지 않기 위해서다.
             scope=CrawlScope(allowed_hosts=[urlsplit(base_url).hostname or ""]),
         )
-        crawler = Crawler.from_storage(storage)
+        # 브라우저 수집기는 항상 넘기되 실제로 뜨지는 않는다. 규격이 `render` 를
+        # 요구하는 학교(중앙대)에서 처음 쓸 때 띄우고, 정적 학교만 도는 크롤은
+        # Playwright 를 import 조차 하지 않는다.
+        renderer = PlaywrightRenderer(user_agent=USER_AGENT)
+        crawler = Crawler.from_storage(storage, renderer=renderer)
         # 규격은 크롤 시작 때 한 번만 확보해 파이프라인 전체에 넘긴다. Crawler·Extractor 가
         # Storage 를 직접 알지 않게 하고, 페이지마다 조회하는 일도 없게 한다.
         # 처음 보는 학교면 여기서 규격을 만든다(알려진 게시판 제품이면 LLM 없이).
@@ -499,6 +504,9 @@ def _run_crawl_inner(school_id: int, base_url: str, mode: str, max_nodes: int = 
         except Exception:
             logger.exception("규격 재생성 처리 실패: school_id=%d", school_id)
         pages = crawler.pages_for_extractor(run)
+        # 브라우저는 목록을 받는 동안만 필요하다. 추출·그래프 단계까지 띄워 두면
+        # 임베딩 모델과 메모리를 다투게 된다.
+        renderer.close()
 
         # 전체 방문/수집된 페이지 수
         _PROGRESS_MAP[school_id]["pages"] = len(run.pages)
@@ -606,6 +614,12 @@ def _run_crawl_inner(school_id: int, base_url: str, mode: str, max_nodes: int = 
 
     except Exception:
         logger.exception("크롤링 전체 실패: school_id=%d", school_id)
+        # 중간에 터졌으면 브라우저가 떠 있을 수 있다. 그대로 두면 프로세스가
+        # 살아 있는 내내 메모리를 잡는다. 두 번 불러도 안전하다.
+        try:
+            renderer.close()
+        except Exception:
+            logger.exception("브라우저 정리 실패: school_id=%d", school_id)
         _PROGRESS_MAP[school_id] = {
             "pages": 0, "chunks": 0, "entities": 0, "edges": 0,
             "progress": 0.0, "stage": "failed", "message": "파이프라인 전체 실패",

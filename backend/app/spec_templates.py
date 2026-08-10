@@ -167,6 +167,53 @@ HOST_SPECS: dict[str, AdapterSpec] = {
             attachment="div.addFile a",
         ),
     ),
+    # 한양대. 표가 아니라 `div` 목록이라 표 기준으로 찾으면 0행으로 보인다.
+    # 렌더링은 필요 없다 — 정적 HTML 에 공지 20건이 그대로 들어 있다.
+    "www.hanyang.ac.kr": AdapterSpec(
+        host="www.hanyang.ac.kr",
+        listing=ListingSpec(
+            row="div.hyu-list-body-item",
+            detail_link="h4 a[href]",
+            title=["h4 a"],
+            # `span.date` 에는 '/ 2026. 8. 10' 처럼 구분자가 붙는 자리가 있다.
+            date=["div.hyu-list-body-item-col span.date", "span.date"],
+            # 배지가 셋(주요알림·캠퍼스·분류) 붙는다. 캠퍼스 배지만 클래스가 하나 더 있다.
+            category=["span.badge-light:not(.custom-bg)"],
+            pagination=OffsetPagination(
+                param="_kr_ac_hanyang_noticeBoard_web_portlet_NoticeBoardPortlet_cur", step=1, start=1
+            ),
+        ),
+        detail=DetailSpec(
+            # 상세도 목록과 같은 클래스를 재사용한다. 본문 칸만 문단을 직접 갖는다.
+            body=["div.hyu-list-body-item-col:has(> p)"],
+            title=["div.hyu-list-body-item-col h4"],
+            attachment=_FILE_LINKS,
+        ),
+    ),
+    # 중앙대. 목록이 스크립트로 그려져 정적 HTML 에는 공지가 0건이다.
+    # 상세는 정적으로 나오므로 목록만 렌더링한다.
+    "www.cau.ac.kr": AdapterSpec(
+        host="www.cau.ac.kr",
+        render="listing",
+        listing=ListingSpec(
+            row="div.lineList_ul li",
+            detail_link="div.txtL a[href*='fn_goDetail']",
+            detail_link_pattern=r"fn_goDetail\('(\d+)'",
+            detail_link_template=(
+                "/cms/FR_CON/BoardView.do?MENU_ID=100&CONTENTS_NO=1&SITE_NO=2"
+                "&BOARD_SEQ=4&BBS_SEQ={0}&pageNo=1"
+            ),
+            title=["div.txtL a"],
+            date=["li.date", "span.date"],
+            pagination=OffsetPagination(param="pageNo", step=1, start=1),
+        ),
+        detail=DetailSpec(
+            body=["p.view_txt", ".view_cont"],
+            # 제목 `dt` 에는 클래스가 없어, 본문을 품은 `dl` 로 범위를 좁힌다.
+            title=["dl:has(p.view_txt) dt"],
+            attachment=f"div.fileArea a, {_FILE_LINKS}",
+        ),
+    ),
 }
 
 

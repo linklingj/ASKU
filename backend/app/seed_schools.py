@@ -47,6 +47,9 @@ SUPPORTED_SCHOOLS: tuple[SeedSchool, ...] = (
     SeedSchool("국민대학교", "https://www.kookmin.ac.kr/user/kmuNews/notice/1/index.do"),
     SeedSchool("고려대학교", "https://www.korea.ac.kr/ko/566/subview.do"),
     SeedSchool("경희대학교", "https://www.khu.ac.kr/kor/user/bbs/BMSR00040/list.do?menuNo=200317"),
+    SeedSchool("한양대학교", "https://www.hanyang.ac.kr/notice_all"),
+    # 중앙대는 목록을 브라우저로 그려야 나온다(`HOST_SPECS` 의 `render="listing"`).
+    SeedSchool("중앙대학교", "https://www.cau.ac.kr/cms/FR_CON/index.do?MENU_ID=100"),
 )
 
 
