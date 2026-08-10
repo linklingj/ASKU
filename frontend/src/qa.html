@@ -119,6 +119,11 @@
   // ── 순수: 백엔드 그래프 payload → d3 구조 ──────────────────────────
   function parseEid(id) { return parseInt(String(id).replace(/^e_/, ""), 10); }
   function nodeRadius(n) { return Math.max(6, Math.min(18, 7 + (n.degree || 0) * 1.1)); }
+  // 상시 라벨(허브) 기준 차수. 확대할수록 널널하게(낮은 차수까지), 축소하면 큰 허브만 남긴다.
+  function hubMin(k) { return k >= 2 ? 1 : k >= 1.4 ? 2 : k >= 0.9 ? 4 : k >= 0.6 ? 7 : 12; }
+  // 너무 긴 이름은 그래프를 덮어서 상시 라벨에서 제외한다(hover·근거 라벨은 길어도 그대로 표시).
+  var LABEL_MAX_LEN = 20;
+  function hubLabeled(n, k) { return String(n.name || "").length <= LABEL_MAX_LEN && (n.degree || 0) >= hubMin(k); }
   function assignTypeColors(list) {
     var counts = {}; list.forEach(function (n) { counts[n.type] = (counts[n.type] || 0) + 1; });
     var types = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || (a < b ? -1 : 1); });
@@ -328,6 +333,7 @@
   if (typeof globalThis !== "undefined" && globalThis.__QA_TEST__) {
     globalThis.__QA__ = {
       parseEid: parseEid, nodeRadius: nodeRadius, assignTypeColors: assignTypeColors, buildGraph: buildGraph,
+      hubMin: hubMin, hubLabeled: hubLabeled,
       isLinkable: isLinkable, sourceChip: sourceChip,
       parseAnswer: parseAnswer, renderMarkdown: renderMarkdown, simpleMarkdown: simpleMarkdown,
       renderDelAsTilde: renderDelAsTilde,
@@ -386,7 +392,7 @@
     lLayer = gLayer.append("g").attr("stroke", "#201e1d");
     nLayer = gLayer.append("g");
 
-    zoom = d3.zoom().scaleExtent([0.3, 3]).on("zoom", function (e) { gLayer.attr("transform", e.transform); curK = e.transform.k; if (nSel) nSel.select("text").attr("font-size", labelSize); });
+    zoom = d3.zoom().scaleExtent([0.3, 3]).on("zoom", function (e) { gLayer.attr("transform", e.transform); curK = e.transform.k; style(); });
     svg.call(zoom).on("dblclick.zoom", null);
     svg.on("click", function (e) { if (e.target.tagName === "svg") setState({ selId: null, detail: null }); });
 
@@ -459,7 +465,7 @@
       });
 
     nSel.select("circle").attr("r", function (n) { return meta(n).r; }).attr("fill", function (n) { return meta(n).color; });
-    nSel.select("text").attr("y", function (n) { return meta(n).r + 15; }).attr("font-size", labelSize).text(function (n) { return n.name; });
+    nSel.select("text").attr("y", function (n) { return meta(n).r + 15; }).text(function (n) { return n.name; });
 
     sim.nodes(vis);
     sim.force("link").links(links);
@@ -477,11 +483,12 @@
     nSel.select("circle")
       .attr("stroke", function (n) { return n.id === sel || src.has(n.id) ? "#201e1d" : "var(--color-bg,#f3f2f2)"; })
       .attr("stroke-width", function (n) { return n.id === sel || src.has(n.id) ? 3 : 2; });
-    nSel.select("text").attr("opacity", function (n) { // opacity(=stroke+fill) so 숨긴 라벨의 흰 halo 도 같이 사라짐
-      if (near && near.has(n.id)) return 1;
-      if (src.has(n.id)) return 1;
-      return (n.degree || 0) >= 4 ? 0.9 : 0; // 허브만 상시 라벨
-    });
+    nSel.select("text").attr("font-size", labelSize)
+      .attr("opacity", function (n) { // opacity(=stroke+fill) so 숨긴 라벨의 흰 halo 도 같이 사라짐
+        if (near && near.has(n.id)) return 1;
+        if (src.has(n.id)) return 1;
+        return hubLabeled(n, curK) ? 0.9 : 0; // 허브만 상시 라벨(줌 배율에 따라 기준 변동)
+      });
     if (lSel) lSel.attr("stroke-opacity", function (l) { return near ? (near.has(l.source.id) && near.has(l.target.id) ? 0.55 : 0.06) : 0.16; });
   }
 
