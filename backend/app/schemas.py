@@ -273,6 +273,7 @@ class SchoolListItem(BaseModel):
 
     school_id: int
     name: str
+    base_url: str
     image_url: str | None = None
     status: str
     entity_count: int = 0

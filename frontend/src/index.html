@@ -203,7 +203,7 @@ a:hover { color:var(--asku-accent,#ec3013); }
     <div data-reveal style="transition-delay:.1s; margin-top:clamp(30px,4vh,44px);"><a href="find.html" class="btn-accent" style="display:inline-flex; align-items:center; gap:10px; background:var(--asku-accent,#ec3013); color:#f3f2f2; font-family:var(--font-heading); font-weight:800; font-size:15px; padding:15px 28px;">학교 찾기 <span style="font-size:18px; line-height:1;">→</span></a></div>
     <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:20px; margin-top:clamp(56px,9vh,96px); padding-top:24px; border-top:2px solid color-mix(in srgb,#f3f2f2 24%,transparent);">
       <img class="logo-ink" data-invert src="assets/logo_full.svg" alt="ASKU" style="display:block; height:clamp(26px,4vw,44px); width:auto;">
-      <span style="font-size:13px; color:color-mix(in srgb,#f3f2f2 60%,transparent);">© 2026 ASKU · University QA with Graph RAG · v1.1.1</span>
+      <span style="font-size:13px; color:color-mix(in srgb,#f3f2f2 60%,transparent);">© 2026 ASKU · University QA with Graph RAG · v1.1.2</span>
     </div>
   </footer>
 
@@ -394,7 +394,7 @@ a:hover { color:var(--asku-accent,#ec3013); }
       count.textContent = schools.length + '개';
       slotCount(count, schools.length);
       // 대표 이미지(image_url)가 있으면 로고로, 없거나 못 불러오면 학교명으로 돌아간다
-      // (admin.html 의 "대표 이미지 URL을 비우면 기본 표시로 돌아갑니다"와 같은 규칙).
+      // (관리자 화면에서 대표 이미지를 비울 수 있게 해 둔 것과 같은 규칙).
       var pill = function (s) {
         var a = document.createElement('a');
         a.href = 'find.html';

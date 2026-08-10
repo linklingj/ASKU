@@ -15,7 +15,7 @@ button,input{font:inherit} button{cursor:pointer}.wrap{width:min(900px,calc(100%
 <body><main class="wrap">
 <div class="top"><div><div class="k">ASKU · ADMIN</div><h1>학교 관리</h1></div><a class="button btn-ink" href="index.html">← 홈</a></div>
 <section id="login" class="panel"><div class="k">인증 필요</div><h2>관리자 로그인</h2><label for="password">관리자 비밀번호</label><input id="password" type="password" autocomplete="current-password"><div class="row" style="margin-top:16px"><button id="loginBtn" class="button primary btn-accent">로그인</button></div><div id="loginMsg" class="msg" aria-live="polite"></div></section>
-<section id="manage" class="hidden"><div class="row" style="margin-top:28px;justify-content:space-between"><p style="margin:0;font-weight:700">대표 이미지 URL을 비우면 기본 표시로 돌아갑니다.</p><button id="logoutBtn" class="button btn-ink">로그아웃</button></div><div id="schools" class="panel"></div></section>
+<section id="manage" class="hidden"><div class="row" style="margin-top:28px;justify-content:space-between"><p style="margin:0;font-weight:700">학교명·공지 URL·대표 이미지를 고친 뒤 저장하세요. 바뀐 항목만 전송됩니다.</p><button id="logoutBtn" class="button btn-ink">로그아웃</button></div><div id="schools" class="panel"></div></section>
 </main>
 <script>
 (function(){'use strict';var $=function(id){return document.getElementById(id)}, login=$('login'),manage=$('manage'), list=$('schools');
@@ -62,7 +62,90 @@ function attachSection(s){
   return wrap;
 }
 function authenticated(){try{return !!sessionStorage.getItem('asku_admin_token')}catch(_){return false}}
-function load(){ASKU.get('/schools').then(function(res){list.replaceChildren();var schools=res.schools||[];if(!schools.length){list.textContent='등록된 학교가 없습니다.';return}schools.forEach(function(s){var card=document.createElement('article');card.className='school';var head=document.createElement('div');head.className='schoolhead';var title=document.createElement('strong');title.textContent=s.name;head.appendChild(title);if(s.image_url){var image=document.createElement('img');image.src=s.image_url;image.alt='';image.onerror=function(){this.remove()};head.appendChild(image)}card.appendChild(head);var url=document.createElement('input');url.type='url';url.value=s.image_url||'';url.placeholder='대표 이미지 URL (https://...)';url.setAttribute('aria-label',s.name+' 대표 이미지 URL');card.appendChild(url);var actions=document.createElement('div');actions.className='row';actions.style.marginTop='10px';var save=document.createElement('button');save.className='button primary btn-accent';save.textContent='이미지 저장';save.onclick=function(){save.disabled=true;ASKU.patchAdmin('/schools/'+s.school_id,{image_url:url.value.trim()||null}).then(load).catch(function(e){alert(e.message)}).finally(function(){save.disabled=false})};var remove=document.createElement('button');remove.className='button btn-ink';remove.textContent='학교 삭제';remove.onclick=function(){if(!confirm('“'+s.name+'” 및 관련 문서·첨부·그래프·수집 이력을 삭제합니다. 수집 규격은 유지됩니다. 계속할까요?'))return;ASKU.deleteAdmin('/schools/'+s.school_id).then(load).catch(function(e){alert(e.message)})};actions.append(save,remove);card.appendChild(actions);card.appendChild(attachSection(s));list.appendChild(card)})}).catch(function(e){list.textContent='목록을 불러오지 못했습니다: '+e.message})}
+
+// 라벨 + 입력 한 쌍. id 를 학교마다 다르게 줘야 label[for] 이 엉키지 않는다.
+function field(schoolId, key, labelText, value, type, hint){
+  var wrap=document.createElement('div');
+  var id='f-'+key+'-'+schoolId;
+  var label=document.createElement('label');label.setAttribute('for',id);label.textContent=labelText;
+  var input=document.createElement('input');input.id=id;input.type=type||'text';input.value=value||'';
+  wrap.append(label,input);
+  if(hint){
+    var note=document.createElement('p');
+    note.style.cssText='margin:6px 0 0;font-size:12px;line-height:1.5;opacity:.7';
+    note.textContent=hint;wrap.appendChild(note);
+  }
+  return {wrap:wrap, input:input};
+}
+
+// 수집 상태 라벨(01_backend-api.md §3). 재크롤 버튼을 누른 결과가 여기로 보인다.
+var STATUS={crawling:'수집 중',indexing:'색인 중',ready:'완료',partial_failed:'일부 실패',failed:'수집 실패'};
+
+function schoolCard(s){
+  var card=document.createElement('article');card.className='school';
+  var head=document.createElement('div');head.className='schoolhead';
+  var title=document.createElement('strong');
+  title.textContent=s.name+' · '+(STATUS[s.status]||s.status);
+  head.appendChild(title);
+  if(s.image_url){
+    var image=document.createElement('img');image.src=s.image_url;image.alt='';
+    image.onerror=function(){this.remove()};head.appendChild(image);
+  }
+  card.appendChild(head);
+
+  var name=field(s.school_id,'name','학교명',s.name,'text');
+  // 공지 URL 은 크롤러가 목록을 읽기 시작하는 지점이다. 게시판이 폐지·이전되면 여기를 고친다.
+  var base=field(s.school_id,'base',"공지 URL",s.base_url,'url','바꿔도 이미 수집한 내용은 그대로다. 새 주소로 다시 모으려면 저장 후 재크롤링해야 한다.');
+  var image=field(s.school_id,'image','대표 이미지 URL',s.image_url,'url','비우면 기본 표시로 돌아간다.');
+  card.append(name.wrap,base.wrap,image.wrap);
+
+  var actions=document.createElement('div');actions.className='row';actions.style.marginTop='14px';
+  var save=document.createElement('button');save.className='button primary btn-accent';save.textContent='저장';
+  save.onclick=function(){
+    var body={}, nextName=name.input.value.trim(), nextBase=base.input.value.trim();
+    // name·base_url 은 DB 에서 NOT NULL 이다. 빈 값을 보내면 서버가 null 로 지우려다 500 이 난다.
+    if(!nextName){alert('학교명은 비울 수 없습니다.');return}
+    if(!nextBase){alert('공지 URL 은 비울 수 없습니다.');return}
+    if(nextName!==s.name)body.name=nextName;
+    if(nextBase!==s.base_url)body.base_url=nextBase;
+    // 대표 이미지만 비우기가 허용된다(null = 제거). 나머지와 달리 빈 문자열을 null 로 보낸다.
+    var nextImage=image.input.value.trim()||null;
+    if(nextImage!==(s.image_url||null))body.image_url=nextImage;
+    if(!Object.keys(body).length){alert('변경된 내용이 없습니다.');return}
+    save.disabled=true;
+    ASKU.patchAdmin('/schools/'+s.school_id,body).then(load).catch(function(e){alert(e.message)}).finally(function(){save.disabled=false});
+  };
+  // 재크롤은 관리자 인증이 없는 공개 엔드포인트다(01_backend-api.md §2.5). 여기 두는 것은
+  // 공지 URL 을 고친 직후에 바로 다시 모으는 흐름이 필요해서다.
+  var recrawl=document.createElement('button');recrawl.className='button btn-ink';recrawl.textContent='재크롤링';
+  var running=s.status==='crawling'||s.status==='indexing';
+  if(running){recrawl.disabled=true;recrawl.title='이미 수집 중입니다.'}  // 눌러도 409 다
+  recrawl.onclick=function(){
+    if(!confirm('“'+s.name+'” 의 공지를 지금부터 다시 모읍니다. 학교 서버에 실제로 요청이 나가고 수 분 걸릴 수 있습니다. 계속할까요?'))return;
+    recrawl.disabled=true;
+    // 저장하지 않은 입력이 있으면 그 값이 아니라 저장된 공지 URL 로 돈다.
+    ASKU.post('/schools/'+s.school_id+'/recrawl').then(function(res){
+      alert((res&&res.message)||'재크롤링이 시작되었습니다.');load();
+    }).catch(function(e){alert(e.message);recrawl.disabled=false});
+  };
+  var remove=document.createElement('button');remove.className='button btn-ink';remove.textContent='학교 삭제';
+  remove.onclick=function(){
+    if(!confirm('“'+s.name+'” 및 관련 문서·첨부·그래프·수집 이력을 삭제합니다. 수집 규격은 유지됩니다. 계속할까요?'))return;
+    ASKU.deleteAdmin('/schools/'+s.school_id).then(load).catch(function(e){alert(e.message)});
+  };
+  actions.append(save,recrawl,remove);card.appendChild(actions);
+  card.appendChild(attachSection(s));
+  return card;
+}
+
+function load(){
+  ASKU.get('/schools').then(function(res){
+    list.replaceChildren();
+    var schools=res.schools||[];
+    if(!schools.length){list.textContent='등록된 학교가 없습니다.';return}
+    schools.forEach(function(s){list.appendChild(schoolCard(s))});
+  }).catch(function(e){list.textContent='목록을 불러오지 못했습니다: '+e.message});
+}
 function showManage(){login.classList.add('hidden');manage.classList.remove('hidden');load()}
 $('loginBtn').onclick=function(){var b=$('loginBtn');b.disabled=true;ASKU.adminLogin($('password').value).then(showManage).catch(function(e){msg($('loginMsg'),e.message,true)}).finally(function(){b.disabled=false})};$('password').addEventListener('keydown',function(e){if(e.key==='Enter')$('loginBtn').click()});$('logoutBtn').onclick=function(){ASKU.adminLogout();manage.classList.add('hidden');login.classList.remove('hidden');$('password').value=''};if(authenticated())showManage();
 })();
