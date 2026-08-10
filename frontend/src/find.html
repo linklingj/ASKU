@@ -190,15 +190,21 @@
   }
 
   // — 입력: 휠 스크롤 —
+  // deltaY 단위는 브라우저·장치마다 다르므로(deltaMode 0=픽셀, 1=라인, 2=페이지) 픽셀로 정규화한다.
+  // 한 이벤트에서는 최대 1스텝만 옮긴다: 누적값을 여러 스텝으로 소진하면
+  // 휠 한 칸이 deltaY=100 인 Windows Chrome 에서 학교가 2개씩 넘어간다.
+  var WHEEL_T = 44, WHEEL_UNIT = [1, WHEEL_T, 400], WHEEL_GAP = 90, wheelAt = 0;
   wheel.addEventListener('wheel', function (e) {
     e.preventDefault();
-    acc += e.deltaY;
-    var T = 44;
-    while (Math.abs(acc) >= T) {
-      var s = acc > 0 ? 1 : -1;
-      target = clamp(Math.round(target) + s);
-      acc -= s * T;
-    }
+    var d = e.deltaY * (WHEEL_UNIT[e.deltaMode] || 1);
+    var notch = Math.abs(d) >= WHEEL_T; // 마우스 휠 한 칸은 이벤트 하나로 임계값을 넘긴다
+    acc += d;
+    if (Math.abs(acc) < WHEEL_T) return;
+    // 트랙패드 관성 스크롤은 작은 delta 가 연달아 쏟아지므로 스텝 사이에 최소 간격을 둔다.
+    var now = e.timeStamp || Date.now();
+    if (!notch && now - wheelAt < WHEEL_GAP) { acc = acc > 0 ? WHEEL_T : -WHEEL_T; return; }
+    target = clamp(Math.round(target) + (acc > 0 ? 1 : -1));
+    acc = 0; wheelAt = now;
   }, { passive: false });
 
   // — 입력: 드래그 —
