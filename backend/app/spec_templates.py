@@ -214,6 +214,23 @@ HOST_SPECS: dict[str, AdapterSpec] = {
             attachment=f"div.fileArea a, {_FILE_LINKS}",
         ),
     ),
+    # 광운대. 표가 아니라 `ul > li` 목록이고, 등록일이 조회수·수정일과 한 줄에 섞여 있다.
+    "www.kw.ac.kr": AdapterSpec(
+        host="www.kw.ac.kr",
+        listing=ListingSpec(
+            row="div.board-list-box li",
+            detail_link="a[href*='BoardMode=view']",
+            title=["div.board-text a"],
+            date=["p.info"],
+            category=["strong.category"],
+            pagination=OffsetPagination(param="tpage", step=1, start=1),
+        ),
+        detail=DetailSpec(
+            body=["li.contents"],
+            title=["li.title"],
+            attachment=f"a[href*='FileDown'], {_FILE_LINKS}",
+        ),
+    ),
 }
 
 

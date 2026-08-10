@@ -48,6 +48,9 @@ SUPPORTED_SCHOOLS: tuple[SeedSchool, ...] = (
     SeedSchool("고려대학교", "https://www.korea.ac.kr/ko/566/subview.do"),
     SeedSchool("경희대학교", "https://www.khu.ac.kr/kor/user/bbs/BMSR00040/list.do?menuNo=200317"),
     SeedSchool("한양대학교", "https://www.hanyang.ac.kr/notice_all"),
+    # 가톨릭대는 `k2web` 템플릿에 그대로 맞아 규격을 따로 쓰지 않았다.
+    SeedSchool("가톨릭대학교", "https://www.catholic.ac.kr/ko/campuslife/notice.do"),
+    SeedSchool("광운대학교", "https://www.kw.ac.kr/ko/life/notice.jsp"),
     # 중앙대는 목록을 브라우저로 그려야 나온다(`HOST_SPECS` 의 `render="listing"`).
     SeedSchool("중앙대학교", "https://www.cau.ac.kr/cms/FR_CON/index.do?MENU_ID=100"),
 )

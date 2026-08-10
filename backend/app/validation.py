@@ -248,7 +248,12 @@ def _ratio(items: list[ListingItem], predicate) -> float:
 # 제목 칸에 함께 들어가는 장식·메타데이터. 선택자로 떼어낼 수 없어 비교 전에 지운다.
 # 연세대 목록은 제목 뒤에 '새글', 상세는 '분류 … 작성자 … 조회수 …' 를 같은 요소에
 # 담는다. 이를 그대로 비교하면 같은 글도 다르다고 판정한다.
-_TITLE_NOISE = re.compile(r"(새글|NEW|N|공지|첨부파일|분류|작성자|조회수|등록일)", re.IGNORECASE)
+# 목록 제목 칸에 섞이는 배지·아이콘 문구. 상세 페이지에는 없어서 그대로 두면
+# 같은 글인데도 제목이 다르다고 판정한다. 아이콘의 대체 텍스트가 제목에 딸려
+# 오는 게시판이 많아(광운대 `Attachment`) 영문 표기도 함께 걷는다.
+_TITLE_NOISE = re.compile(
+    r"(신규게시글|새글|NEW|N|공지|첨부파일|Attachment|분류|작성자|조회수|등록일)", re.IGNORECASE
+)
 
 
 def _titles_match(listing_title: str, document: CleanedDocument, content: str) -> bool:
