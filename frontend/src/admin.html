@@ -78,10 +78,15 @@ function field(schoolId, key, labelText, value, type, hint){
   return {wrap:wrap, input:input};
 }
 
+// 수집 상태 라벨(01_backend-api.md §3). 재크롤 버튼을 누른 결과가 여기로 보인다.
+var STATUS={crawling:'수집 중',indexing:'색인 중',ready:'완료',partial_failed:'일부 실패',failed:'수집 실패'};
+
 function schoolCard(s){
   var card=document.createElement('article');card.className='school';
   var head=document.createElement('div');head.className='schoolhead';
-  var title=document.createElement('strong');title.textContent=s.name;head.appendChild(title);
+  var title=document.createElement('strong');
+  title.textContent=s.name+' · '+(STATUS[s.status]||s.status);
+  head.appendChild(title);
   if(s.image_url){
     var image=document.createElement('img');image.src=s.image_url;image.alt='';
     image.onerror=function(){this.remove()};head.appendChild(image);
@@ -110,12 +115,25 @@ function schoolCard(s){
     save.disabled=true;
     ASKU.patchAdmin('/schools/'+s.school_id,body).then(load).catch(function(e){alert(e.message)}).finally(function(){save.disabled=false});
   };
+  // 재크롤은 관리자 인증이 없는 공개 엔드포인트다(01_backend-api.md §2.5). 여기 두는 것은
+  // 공지 URL 을 고친 직후에 바로 다시 모으는 흐름이 필요해서다.
+  var recrawl=document.createElement('button');recrawl.className='button btn-ink';recrawl.textContent='재크롤링';
+  var running=s.status==='crawling'||s.status==='indexing';
+  if(running){recrawl.disabled=true;recrawl.title='이미 수집 중입니다.'}  // 눌러도 409 다
+  recrawl.onclick=function(){
+    if(!confirm('“'+s.name+'” 의 공지를 지금부터 다시 모읍니다. 학교 서버에 실제로 요청이 나가고 수 분 걸릴 수 있습니다. 계속할까요?'))return;
+    recrawl.disabled=true;
+    // 저장하지 않은 입력이 있으면 그 값이 아니라 저장된 공지 URL 로 돈다.
+    ASKU.post('/schools/'+s.school_id+'/recrawl').then(function(res){
+      alert((res&&res.message)||'재크롤링이 시작되었습니다.');load();
+    }).catch(function(e){alert(e.message);recrawl.disabled=false});
+  };
   var remove=document.createElement('button');remove.className='button btn-ink';remove.textContent='학교 삭제';
   remove.onclick=function(){
     if(!confirm('“'+s.name+'” 및 관련 문서·첨부·그래프·수집 이력을 삭제합니다. 수집 규격은 유지됩니다. 계속할까요?'))return;
     ASKU.deleteAdmin('/schools/'+s.school_id).then(load).catch(function(e){alert(e.message)});
   };
-  actions.append(save,remove);card.appendChild(actions);
+  actions.append(save,recrawl,remove);card.appendChild(actions);
   card.appendChild(attachSection(s));
   return card;
 }
