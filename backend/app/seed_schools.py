@@ -38,7 +38,11 @@ SUPPORTED_SCHOOLS: tuple[SeedSchool, ...] = (
     SeedSchool("성균관대학교", "https://www.skku.edu/skku/campus/skk_comm/notice02.do"),
     SeedSchool("아주대학교", "https://www.ajou.ac.kr/kr/ajou/notice.do"),
     SeedSchool("이화여자대학교", "https://www.ewha.ac.kr/ewha/news/notice.do"),
-    SeedSchool("건국대학교", "https://www.konkuk.ac.kr/bbs/konkuk/25/artclList.do"),
+    # 게시판 번호를 직접 가리키던 `/bbs/konkuk/25/artclList.do` 는 폐지됐다("사용중지된 싱글
+    # 모듈입니다" 알림 페이지를 200 으로 돌려줘 목록이 0행이 된다). 메뉴 번호를 쓰는
+    # `subview.do` 로 넣어야 하위 게시판(장학·학칙·연구과제)까지 자동 발견된다 — 현행
+    # 게시판 URL(`/bbs/konkuk/234/artclList.do`)로 넣으면 그 한 곳만 돌고 발견이 0개다.
+    SeedSchool("건국대학교", "https://www.konkuk.ac.kr/konkuk/2238/subview.do"),
     SeedSchool("서울대학교", "https://www.snu.ac.kr/snunow/notice/genernal"),
     SeedSchool("국민대학교", "https://www.kookmin.ac.kr/user/kmuNews/notice/1/index.do"),
     SeedSchool("고려대학교", "https://www.korea.ac.kr/ko/566/subview.do"),
